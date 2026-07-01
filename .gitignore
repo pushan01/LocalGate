@@ -1,0 +1,10 @@
+internal/*.json
+.localgate/
+/.DS_Store
+/.trae/
+/localgate.yaml
+/localgate.yaml.back
+/bin/localgate
+/bin/localgate-v002
+/cmd/localgate/localgate
+/run_daemon.sh

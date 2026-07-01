@@ -1,0 +1,138 @@
+const API = "/api/admin/v1";
+const app = document.querySelector("#app");
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "" };
+
+const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
+const fmtTime = value => value ? new Date(value).toLocaleString() : "—";
+const fmtDuration = value => value ? (value < 1000 ? `${value} ms` : `${(value/1000).toFixed(1)} s`) : "—";
+const badge = value => `<span class="badge ${esc(value)}">${esc(value || "unknown")}</span>`;
+const sessionBadge = item => item.session_id
+  ? `<div class="mono" title="${esc(item.session_id)}">${esc(short(item.session_id,22))}</div><div class="muted">${esc(item.session_mode || "")} ${item.session_id_source === "client_supplied" ? "· Client supplied" : ""}</div>`
+  : `<span class="muted">No session</span>`;
+
+async function request(path, options={}) {
+  const headers = new Headers(options.headers || {});
+  if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${API}${path}`, {...options, headers});
+  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), {unauthorized:true});
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+  return data;
+}
+
+function navigate(path) {
+  history.pushState({}, "", path);
+  render();
+}
+
+function layout(title, body, actions="") {
+  const path = location.pathname;
+  const notice = state.notice;
+  state.notice = "";
+  return `<div class="shell"><aside class="sidebar"><div class="brand">LocalGate Admin</div><nav class="nav">
+    <a data-nav="/admin" class="${path==="/admin"||path==="/admin/"?"active":""}">Overview</a>
+    <a data-nav="/admin/history" class="${path.startsWith("/admin/history")?"active":""}">History</a>
+    <a data-nav="/admin/deployments" class="${path.startsWith("/admin/deployments")?"active":""}">Deployments</a>
+    <a data-nav="/admin/approvals" class="${path.startsWith("/admin/approvals")?"active":""}">Approvals</a>
+  </nav></aside><main class="content"><header class="topbar"><h1>${esc(title)}</h1><div class="actions">${actions}<button class="button" data-action="token">Token</button></div></header>
+  ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}${notice ? `<div class="notice">${esc(notice)}</div>` : ""}${body}</main></div>`;
+}
+
+function loginView(message="") {
+  app.innerHTML = `<section class="login"><h1>LocalGate Admin</h1><p class="muted">输入 HTTP Bearer Token。未启用认证的实例可以留空。</p>${message?`<div class="error">${esc(message)}</div>`:""}<input id="token-input" type="password" autocomplete="current-password" placeholder="Bearer token"><button class="button primary" data-action="save-token">进入后台</button></section>`;
+}
+
+async function render() {
+  state.error = "";
+  const path = location.pathname.replace(/\/$/, "") || "/admin";
+  try {
+    if (path === "/admin") return renderOverview();
+    if (path === "/admin/history") return renderHistory();
+    if (path.startsWith("/admin/history/")) return renderTask(path.split("/").pop());
+    if (path === "/admin/deployments") return renderDeployments();
+    if (path === "/admin/approvals") return renderApprovals();
+    if (path.startsWith("/admin/approvals/")) return renderApproval(path.split("/").pop());
+    navigate("/admin");
+  } catch (error) {
+    if (error.unauthorized) return loginView(error.message);
+    state.error = error.message;
+    app.innerHTML = layout("Error", `<div class="empty">请求失败</div>`);
+  }
+}
+
+async function renderOverview() {
+  const data = await request("/overview");
+  const tasks = data.tasks || {}, approvals = data.approvals || {}, deployments = data.deployments || {};
+  const rows = (data.recent_tasks || []).map(taskRow).join("");
+  app.innerHTML = layout("Overview", `<section class="grid">
+    ${metric("Calls / 24h", tasks.total_24h || 0)}${metric("Running", tasks.running || 0)}${metric("Failed / 24h", tasks.failed_24h || 0)}${metric("Pending approvals", approvals.pending || 0)}${metric("Deployments", deployments.total || 0)}${metric("Deployment failures", deployments.failed || 0)}
+  </section><section class="section"><div class="section-head"><h2>Recent calls</h2><button class="link" data-nav="/admin/history">View all</button></div>${table(taskHeaders(), rows)}</section>`);
+}
+const metric = (label,value) => `<article class="card"><div class="muted">${esc(label)}</div><div class="metric">${esc(value)}</div></article>`;
+
+function taskHeaders(){return "<tr><th>Time</th><th>Tool</th><th>Status</th><th>Session</th><th>Transport</th><th>Duration</th><th>Requester</th></tr>"}
+function taskRow(item){return `<tr><td>${fmtTime(item.created_at)}</td><td><button class="link mono" data-nav="/admin/history/${esc(item.id)}">${esc(item.tool||item.id)}</button></td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td><td>${esc(item.transport||"—")}</td><td>${fmtDuration(item.duration_ms)}</td><td>${esc(item.requester||"—")}</td></tr>`}
+function table(headers, rows){return `<div class="table-wrap"><table><thead>${headers}</thead><tbody>${rows || `<tr><td colspan="8" class="empty">暂无数据</td></tr>`}</tbody></table></div>`}
+
+async function renderHistory() {
+  const query = new URLSearchParams(location.search);
+  const data = await request(`/tasks?${query}`);
+  const rows = (data.items || []).map(taskRow).join("");
+  app.innerHTML = layout("History", `<form class="filters" id="history-filters">
+    <input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id")||"")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool")||"")}">
+    <select name="status"><option value="">All statuses</option>${["awaiting_approval","queued","running","succeeded","failed","canceled","timeout"].map(v=>`<option ${query.get("status")===v?"selected":""}>${v}</option>`).join("")}</select>
+    <select name="transport"><option value="">All transports</option>${["mcp_http","mcp_stdio","mcp_runtime","rest","tool_http","admin","system"].map(v=>`<option ${query.get("transport")===v?"selected":""}>${v}</option>`).join("")}</select>
+    <button class="button primary">Filter</button><button type="button" class="button" data-action="clear-history">Clear</button>
+  </form>${table(taskHeaders(), rows)}${data.next_cursor?`<div class="section"><button class="button" data-action="next-history" data-cursor="${esc(data.next_cursor)}">Next page</button></div>`:""}`);
+}
+
+async function renderTask(id) {
+  const [detail, events, audits] = await Promise.all([request(`/tasks/${id}`), request(`/tasks/${id}/events`), request(`/tasks/${id}/audits`)]);
+  const task = detail.task;
+  app.innerHTML = layout(`Task ${short(id,12)}`, `<section class="card detail-grid">${kv("Status",badge(task.status))}${kv("Tool",task.tool)}${kv("Transport",task.transport||"—")}${kv("Session",task.session_id||"No session")}${kv("Session source",task.session_id_source||"none")}${kv("Workspace",task.workspace_id||"—")}${kv("Requester",task.requester||"—")}${kv("Created",fmtTime(task.created_at))}</section>
+  ${task.error_msg?`<section class="section card"><h2>Error</h2><p>${esc(task.error_msg)}</p></section>`:""}
+  <section class="section card"><div class="section-head"><h2>Result</h2>${!["succeeded","failed","canceled","timeout"].includes(task.status)?`<button class="button danger" data-action="cancel-task" data-id="${esc(id)}">Cancel</button>`:""}</div><pre>${esc(JSON.stringify(task.result??{},null,2))}</pre></section>
+  <section class="section card"><h2>Events</h2><pre>${esc(JSON.stringify(events.items||[],null,2))}</pre></section>
+  <section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(audits.items||[],null,2))}</pre></section>`);
+}
+const kv=(label,value)=>`<div class="kv"><strong>${esc(label)}</strong><div>${value&&String(value).startsWith("<span")?value:esc(value)}</div></div>`;
+
+async function renderDeployments() {
+  const data = await request("/deployments");
+  const rows = (data.items||[]).map(item=>`<tr><td><strong>${esc(item.Site||item.site)}</strong><div class="mono">${esc(item.Type||item.type)}</div></td><td>${badge(item.Status||item.status)}</td><td>${esc(item.Health||item.health||"—")}</td><td><a class="link" href="${esc(item.URL||item.url)}" target="_blank" rel="noopener">Open</a></td><td>${esc(item.ReleaseID||item.release_id||"—")}</td><td>${deploymentActions(item)}</td></tr>`).join("");
+  app.innerHTML = layout("Deployments", table("<tr><th>Name</th><th>Status</th><th>Health</th><th>URL</th><th>Release</th><th>Actions</th></tr>",rows));
+}
+function deploymentActions(item){const type=item.Type||item.type,name=item.Site||item.site,status=item.Status||item.status;let buttons="";if(type==="dynamic"){if(["stopped","failed"].includes(status))buttons+=`<button class="button success" data-deploy-action="start" data-type="${esc(type)}" data-name="${esc(name)}">Start</button>`;else buttons+=`<button class="button" data-deploy-action="stop" data-type="${esc(type)}" data-name="${esc(name)}">Stop</button>`;buttons+=`<button class="button" data-deploy-action="restart" data-type="${esc(type)}" data-name="${esc(name)}">Restart</button>`}return `<div class="actions">${buttons}<button class="button danger" data-deploy-action="delete" data-type="${esc(type)}" data-name="${esc(name)}">Delete</button></div>`}
+
+async function renderApprovals() {
+  const query = new URLSearchParams(location.search);
+  if(!query.has("status")) query.set("status","pending");
+  const data = await request(`/approvals?${query}`);
+  const rows=(data.items||[]).map(item=>`<tr><td>${fmtTime(item.created_at)}</td><td><button class="link" data-nav="/admin/approvals/${esc(item.id)}">${esc(item.summary||item.tool)}</button><div class="mono">${esc(item.id)}</div></td><td>${esc(item.tool)}</td><td>${badge(item.risk_level||"unknown")}</td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td></tr>`).join("");
+  app.innerHTML=layout("Approvals",`<form class="filters" id="approval-filters"><select name="status">${["pending","approved","rejected","canceled","expired",""] .map(v=>`<option value="${v}" ${query.get("status")===v?"selected":""}>${v||"all"}</option>`).join("")}</select><input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id")||"")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool")||"")}"><button class="button primary">Filter</button></form>${table("<tr><th>Created</th><th>Request</th><th>Tool</th><th>Risk</th><th>Status</th><th>Session</th></tr>",rows)}`);
+}
+
+async function renderApproval(id) {
+  const data=await request(`/approvals/${id}`), item=data.approval;
+  const actions=item.status==="pending"?`<button class="button success" data-approval-action="approve" data-id="${esc(id)}">Approve</button><button class="button danger" data-approval-action="reject" data-id="${esc(id)}">Reject</button><button class="button" data-approval-action="cancel" data-id="${esc(id)}">Cancel</button>`:"";
+  app.innerHTML=layout(`Approval ${short(id,12)}`,`<section class="card detail-grid">${kv("Status",badge(item.status))}${kv("Summary",item.summary||"—")}${kv("Tool",item.tool)}${kv("Risk",item.risk_level||"—")}${kv("Requester",item.requester||"—")}${kv("Session",item.session_id||"No session")}${kv("Created",fmtTime(item.created_at))}${kv("Expires",fmtTime(item.expires_at))}</section><section class="section"><div class="actions">${actions}${item.task_id?`<button class="button" data-nav="/admin/history/${esc(item.task_id)}">Open task</button>`:""}</div></section><section class="section card"><h2>Arguments</h2><pre>${esc(JSON.stringify(item.args||{},null,2))}</pre></section><section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(data.audits||[],null,2))}</pre></section>`);
+}
+
+async function mutate(path, options={}) {state.error="";await request(path,options);state.notice="操作已提交";await render()}
+
+document.addEventListener("click", async event => {
+  const nav=event.target.closest("[data-nav]");if(nav){event.preventDefault();return navigate(nav.dataset.nav)}
+  const action=event.target.closest("[data-action]")?.dataset.action;
+  if(action==="token") return loginView();
+  if(action==="save-token"){state.token=document.querySelector("#token-input")?.value.trim()||"";sessionStorage.setItem("localgate_admin_token",state.token);return navigate(location.pathname)}
+  if(action==="clear-history"){history.replaceState({},"","/admin/history");return render()}
+  if(action==="next-history"){const q=new URLSearchParams(location.search);q.set("cursor",event.target.dataset.cursor);history.replaceState({},"",`${location.pathname}?${q}`);return render()}
+  if(action==="cancel-task"&&confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`,{method:"POST"});
+  const approval=event.target.closest("[data-approval-action]");if(approval&&confirm(`确认 ${approval.dataset.approvalAction}？`))return mutate(`/approvals/${approval.dataset.id}/${approval.dataset.approvalAction}`,{method:"POST"});
+  const deploy=event.target.closest("[data-deploy-action]");if(deploy){const act=deploy.dataset.deployAction;if(!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`))return;const encoded=`/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;return mutate(act==="delete"?encoded:`${encoded}/${act}`,{method:act==="delete"?"DELETE":"POST",body:act==="delete"?JSON.stringify({confirmation:"delete"}):undefined})}
+});
+document.addEventListener("submit",event=>{event.preventDefault();const form=new FormData(event.target),q=new URLSearchParams();for(const [k,v] of form)if(v)q.set(k,v);history.replaceState({},"",`${location.pathname}?${q}`);render()});
+window.addEventListener("popstate",render);
+render();

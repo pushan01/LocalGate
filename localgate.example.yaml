@@ -1,0 +1,208 @@
+# LocalGate 样例配置
+#
+# 使用方式：
+#   cp localgate.example.yaml localgate.yaml
+#
+# 该模板默认只监听本机、关闭动态托管，并且不包含任何真实凭证。
+# 对外暴露前，请至少检查 http_auth、admin、workspaces 和命令白名单。
+
+bind: "127.0.0.1:3737"
+max_concurrency: 4
+default_timeout_ms: 600000
+max_output_bytes: 10485760
+
+# 任务、事件、审批、部署记录等运行数据的存储目录。
+log_store: "./.localgate"
+
+admin:
+  enabled: true
+  base_url: "http://127.0.0.1:3737"
+  approval:
+    enabled: true
+    default_ttl_seconds: 600
+    max_sync_wait_seconds: 30
+    rules:
+      - id: allow-read-only
+        effect: allow
+        tools:
+          - read_file
+          - get_startup_instructions
+          - task_status
+          - task_logs
+          - task_result
+          - wait_task_finish
+        risk: low
+
+      - id: approve-write-and-shell
+        effect: require_approval
+        tools:
+          - write_file
+          - apply_patch
+          - run_command
+          - run_argv
+          - exec_command
+          - write_stdin
+          - upload_file
+        risk: high
+
+      - id: approve-deployment
+        effect: require_approval
+        tools:
+          - deploy_tool
+          - delete_deployment
+          - start_deployment
+          - stop_deployment
+          - restart_deployment
+          - rollback_deployment
+        risk: critical
+
+# 对外暴露控制面时应开启。
+# bearer_token 建议通过 LOCALGATE_HTTP_BEARER_TOKEN 环境变量注入，
+# 不要把真实 token 写入配置文件或提交到 Git。
+http_auth:
+  enabled: false
+  bearer_token: ""
+  allow_paths:
+    - /healthz
+
+session_cleanup:
+  finished_ttl_seconds: 1800
+  idle_ttl_seconds: 1800
+  max_sessions: 100
+  sweep_interval_ms: 60000
+
+workspaces:
+  - id: "default"
+
+    # 建议替换为明确的绝对路径。
+    roots:
+      - "."
+    cwd: "."
+
+    # LocalGate 还会叠加内置隐藏工具列表。
+    hidden_tools: []
+
+    # 仅允许实际需要的命令。生产环境不要使用 "*"。
+    command_allowlist:
+      - echo
+      - pwd
+      - ls
+      - cat
+      - rg
+      - git
+      - go
+    command_denylist: []
+
+    # 可用于屏蔽 workspace 内不应访问的绝对路径。
+    path_denylist: []
+
+    # 仅允许传入明确需要的环境变量。
+    env_allowlist:
+      - PATH
+      - HOME
+      - TMPDIR
+
+    # Shell 高风险语法默认关闭。
+    allow_shell_pipe: false
+    allow_shell_redirect: false
+    allow_shell_control: false
+    allow_shell_background: false
+    allow_shell_substitution: false
+
+    # 命中这些命令或写入路径时触发 workspace 级审批策略。
+    approval_policy:
+      commands: []
+      write_paths: []
+
+http:
+  base_url: "http://127.0.0.1:3737"
+  allow_cors: false
+  allowed_origins: []
+
+static_hosting:
+  max_files: 10000
+  max_total_bytes: 52428800
+  max_file_bytes: 52428800
+  require_approval: true
+
+# 动态应用托管默认关闭。
+# 启用前必须设置 control_hosts、app_domain 和 allowed_executables。
+dynamic_hosting:
+  enabled: false
+  control_hosts:
+    - "control.example.com"
+  app_domain: "apps.example.com"
+  public_scheme: "https"
+  require_approval: true
+
+  reserved_names:
+    - localgate
+    - control
+    - www
+    - api
+    - admin
+    - mcp
+    - tasks
+    - approvals
+    - static
+
+  # 启用动态托管时，argv[0] 必须匹配这里的绝对路径。
+  allowed_executables:
+    - "/absolute/path/to/node"
+    - "/absolute/path/to/python3"
+
+  # 敏感变量名仍会被额外拒绝。
+  env_allowlist:
+    - NODE_ENV
+    - APP_ENV
+    - PYTHONPATH
+
+  max_apps: 20
+  max_files: 20000
+  max_total_bytes: 536870912
+  max_file_bytes: 104857600
+
+  startup_timeout_seconds: 20
+  shutdown_timeout_seconds: 5
+  restart_policy: "on-failure"
+  restart_max_attempts: 3
+  restart_backoff_seconds: 2
+  restart_reset_seconds: 60
+
+  max_log_bytes: 10485760
+  max_log_files: 3
+  release_retention: 3
+
+  max_request_body_bytes: 33554432
+  max_request_header_bytes: 1048576
+  max_concurrent_requests: 100
+  upstream_header_timeout_seconds: 30
+  max_response_header_bytes: 1048576
+
+mcp_http:
+  stateless: true
+
+tool_arguments:
+  enable_base64: false
+
+# 开启后可通过临时访问令牌调用 HTTP Tool API。
+tool_http_mode:
+  enabled: false
+  access_token_ttl_seconds: 600
+
+# 可选的下游 MCP stdio 服务。
+mcp_servers: []
+
+# 示例：
+# mcp_servers:
+#   - name: "example_mcp"
+#     command: "/absolute/path/to/mcp-server"
+#     args:
+#       - "--stdio"
+#     cwd: "/absolute/path/to/workdir"
+#     env:
+#       EXAMPLE_ENV: "non-sensitive-value"
+
+# 以下内容只通过环境变量配置，不写入 YAML：
+#   LOCALGATE_HTTP_BEARER_TOKEN
+#   LOCALGATE_UPGRADE_TOKEN
