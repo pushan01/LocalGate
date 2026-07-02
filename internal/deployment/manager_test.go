@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"localgate/internal/config"
@@ -96,6 +97,13 @@ func TestManagerServesStaticDeploymentByAppHostname(t *testing.T) {
 		t.Fatalf("serve static app: code=%d body=%q", response.Code, response.Body.String())
 	}
 
+	request = httptest.NewRequest(http.MethodGet, "https://deploys.apps.test/", nil)
+	response = httptest.NewRecorder()
+	manager.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "demo") {
+		t.Fatalf("serve deployment list: code=%d body=%q", response.Code, response.Body.String())
+	}
+
 	for _, target := range []string{"https://missing.apps.test/", "https://nested.demo.apps.test/", "http://localhost:2526/", "http://127.0.0.1:2526/"} {
 		request = httptest.NewRequest(http.MethodGet, target, nil)
 		response = httptest.NewRecorder()
@@ -147,7 +155,7 @@ func TestManagerRejectsReservedAndControlHostNamesForStaticDeployments(t *testin
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), nil, "https://apps.test")
 	manager.ConfigureAppRouting("https://control.apps.test", []string{"admin"})
 	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
-	for _, name := range []string{"admin", "control"} {
+	for _, name := range []string{"admin", "control", "deploys"} {
 		_, err := manager.Deploy(context.Background(), DeployRequest{
 			Type: TypeStatic, Name: name, Source: source, Workspace: workspace,
 			Options: DeployOptions{PreserveSource: true},

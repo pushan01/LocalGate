@@ -293,8 +293,8 @@ go run ./cmd/localgate -config ./localgate.yaml
 - 管理后台：`http://127.0.0.1:3739/admin/`
 - HTTP MCP：`http://127.0.0.1:3737/mcp`
 - 工具发现：`http://127.0.0.1:3737/tools`
-- public 部署列表：`https://apps.example.com/deploys`
-- private 部署列表：`https://private-apps.example.com/deploys`
+- public 部署列表：`https://deploys.apps.example.com/`
+- private 部署列表：`https://deploys.private-apps.example.com/`
 
 ### 4. 启动 stdio MCP
 
@@ -614,7 +614,7 @@ base URL 包含协议和根域名，deployment 名称会作为单层子域名前
 - `public_base_url=https://apps.example.com` → `https://{deployment-name}.apps.example.com/`
 - `private_base_url=https://private-apps.example.com` → `https://{deployment-name}.private-apps.example.com/`
 
-public 和 private 使用不同的本地 listener。反向代理必须将 public 根域及其子域转发到 `public_bind`，将 private 根域及其子域转发到 `private_bind`。两个根域上的 `/deploys` 分别只显示对应 access 的部署；控制面不再提供 `/deploys`。
+public 和 private 使用不同的本地 listener。反向代理必须将 public 根域及其子域转发到 `public_bind`，将 private 根域及其子域转发到 `private_bind`。`deploys.<public-domain>/` 与 `deploys.<private-domain>/` 分别只显示对应 access 的部署；控制面不提供部署列表。
 
 只有启用 `deployments.dynamic.enabled` 时才要求 `deployments.dynamic.allowed_executables`。动态应用启动时应监听 LocalGate 注入的 `HOST` 和 `PORT`。
 

@@ -83,11 +83,11 @@ The control-plane `/static/{site}/...` route is not registered. Application host
 ### Deployment overview page
 
 ```http
-GET {public_base_url}/deploys
-GET {private_base_url}/deploys
+GET https://deploys.{public-domain}/
+GET https://deploys.{private-domain}/
 ```
 
-Each read-only HTML overview is mounted on its matching deployment listener and lists only deployments with that access level. The control listener does not expose `/deploys`. The pages read static and dynamic deployments through the unified `deployment.Manager` and do not create tasks, approvals, or audit events.
+Each read-only HTML overview is mounted at the `deploys` subdomain on its matching deployment listener and lists only deployments with that access level. The control listener does not expose a deployment list. The pages read static and dynamic deployments through the unified `deployment.Manager` and do not create tasks, approvals, or audit events.
 
 ### Dynamic web deployments
 

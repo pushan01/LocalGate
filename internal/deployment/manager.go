@@ -22,6 +22,7 @@ const (
 	TypeDynamic   = "dynamic"
 	AccessPublic  = "public"
 	AccessPrivate = "private"
+	listHostLabel = "deploys"
 )
 
 var (
@@ -344,6 +345,9 @@ func (m *Manager) appLocation(name, access string) (string, string) {
 
 func (m *Manager) validateAppName(name string) error {
 	name = strings.ToLower(strings.TrimSpace(name))
+	if name == listHostLabel {
+		return fmt.Errorf("%w: %s is reserved for the deployment list", ErrDeploymentNameBlocked, name)
+	}
 	if _, blocked := m.reserved[name]; blocked {
 		return fmt.Errorf("%w: %s is reserved", ErrDeploymentNameBlocked, name)
 	}
@@ -368,11 +372,11 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if host == m.publicDomain {
+	if host == listHostLabel+"."+m.publicDomain {
 		m.serveAccess(AccessPublic, w, r)
 		return
 	}
-	if host == m.privateDomain {
+	if host == listHostLabel+"."+m.privateDomain {
 		m.serveAccess(AccessPrivate, w, r)
 		return
 	}
@@ -409,7 +413,7 @@ func (m *Manager) serveAccess(access string, w http.ResponseWriter, r *http.Requ
 	if access == AccessPrivate {
 		domain = m.privateDomain
 	}
-	if host == domain {
+	if host == listHostLabel+"."+domain {
 		m.serveDeploymentList(access, w, r)
 		return
 	}

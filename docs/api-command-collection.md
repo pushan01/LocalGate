@@ -52,8 +52,8 @@ tool_arguments:
 
 分为 8 类：
 
-- public 部署只读页面：`deployments.public_base_url/deploys`
-- private 部署只读页面：`deployments.private_base_url/deploys`
+- public 部署只读页面：`https://deploys.{public-domain}/`
+- private 部署只读页面：`https://deploys.{private-domain}/`
 - 部署管理页面：`approval.base_url/deploy-mgr`
 - 工具发现与直调：`/tools`、`/tools/{name}`、`/tools/{name}/call`
 - 任务提交与查询：`/tasks`、`/tasks/{id}/*`
@@ -252,22 +252,22 @@ xargs -I{} curl "http://127.0.0.1:8000/tools/read_file/call" \
 
 查看与管理页面按 Host、Path 和 listener 完全分离：
 
-- `GET {deployments.public_base_url}/deploys`：只读查看 public 部署。
-- `GET {deployments.private_base_url}/deploys`：只读查看 private 部署。
+- `GET https://deploys.{public-domain}/`：只读查看 public 部署。
+- `GET https://deploys.{private-domain}/`：只读查看 private 部署。
 - `GET {approval.base_url}/deploy-mgr`：部署管理页面。
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/stop`
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/start`
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/delete`
 
-public `/deploys` 只挂载在 `deployments.public_bind`，private `/deploys` 只挂载在 `deployments.private_bind`；控制面不再提供 `/deploys`。`/deploy-mgr` 及其操作只允许通过 `approval.base_url` 的 Host 访问。交叉访问统一返回 `404`。旧 `/deployment-ui` 路径不再提供服务。
+public `deploys` 子域只挂载在 `deployments.public_bind`，private `deploys` 子域只挂载在 `deployments.private_bind`；控制面不提供部署列表。`/deploy-mgr` 及其操作只允许通过 `approval.base_url` 的 Host 访问。交叉访问统一返回 `404`。旧 `/deployment-ui` 路径不再提供服务。
 
 管理操作通过现有 task/approval 管线执行，不会绕过 `approval.rules`、`deployments.static.require_approval` 或 `deployments.dynamic.require_approval`；需要审批时浏览器会跳转到对应审批页面，批准后原任务继续执行。
 
 删除表单必须包含 `confirm=delete`。浏览器管理操作要求 `Origin` 与 `approval.base_url` 的 scheme 和 host 一致，跨站请求返回 `403`。两个页面都兼容各自 base URL 中的反向代理路径前缀。
 
 ```bash
-curl "https://apps.example.com/deploys"
-curl "https://private-apps.example.com/deploys" \
+curl "https://deploys.apps.example.com/"
+curl "https://deploys.private-apps.example.com/" \
   -H "Authorization: Bearer <your-token>"
 ```
 
@@ -861,7 +861,7 @@ deployments:
   private_bind: "127.0.0.1:3740"
 ```
 
-三个配置必须使用不同 TCP 端口。控制面 listener 不注册任何 deployment handler；public/private listener 分别只服务对应 access 的部署和 `/deploys` 列表，也不注册 `/tasks`、`/mcp`、管理后台或控制面 `/healthz`。
+三个配置必须使用不同 TCP 端口。控制面 listener 不注册任何 deployment handler；public/private listener 分别只服务对应 access 的部署和各自的 `deploys` 子域列表，也不注册 `/tasks`、`/mcp`、管理后台或控制面 `/healthz`。
 
 ### 启动脚本参数
 

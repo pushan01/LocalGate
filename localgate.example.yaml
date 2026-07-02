@@ -140,6 +140,7 @@ deployments:
     - tasks
     - approvals
     - static
+    - deploys
 
   static:
     max_files: 10000

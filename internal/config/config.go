@@ -218,7 +218,7 @@ func Default() Config {
 			PublicBind:    "127.0.0.1:3738",
 			PrivateBind:   "127.0.0.1:3740",
 			DefaultAccess: "private",
-			ReservedNames: []string{"macgate", "www", "api", "admin", "mcp", "tasks", "approvals", "static"},
+			ReservedNames: []string{"macgate", "www", "api", "admin", "mcp", "tasks", "approvals", "static", "deploys"},
 			Static: StaticHosting{
 				MaxFiles:        10_000,
 				MaxTotalBytes:   50 << 20,

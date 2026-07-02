@@ -35,7 +35,7 @@ func (m *Manager) ListByAccess(ctx context.Context, access string) ([]View, erro
 }
 
 func (m *Manager) serveDeploymentList(access string, w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/deploys" && r.URL.Path != "/deploys/" {
+	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}

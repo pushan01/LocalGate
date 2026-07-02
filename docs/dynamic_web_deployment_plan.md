@@ -168,11 +168,11 @@ bind
 
 deployments.public_bind
     → 只挂载 public deployment handler
-    → 接受 public 根域 `/deploys` 和 public deployment 子域
+    → 接受 public `deploys` 子域根路径和 public deployment 子域
 
 deployments.private_bind
     → 只挂载 private deployment handler
-    → 接受 private 根域 `/deploys` 和 private deployment 子域
+    → 接受 private `deploys` 子域根路径和 private deployment 子域
 ```
 
 `bind`、`deployments.public_bind` 和 `deployments.private_bind` 必须使用不同 TCP 端口。public/private handler 固定绑定 access，即使错误 Host 被转发到另一个端口，也不能跨 access 提供应用。
@@ -1092,7 +1092,7 @@ deployment_proxy_unavailable
 已增加只读页面：
 
 ```text
-/deploys
+https://deploys.<app-domain>/
 ```
 
 当前页面：

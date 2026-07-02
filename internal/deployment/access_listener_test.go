@@ -41,24 +41,28 @@ func TestAccessListenersSeparateApplicationsAndDeploymentLists(t *testing.T) {
 		}
 	}
 
-	assertResponse(publicHandler, "https://apps.test/deploys", http.StatusOK, "public-app", "private-app")
-	assertResponse(privateHandler, "https://private.apps.test/deploys", http.StatusOK, "private-app", "public-app")
+	assertResponse(publicHandler, "https://deploys.apps.test/", http.StatusOK, "public-app", "private-app")
+	assertResponse(privateHandler, "https://deploys.private.apps.test/", http.StatusOK, "private-app", "public-app")
 	assertResponse(publicHandler, "https://public-app.apps.test/", http.StatusOK, "public body", "")
 	assertResponse(privateHandler, "https://private-app.private.apps.test/", http.StatusOK, "private body", "")
 
 	assertResponse(publicHandler, "https://private-app.private.apps.test/", http.StatusNotFound, "", "")
 	assertResponse(privateHandler, "https://public-app.apps.test/", http.StatusNotFound, "", "")
-	assertResponse(publicHandler, "http://localhost:3738/deploys", http.StatusNotFound, "", "")
-	assertResponse(privateHandler, "http://127.0.0.1:3740/deploys", http.StatusNotFound, "", "")
+	assertResponse(publicHandler, "https://apps.test/", http.StatusNotFound, "", "")
+	assertResponse(privateHandler, "https://private.apps.test/", http.StatusNotFound, "", "")
+	assertResponse(publicHandler, "https://apps.test/deploys", http.StatusNotFound, "", "")
+	assertResponse(privateHandler, "https://private.apps.test/deploys", http.StatusNotFound, "", "")
+	assertResponse(publicHandler, "http://deploys.localhost:3738/", http.StatusNotFound, "", "")
+	assertResponse(privateHandler, "http://deploys.127.0.0.1:3740/", http.StatusNotFound, "", "")
 
-	post := httptest.NewRequest(http.MethodPost, "https://apps.test/deploys", nil)
+	post := httptest.NewRequest(http.MethodPost, "https://deploys.apps.test/", nil)
 	postW := httptest.NewRecorder()
 	publicHandler.ServeHTTP(postW, post)
 	if postW.Code != http.StatusMethodNotAllowed || postW.Header().Get("Allow") != http.MethodGet {
-		t.Fatalf("unexpected POST /deploys response: code=%d allow=%q", postW.Code, postW.Header().Get("Allow"))
+		t.Fatalf("unexpected deployment list POST response: code=%d allow=%q", postW.Code, postW.Header().Get("Allow"))
 	}
 
-	nested := httptest.NewRequest(http.MethodGet, "https://apps.test/deploys/unknown", nil)
+	nested := httptest.NewRequest(http.MethodGet, "https://deploys.apps.test/unknown", nil)
 	nestedW := httptest.NewRecorder()
 	publicHandler.ServeHTTP(nestedW, nested)
 	if nestedW.Code != http.StatusNotFound {
