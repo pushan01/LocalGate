@@ -851,10 +851,12 @@ func TestDeployToolRegisteredAndWorksInMCPGo(t *testing.T) {
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore: storeRoot,
 		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		StaticHosting: config.StaticHosting{
-			MaxFiles:      100,
-			MaxTotalBytes: 1 << 20,
-			MaxFileBytes:  1 << 20,
+		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public",
+			Static: config.StaticHosting{
+				MaxFiles:      100,
+				MaxTotalBytes: 1 << 20,
+				MaxFileBytes:  1 << 20,
+			},
 		},
 		Workspaces: []config.Workspace{{
 			ID:    "ws",
@@ -932,11 +934,13 @@ func TestDeployToolReturnsPendingApprovalInMCPGo(t *testing.T) {
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore: storeRoot,
 		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		StaticHosting: config.StaticHosting{
-			MaxFiles:        100,
-			MaxTotalBytes:   1 << 20,
-			MaxFileBytes:    1 << 20,
-			RequireApproval: true,
+		Deployments: config.DeploymentsConfig{
+			Static: config.StaticHosting{
+				MaxFiles:        100,
+				MaxTotalBytes:   1 << 20,
+				MaxFileBytes:    1 << 20,
+				RequireApproval: true,
+			},
 		},
 		Workspaces: []config.Workspace{{
 			ID:    "ws",

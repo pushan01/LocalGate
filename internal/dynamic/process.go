@@ -166,7 +166,7 @@ func (w *rotatingLogWriter) Close() error {
 	return err
 }
 
-func startManagedProcess(ctx context.Context, executable string, deployment Deployment, releaseRoot string, port int, startupTimeout time.Duration, maxLogBytes int64, maxLogFiles int) (*managedProcess, error) {
+func startManagedProcess(ctx context.Context, executable string, deployment Deployment, hostname, publicURL, releaseRoot string, port int, startupTimeout time.Duration, maxLogBytes int64, maxLogFiles int) (*managedProcess, error) {
 	workingDir := filepath.Join(releaseRoot, filepath.FromSlash(deployment.WorkingDir))
 	if !withinRoot(workingDir, releaseRoot) {
 		return nil, errorf("deployment_start_failed", "working directory escaped release root")
@@ -191,7 +191,7 @@ func startManagedProcess(ctx context.Context, executable string, deployment Depl
 	args := append([]string(nil), deployment.Argv[1:]...)
 	cmd := exec.Command(executable, args...)
 	cmd.Dir = workingDir
-	cmd.Env = processEnvironment(deployment, port)
+	cmd.Env = processEnvironment(deployment, hostname, publicURL, port)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	configureProcessGroup(cmd)
@@ -215,7 +215,7 @@ func startManagedProcess(ctx context.Context, executable string, deployment Depl
 		close(proc.done)
 	}()
 
-	if err := waitForHealth(ctx, proc, deployment.Hostname, deployment.HealthPath, startupTimeout); err != nil {
+	if err := waitForHealth(ctx, proc, hostname, deployment.HealthPath, startupTimeout); err != nil {
 		proc.markIntentional()
 		_ = terminateProcess(proc, 2*time.Second)
 		if bindConflictInLog(stderrPath) {
@@ -240,15 +240,15 @@ func bindConflictInLog(path string) bool {
 	return false
 }
 
-func processEnvironment(deployment Deployment, port int) []string {
+func processEnvironment(deployment Deployment, hostname, publicURL string, port int) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
 		"TMPDIR=" + os.TempDir(),
 		"HOST=127.0.0.1",
 		"PORT=" + strconv.Itoa(port),
-		"LOCALGATE_APP_HOST=" + deployment.Hostname,
-		"LOCALGATE_PUBLIC_URL=" + deployment.URL,
+		"LOCALGATE_APP_HOST=" + hostname,
+		"LOCALGATE_PUBLIC_URL=" + publicURL,
 		"LOCALGATE_BASE_PATH=/",
 	}
 	keys := make([]string, 0, len(deployment.Env))

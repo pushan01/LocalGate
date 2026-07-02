@@ -13,11 +13,11 @@ import (
 
 type ListDeploymentsTool struct{ Manager *deployment.Manager }
 
-func NewListDeploymentsTool(service *static.Service, baseURL string) *ListDeploymentsTool {
-	return NewListDeploymentsToolWithDynamic(service, nil, baseURL)
+func NewListDeploymentsTool(service *static.Service, appBaseURL string) *ListDeploymentsTool {
+	return NewListDeploymentsToolWithDynamic(service, nil, appBaseURL)
 }
-func NewListDeploymentsToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, baseURL string) *ListDeploymentsTool {
-	return NewListDeploymentsToolWithManager(deployment.NewManager(staticService, dynamicService, baseURL))
+func NewListDeploymentsToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, appBaseURL string) *ListDeploymentsTool {
+	return NewListDeploymentsToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL))
 }
 func NewListDeploymentsToolWithManager(manager *deployment.Manager) *ListDeploymentsTool {
 	return &ListDeploymentsTool{Manager: manager}
@@ -43,11 +43,12 @@ func (t *ListDeploymentsTool) OutputSchema() any {
 	itemSchema := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"type", "site", "url", "status", "created_at", "updated_at"},
+		"required":             []string{"type", "site", "url", "access", "status", "created_at", "updated_at"},
 		"properties": map[string]any{
 			"type":          map[string]any{"type": "string", "enum": []any{"static", "dynamic"}},
 			"site":          map[string]any{"type": "string"},
 			"url":           map[string]any{"type": "string"},
+			"access":        map[string]any{"type": "string", "enum": []any{"private", "public"}},
 			"status":        map[string]any{"type": "string"},
 			"index":         map[string]any{"type": "string"},
 			"spa":           map[string]any{"type": "boolean"},
@@ -92,13 +93,16 @@ func (t *ListDeploymentsTool) Execute(ctx context.Context, input json.RawMessage
 	for _, item := range items {
 		entry := map[string]any{
 			"type": item.Type, "site": item.Site, "url": item.URL, "status": item.Status,
+			"access":     item.Access,
 			"created_at": item.CreatedAt, "updated_at": item.UpdatedAt,
+		}
+		if item.Hostname != "" {
+			entry["hostname"] = item.Hostname
 		}
 		if item.Type == deployment.TypeStatic {
 			entry["index"] = item.Index
 			entry["spa"] = item.SPA
 		} else {
-			entry["hostname"] = item.Hostname
 			entry["health"] = item.Health
 			entry["release_id"] = item.ReleaseID
 			entry["restart_count"] = item.RestartCount
@@ -118,12 +122,12 @@ type CoreListDeploymentsTool struct {
 	inner *ListDeploymentsTool
 }
 
-func NewCoreListDeploymentsTool(service *static.Service, baseURL string) *CoreListDeploymentsTool {
-	return NewCoreListDeploymentsToolWithDynamic(service, nil, baseURL)
+func NewCoreListDeploymentsTool(service *static.Service, appBaseURL string) *CoreListDeploymentsTool {
+	return NewCoreListDeploymentsToolWithDynamic(service, nil, appBaseURL)
 }
 
-func NewCoreListDeploymentsToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, baseURL string) *CoreListDeploymentsTool {
-	return NewCoreListDeploymentsToolWithManager(deployment.NewManager(staticService, dynamicService, baseURL))
+func NewCoreListDeploymentsToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, appBaseURL string) *CoreListDeploymentsTool {
+	return NewCoreListDeploymentsToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL))
 }
 func NewCoreListDeploymentsToolWithManager(manager *deployment.Manager) *CoreListDeploymentsTool {
 	return &CoreListDeploymentsTool{inner: NewListDeploymentsToolWithManager(manager)}

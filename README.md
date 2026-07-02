@@ -125,7 +125,7 @@ LocalGate 不只提供文件和命令工具，还内置静态与动态应用部�
 - 崩溃重启
 - Release 保留
 - 原版本回滚
-- Host 级控制面与应用流量隔离
+- 控制面与 deployment 应用面使用独立监听端口，并继续执行 Host 校验
 
 Agent 可以在同一个受控执行面中完成“修改代码 → 运行测试 → 构建 → 部署 → 检查日志 → 回滚”。
 
@@ -214,7 +214,10 @@ cp localgate.example.yaml localgate.yaml
 
 样例配置默认：
 
-- 监听 `127.0.0.1:3737`
+- 控制面监听 `127.0.0.1:3737`
+- public deployment 应用面监听 `127.0.0.1:3738`
+- 管理后台监听 `127.0.0.1:3739`
+- private deployment 应用面监听 `127.0.0.1:3740`
 - 只允许访问当前项目目录
 - 关闭动态托管
 - 关闭 Shell 管道、重定向、后台执行和命令替换
@@ -248,6 +251,24 @@ VERSION=v0.1.0 ./scripts/build.sh
 ./scripts/start-http.sh
 ```
 
+控制面、管理后台、public deployment 和 private deployment 必须使用四个不同端口。可在配置中设置：
+
+```yaml
+bind: "127.0.0.1:3737"
+admin:
+  bind: "127.0.0.1:3739"
+  base_url: "http://127.0.0.1:3739"
+deployments:
+  public_bind: "127.0.0.1:3738"
+  private_bind: "127.0.0.1:3740"
+```
+
+也可以在启动时分别覆盖：
+
+```bash
+BIND=127.0.0.1:9000 ADMIN_BIND=127.0.0.1:9002 PUBLIC_DEPLOYMENTS_BIND=127.0.0.1:9001 PRIVATE_DEPLOYMENTS_BIND=127.0.0.1:9003 ./scripts/start-http.sh
+```
+
 后台运行：
 
 ```bash
@@ -269,9 +290,11 @@ go run ./cmd/localgate -config ./localgate.yaml
 默认入口：
 
 - 健康检查：`http://127.0.0.1:3737/healthz`
-- 管理后台：`http://127.0.0.1:3737/admin/`
+- 管理后台：`http://127.0.0.1:3739/admin/`
 - HTTP MCP：`http://127.0.0.1:3737/mcp`
 - 工具发现：`http://127.0.0.1:3737/tools`
+- public 部署列表：`https://apps.example.com/deploys`
+- private 部署列表：`https://private-apps.example.com/deploys`
 
 ### 4. 启动 stdio MCP
 
@@ -552,7 +575,7 @@ Authorization: Bearer <token>
 - `deny`
 - `require_approval`
 
-审批页面和管理后台由 `admin.base_url` 决定。生产环境建议同时使用 LocalGate Bearer 鉴权和可信反向代理身份验证。
+管理监听地址由 `admin.bind` 决定，审批链接和管理后台公开地址由 `admin.base_url` 决定。管理路由不会挂载到控制面或 deployment 端口。生产环境建议同时使用 LocalGate Bearer 鉴权和可信反向代理身份验证。
 
 <p align="center">
   <img src="./images/admin_and_approval.png" alt="LocalGate 管理后台与审批界面" width="920">
@@ -560,15 +583,40 @@ Authorization: Bearer <token>
 
 <p align="center"><sub>管理后台集中查看任务、审批、部署与审计记录</sub></p>
 
-### 动态托管
+### Deployments 配置
 
-启用动态托管前必须设置：
+静态和动态部署统一收拢在 `deployments` 下。监听地址、base URL、默认访问级别和保留名称属于共享配置；控制面 Host 直接从 `http.base_url` 派生。类型专属限制分别放在 `static` 与 `dynamic` 子结构：
 
-- `dynamic_hosting.control_hosts`
-- `dynamic_hosting.app_domain`
-- `dynamic_hosting.allowed_executables`
+```yaml
+deployments:
+  public_bind: "127.0.0.1:3738"
+  private_bind: "127.0.0.1:3740"
+  public_base_url: "https://apps.example.com"
+  private_base_url: "https://private-apps.example.com"
+  default_access: "private"
+  reserved_names: [localgate, control, admin, api]
 
-应用启动时应监听 LocalGate 注入的 `HOST` 和 `PORT`。动态部署不经过 Shell，启动命令使用参数数组传入。
+  static:
+    max_files: 10000
+    max_total_bytes: 52428800
+    max_file_bytes: 52428800
+    require_approval: true
+
+  dynamic:
+    enabled: false
+    require_approval: true
+    allowed_executables:
+      - "/absolute/path/to/node"
+```
+
+base URL 包含协议和根域名，deployment 名称会作为单层子域名前缀：
+
+- `public_base_url=https://apps.example.com` → `https://{deployment-name}.apps.example.com/`
+- `private_base_url=https://private-apps.example.com` → `https://{deployment-name}.private-apps.example.com/`
+
+public 和 private 使用不同的本地 listener。反向代理必须将 public 根域及其子域转发到 `public_bind`，将 private 根域及其子域转发到 `private_bind`。两个根域上的 `/deploys` 分别只显示对应 access 的部署；控制面不再提供 `/deploys`。
+
+只有启用 `deployments.dynamic.enabled` 时才要求 `deployments.dynamic.allowed_executables`。动态应用启动时应监听 LocalGate 注入的 `HOST` 和 `PORT`。
 
 ### 下游 MCP Server
 
@@ -590,13 +638,19 @@ mcp_servers:
 
 | 变量 | 作用 |
 | --- | --- |
-| `LOCALGATE_BIND` | 覆盖监听地址 |
+| `LOCALGATE_BIND` | 覆盖控制面监听地址 |
+| `LOCALGATE_ADMIN_BIND` | 覆盖管理后台监听地址；端口必须与控制面、deployment 不同 |
+| `LOCALGATE_DEPLOYMENTS_PUBLIC_BIND` | 覆盖 public deployment 监听地址 |
+| `LOCALGATE_DEPLOYMENTS_PRIVATE_BIND` | 覆盖 private deployment 监听地址 |
 | `LOCALGATE_HTTP_BASE_URL` | 覆盖控制面公开地址 |
 | `LOCALGATE_HTTP_AUTH_ENABLED` | 开关 HTTP Bearer 鉴权 |
 | `LOCALGATE_HTTP_BEARER_TOKEN` | HTTP Bearer Token |
 | `LOCALGATE_ADMIN_ENABLED` | 开关管理后台 |
 | `LOCALGATE_ADMIN_BASE_URL` | 管理后台公开地址 |
-| `LOCALGATE_DYNAMIC_ENABLED` | 开关动态托管 |
+| `LOCALGATE_DEPLOYMENTS_DYNAMIC_ENABLED` | 开关动态托管 |
+| `LOCALGATE_DEPLOYMENTS_PUBLIC_BASE_URL` | public 应用入口 base URL |
+| `LOCALGATE_DEPLOYMENTS_PRIVATE_BASE_URL` | private 应用入口 base URL |
+| `LOCALGATE_DEPLOYMENTS_DEFAULT_ACCESS` | 新部署默认访问级别 |
 | `LOCALGATE_UPGRADE_TOKEN` | 自升级接口凭证 |
 
 启动脚本还支持从 `.localgate/http-bearer-token` 读取 HTTP Token。该文件应保持本地权限受限，并且不能提交到 Git。
@@ -611,7 +665,7 @@ mcp_servers:
 
 ### 静态部署
 
-`deploy_tool` 的静态模式会复制并校验源目录，记录站点注册信息，然后通过 LocalGate 托管文件。
+`deploy_tool` 的静态模式会复制并校验源目录，记录站点注册信息，并根据 `options.access` 选择 public 或 private 应用入口。静态站点不再使用控制面下的 `/static/{name}/` 路径。
 
 典型参数：
 
@@ -622,10 +676,15 @@ mcp_servers:
   "source": "/absolute/path/to/site",
   "options": {
     "overwrite": false,
-    "preserve_source": true
+    "preserve_source": true,
+    "access": "private"
   }
 }
 ```
+
+例如 `name=docs`、`private_base_url=https://private-apps.example.com` 时，private 地址为 `https://docs.private-apps.example.com/`。管理页面可以在 public/private 之间转换，转换后旧入口域名立即失效。
+
+域名分流本身不等于身份认证。private 域名应由 Cloudflare Access、VPN、内网 DNS 或其他入口策略保护。
 
 ### 动态部署
 

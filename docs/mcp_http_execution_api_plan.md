@@ -49,7 +49,8 @@ Successful direct execution returns:
     "status": "deployed",
     "type": "static",
     "site": "site-a",
-    "url": "http://127.0.0.1:8000/static/site-a/",
+    "url": "https://site-a.apps.example.com/",
+    "hostname": "site-a.apps.example.com",
     "file_count": 12,
     "total_bytes": 40960,
     "source_preserved": true
@@ -60,8 +61,8 @@ Successful direct execution returns:
 Every execution request goes through the same `App.SubmitToolTask` path used by REST, stdio MCP, and standard HTTP MCP. The decision order is:
 
 1. first matching global `approval.rules` entry
-2. dynamic mutation fallback when `dynamic_hosting.require_approval` is enabled
-3. static deployment fallback when `static_hosting.require_approval` is enabled
+2. dynamic mutation fallback when `deployments.dynamic.require_approval` is enabled
+3. static deployment fallback when `deployments.static.require_approval` is enabled
 4. legacy workspace command/write-path approval policy
 
 An `allow` decision creates and executes a normal task. A `deny` decision returns HTTP 403 with `code=policy_denied`. A `require_approval` decision creates a gated task immediately and returns HTTP 202 with `approval_id`, `approval_url`, and `task_id`; approving the request releases that same task without requiring the client to replay the tool call.
@@ -70,28 +71,31 @@ If an allowed task does not complete inside `approval.max_sync_wait_seconds`, th
 
 ### Static content
 
+Static deployments use the same host-based routing model as dynamic deployments:
+
 ```http
-GET /static/{site}/...
-HEAD /static/{site}/...
+GET {selected_base_url with site prepended as a subdomain}/...
+HEAD {selected_base_url with site prepended as a subdomain}/...
 ```
 
-Static content uses the same Bearer and Origin/CORS middleware as the rest of LocalGate. Directory listing is disabled and SPA fallback uses `index.html`.
+The control-plane `/static/{site}/...` route is not registered. Application hosts bypass control-plane Bearer/CORS middleware, so external access control must be enforced by the app ingress or a future deployment access policy. Directory listing is disabled and SPA fallback uses the configured site index.
 
 ### Deployment overview page
 
 ```http
-GET /deploys
+GET {public_base_url}/deploys
+GET {private_base_url}/deploys
 ```
 
-The read-only HTML overview lists static and dynamic deployments in name order and links to each public deployment URL. The page reads static and dynamic deployments through the unified `deployment.Manager` and does not create tasks, approvals, or audit events.
+Each read-only HTML overview is mounted on its matching deployment listener and lists only deployments with that access level. The control listener does not expose `/deploys`. The pages read static and dynamic deployments through the unified `deployment.Manager` and do not create tasks, approvals, or audit events.
 
 ### Dynamic web deployments
 
-When `dynamic_hosting.enabled=true`, `deploy_tool` accepts `type=dynamic` with a runtime argv, relative cwd, allowlisted environment, health path, and restart policy. The HTTP LocalGate process supervises the application, assigns a loopback port, waits for health, and publishes it through `{name}.{app_domain}`.
+When `deployments.dynamic.enabled=true`, `deploy_tool` accepts `type=dynamic` with a runtime argv, relative cwd, allowlisted environment, health path, and restart policy. The HTTP LocalGate process supervises the application, assigns a loopback port, waits for health, and publishes it by prepending `{name}` as a single subdomain label to the selected public/private base URL host.
 
 Dynamic lifecycle tools are `get_deployment`, `restart_deployment`, `get_deployment_logs`, `stop_deployment`, `start_deployment`, `list_deployment_releases`, and `rollback_deployment`. Managed releases include metadata, retention, history, health-checked rollback, rotating logs, lifecycle audit events, and partial-success cleanup warnings.
 
-Control-plane Bearer/CORS middleware only runs for exact `dynamic_hosting.control_hosts`. Application hosts bypass LocalGate control authentication and proxy all paths to the registered application. Unknown hosts return 404.
+Control-plane Bearer/CORS middleware only runs for the exact Host derived from `http.base_url`. Application hosts bypass LocalGate control authentication and proxy all paths to the registered application. Unknown hosts return 404.
 
 ## Deployment safety
 

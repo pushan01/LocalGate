@@ -6,77 +6,102 @@ import (
 	"testing"
 )
 
-func TestHostRouterSeparatesControlAndApplicationHosts(t *testing.T) {
-	control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestControlHostBoundaryAllowsOnlyControlAndAdminHosts(t *testing.T) {
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Route", "control")
 		w.WriteHeader(http.StatusOK)
 	})
-	application := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Route", "application")
-		w.Header().Set("X-Path", r.URL.Path)
-		w.WriteHeader(http.StatusAccepted)
-	})
-	router := newHostRouter(control, HostRoutingOptions{
-		Enabled: true, ControlHosts: []string{"control.example.test"},
-		AppDomain: "example.test", AppHandler: application,
-	})
+	handler := newControlHostBoundary(control, "https://control.example.test", "https://admin.example.test", "127.0.0.1:2525")
 
-	controlReq := httptest.NewRequest(http.MethodGet, "http://control.example.test/tasks", nil)
-	controlReq.Host = "CONTROL.EXAMPLE.TEST:80"
-	controlW := httptest.NewRecorder()
-	router.ServeHTTP(controlW, controlReq)
-	if controlW.Code != http.StatusOK || controlW.Header().Get("X-Route") != "control" {
-		t.Fatalf("control route: code=%d headers=%v", controlW.Code, controlW.Header())
+	cases := []struct {
+		url  string
+		want int
+	}{
+		{"https://control.example.test/tasks", http.StatusOK},
+		{"https://demo.apps.example.test/tasks", http.StatusNotFound},
+		{"https://admin.example.test/admin/history", http.StatusOK},
+		{"https://admin.example.test/tasks", http.StatusNotFound},
+		{"https://control.example.test/admin/history", http.StatusNotFound},
 	}
-
-	appReq := httptest.NewRequest(http.MethodGet, "http://blog.example.test/tasks", nil)
-	appReq.Host = "blog.example.test"
-	appReq.Header.Set("X-Forwarded-Host", "control.example.test")
-	appW := httptest.NewRecorder()
-	router.ServeHTTP(appW, appReq)
-	if appW.Code != http.StatusAccepted || appW.Header().Get("X-Route") != "application" || appW.Header().Get("X-Path") != "/tasks" {
-		t.Fatalf("application route: code=%d headers=%v", appW.Code, appW.Header())
-	}
-
-	unknownReq := httptest.NewRequest(http.MethodGet, "http://unknown.invalid/", nil)
-	unknownW := httptest.NewRecorder()
-	router.ServeHTTP(unknownW, unknownReq)
-	if unknownW.Code != http.StatusNotFound {
-		t.Fatalf("unknown host: %d", unknownW.Code)
-	}
-
-	nestedReq := httptest.NewRequest(http.MethodGet, "http://a.b.example.test/", nil)
-	nestedW := httptest.NewRecorder()
-	router.ServeHTTP(nestedW, nestedReq)
-	if nestedW.Code != http.StatusNotFound {
-		t.Fatalf("nested app host should be rejected: %d", nestedW.Code)
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("GET %s: got %d want %d", tc.url, w.Code, tc.want)
+		}
 	}
 }
 
-func TestHostRouterAppliesBearerOnlyToControlPlane(t *testing.T) {
-	controlMux := http.NewServeMux()
-	controlMux.HandleFunc("/secure", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	control := wrapBearerAuth(controlMux, AuthOptions{Enabled: true, BearerToken: "secret"})
-	application := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	router := newHostRouter(control, HostRoutingOptions{
-		Enabled: true, ControlHosts: []string{"control.example.test"},
-		AppDomain: "example.test", AppHandler: application,
-	})
+func TestControlHostBoundaryPreservesBearerAuthentication(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/secure", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	control := wrapBearerAuth(mux, AuthOptions{Enabled: true, BearerToken: "secret"})
+	handler := newControlHostBoundary(control, "https://control.example.test", "", "127.0.0.1:2525")
 
-	controlReq := httptest.NewRequest(http.MethodGet, "http://control.example.test/secure", nil)
-	controlReq.Host = "control.example.test"
-	controlW := httptest.NewRecorder()
-	router.ServeHTTP(controlW, controlReq)
-	if controlW.Code != http.StatusUnauthorized {
-		t.Fatalf("expected control auth, got %d", controlW.Code)
+	unauthorized := httptest.NewRequest(http.MethodGet, "https://control.example.test/secure", nil)
+	unauthorizedW := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorizedW, unauthorized)
+	if unauthorizedW.Code != http.StatusUnauthorized {
+		t.Fatalf("expected bearer authentication, got %d", unauthorizedW.Code)
 	}
 
-	appReq := httptest.NewRequest(http.MethodGet, "http://app.example.test/secure", nil)
-	appReq.Host = "app.example.test"
-	appW := httptest.NewRecorder()
-	router.ServeHTTP(appW, appReq)
-	if appW.Code != http.StatusNoContent {
-		t.Fatalf("application host should bypass control bearer auth, got %d", appW.Code)
+	appHost := httptest.NewRequest(http.MethodGet, "https://demo.apps.example.test/secure", nil)
+	appHost.Header.Set("Authorization", "Bearer secret")
+	appHostW := httptest.NewRecorder()
+	handler.ServeHTTP(appHostW, appHost)
+	if appHostW.Code != http.StatusNotFound {
+		t.Fatalf("application host must not reach the control handler, got %d", appHostW.Code)
+	}
+}
+
+func TestControlHostBoundaryAllowsSharedControlAndAdminHost(t *testing.T) {
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	handler := newControlHostBoundary(control, "https://control.example.test", "https://control.example.test", "127.0.0.1:2525")
+	for _, path := range []string{"/approval-ui", "/tasks"} {
+		req := httptest.NewRequest(http.MethodGet, "https://control.example.test"+path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("shared host path %s: %d", path, w.Code)
+		}
+	}
+}
+
+func TestControlHostBoundaryAllowsLoopbackOnlyForMCPOnControlPort(t *testing.T) {
+	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Route", "control")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := newControlHostBoundary(control, "https://control.example.test", "https://admin.example.test", "127.0.0.1:2525")
+
+	allowed := []string{
+		"http://localhost:2525/mcp",
+		"http://127.0.0.1:2525/mcp",
+		"http://[::1]:2525/mcp",
+	}
+	for _, target := range allowed {
+		req := httptest.NewRequest(http.MethodPost, target, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || w.Header().Get("X-Route") != "control" {
+			t.Fatalf("loopback MCP request %s: code=%d headers=%v", target, w.Code, w.Header())
+		}
+	}
+
+	rejected := []string{
+		"http://localhost:2526/mcp",
+		"http://127.0.0.1:2526/mcp",
+		"http://localhost:2525/tasks",
+		"http://localhost:2525/admin/",
+	}
+	for _, target := range rejected {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound || w.Header().Get("X-Route") != "" {
+			t.Fatalf("loopback request %s must remain isolated: code=%d headers=%v", target, w.Code, w.Header())
+		}
 	}
 }
 
@@ -97,87 +122,4 @@ func FuzzNormalizeRequestHost(f *testing.F) {
 			t.Fatalf("normalization is not idempotent: %q -> %q", raw, host)
 		}
 	})
-}
-
-func TestHostRouterRestrictsLegacyApprovalRoutesToAdminHost(t *testing.T) {
-	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("X-Route", "control")
-		w.WriteHeader(http.StatusOK)
-	})
-	router := newHostRouter(control, HostRoutingOptions{
-		Enabled: true, ControlHosts: []string{"control.example.test"},
-		AppDomain: "apps.example.test", AppHandler: http.NotFoundHandler(),
-		AdminBaseURL: "https://admin.example.test",
-	})
-
-	approvalReq := httptest.NewRequest(http.MethodGet, "https://admin.example.test/approval-ui", nil)
-	approvalW := httptest.NewRecorder()
-	router.ServeHTTP(approvalW, approvalReq)
-	if approvalW.Code != http.StatusOK || approvalW.Header().Get("X-Route") != "control" {
-		t.Fatalf("admin host route: code=%d headers=%v", approvalW.Code, approvalW.Header())
-	}
-
-	wrongHostReq := httptest.NewRequest(http.MethodGet, "https://control.example.test/approvals", nil)
-	wrongHostW := httptest.NewRecorder()
-	router.ServeHTTP(wrongHostW, wrongHostReq)
-	if wrongHostW.Code != http.StatusNotFound {
-		t.Fatalf("management route on control host should be hidden: %d", wrongHostW.Code)
-	}
-
-	approvalHostControlReq := httptest.NewRequest(http.MethodGet, "https://admin.example.test/tasks", nil)
-	approvalHostControlW := httptest.NewRecorder()
-	router.ServeHTTP(approvalHostControlW, approvalHostControlReq)
-	if approvalHostControlW.Code != http.StatusNotFound {
-		t.Fatalf("non-management route on dedicated admin host should be hidden: %d", approvalHostControlW.Code)
-	}
-}
-
-func TestHostRouterRestrictsAdminRoutesToAdminHost(t *testing.T) {
-	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("X-Route", "control")
-		w.WriteHeader(http.StatusOK)
-	})
-	router := newHostRouter(control, HostRoutingOptions{
-		Enabled: true, ControlHosts: []string{"control.example.test"},
-		AppDomain: "apps.example.test", AppHandler: http.NotFoundHandler(),
-		AdminBaseURL: "https://admin.example.test",
-	})
-
-	adminReq := httptest.NewRequest(http.MethodGet, "https://admin.example.test/admin/history", nil)
-	adminW := httptest.NewRecorder()
-	router.ServeHTTP(adminW, adminReq)
-	if adminW.Code != http.StatusOK || adminW.Header().Get("X-Route") != "control" {
-		t.Fatalf("admin host route: code=%d headers=%v", adminW.Code, adminW.Header())
-	}
-
-	wrongHostReq := httptest.NewRequest(http.MethodGet, "https://control.example.test/api/admin/v1/tasks", nil)
-	wrongHostW := httptest.NewRecorder()
-	router.ServeHTTP(wrongHostW, wrongHostReq)
-	if wrongHostW.Code != http.StatusNotFound {
-		t.Fatalf("admin route on control host should be hidden: %d", wrongHostW.Code)
-	}
-
-	foreignReq := httptest.NewRequest(http.MethodGet, "https://admin.example.test/mcp", nil)
-	foreignW := httptest.NewRecorder()
-	router.ServeHTTP(foreignW, foreignReq)
-	if foreignW.Code != http.StatusNotFound {
-		t.Fatalf("admin host must not expose control routes: %d", foreignW.Code)
-	}
-}
-
-func TestHostRouterAllowsSharedControlAndAdminHost(t *testing.T) {
-	control := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	router := newHostRouter(control, HostRoutingOptions{
-		Enabled: true, ControlHosts: []string{"control.example.test"},
-		AppDomain: "apps.example.test", AppHandler: http.NotFoundHandler(),
-		AdminBaseURL: "https://control.example.test",
-	})
-	for _, path := range []string{"/approval-ui", "/tasks"} {
-		req := httptest.NewRequest(http.MethodGet, "https://control.example.test"+path, nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("shared host path %s: %d", path, w.Code)
-		}
-	}
 }

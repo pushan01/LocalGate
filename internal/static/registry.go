@@ -13,6 +13,7 @@ const defaultRegistryPath = ".localgate/static/sites.json"
 
 type Site struct {
 	Path      string            `json:"path"`
+	Access    string            `json:"access,omitempty"`
 	SPA       bool              `json:"spa"`
 	Index     string            `json:"index"`
 	Headers   map[string]string `json:"headers"`

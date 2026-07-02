@@ -210,7 +210,7 @@ func (s *Service) RunFromStatePath(statePath string) error {
 	if err := s.updateStatus(st.ID, StatusHealthChecking, "waiting for new daemon to accept connections"); err != nil {
 		return err
 	}
-	if err := waitForBind(st.Runtime.Bind, 15*time.Second); err != nil {
+	if err := waitForRuntimeBinds(st.Runtime, 15*time.Second); err != nil {
 		return s.rollback(st.ID, newPID, fmt.Errorf("new daemon health check failed: %w", err))
 	}
 
@@ -243,7 +243,7 @@ func (s *Service) rollback(id string, newPID int, cause error) error {
 	if err != nil {
 		return s.failAndRelease(id, "rollback restart failed", err)
 	}
-	if err := waitForBind(st.Runtime.Bind, 15*time.Second); err != nil {
+	if err := waitForRuntimeBinds(st.Runtime, 15*time.Second); err != nil {
 		return s.failAndRelease(id, "rollback health check failed", err)
 	}
 	_, err = s.store.Update(id, func(state *State) error {
@@ -353,13 +353,16 @@ func (s *Service) targetBinary() string {
 func runtimeEnv(rt config.Runtime) []string {
 	env := os.Environ()
 	pairs := map[string]string{
-		"LOCALGATE_RUNTIME_MODE":     rt.Mode,
-		"LOCALGATE_RUNTIME_BIN":      rt.Bin,
-		"LOCALGATE_RUNTIME_CONFIG":   rt.ConfigPath,
-		"LOCALGATE_RUNTIME_BIND":     rt.Bind,
-		"LOCALGATE_RUNTIME_PID_FILE": rt.PIDFile,
-		"LOCALGATE_RUNTIME_LOG_FILE": rt.LogFile,
-		"LOCALGATE_RUNTIME_RUN_DIR":  rt.RunDir,
+		"LOCALGATE_RUNTIME_MODE":                    rt.Mode,
+		"LOCALGATE_RUNTIME_BIN":                     rt.Bin,
+		"LOCALGATE_RUNTIME_CONFIG":                  rt.ConfigPath,
+		"LOCALGATE_RUNTIME_BIND":                    rt.Bind,
+		"LOCALGATE_RUNTIME_ADMIN_BIND":              rt.AdminBind,
+		"LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND":  rt.PublicDeploymentBind,
+		"LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND": rt.PrivateDeploymentBind,
+		"LOCALGATE_RUNTIME_PID_FILE":                rt.PIDFile,
+		"LOCALGATE_RUNTIME_LOG_FILE":                rt.LogFile,
+		"LOCALGATE_RUNTIME_RUN_DIR":                 rt.RunDir,
 	}
 	for k, v := range pairs {
 		env = append(env, k+"="+v)
@@ -440,6 +443,28 @@ func pidAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil
+}
+
+func waitForRuntimeBinds(runtime config.Runtime, timeout time.Duration) error {
+	if err := waitForBind(runtime.Bind, timeout); err != nil {
+		return fmt.Errorf("control bind %s: %w", runtime.Bind, err)
+	}
+	if strings.TrimSpace(runtime.AdminBind) != "" {
+		if err := waitForBind(runtime.AdminBind, timeout); err != nil {
+			return fmt.Errorf("admin bind %s: %w", runtime.AdminBind, err)
+		}
+	}
+	if strings.TrimSpace(runtime.PublicDeploymentBind) != "" {
+		if err := waitForBind(runtime.PublicDeploymentBind, timeout); err != nil {
+			return fmt.Errorf("public deployment bind %s: %w", runtime.PublicDeploymentBind, err)
+		}
+	}
+	if strings.TrimSpace(runtime.PrivateDeploymentBind) != "" {
+		if err := waitForBind(runtime.PrivateDeploymentBind, timeout); err != nil {
+			return fmt.Errorf("private deployment bind %s: %w", runtime.PrivateDeploymentBind, err)
+		}
+	}
+	return nil
 }
 
 func waitForBind(bind string, timeout time.Duration) error {

@@ -10,7 +10,7 @@
 
 LocalGate 当前存在多套分散的管理入口：
 
-- `/deploys`：只读部署列表页面
+- public/private 根域上的 `/deploys`：按 access 分开的只读部署列表页面
 - `/deploy-mgr`：部署管理页面
 - `/approval-ui`：审批列表和审批详情页面
 - `/audits`：审计 JSON 查询接口
@@ -829,7 +829,7 @@ CI 中分别执行前端检查和 Go 检查，避免每次 `go build` 隐式执�
 /approval-ui          -> /admin/approvals
 /approval-ui/{id}     -> /admin/approvals/{id}
 /deploy-mgr           -> /admin/deployments
-/deploys              -> /admin/deployments
+public/private /deploys remain read-only access-specific lists
 ```
 
 旧审批和部署 POST 路由保留一个兼容版本，已有链接和客户端仍可工作。新前端不再调用这些路由。

@@ -14,9 +14,9 @@ import (
 )
 
 type deploymentOverviewItem struct {
-	Type, Name, URL, Status, Index, Hostname, Health, ReleaseID, UpdatedAt string
-	SPA, CanStop, CanStart                                                 bool
-	StopURL, StartURL, DeleteURL                                           string
+	Type, Name, URL, Access, Status, Index, Hostname, Health, ReleaseID, UpdatedAt string
+	SPA, CanStop, CanStart                                                         bool
+	StopURL, StartURL, DeleteURL, AccessURL, AccessLabel                           string
 }
 
 type deploymentOverviewView struct {
@@ -36,8 +36,9 @@ var deploymentOverviewTemplate = template.Must(template.New("deployment-overview
 {{if .Notice}}<div class="notice {{.NoticeKind}}" role="status">{{.Notice}}</div>{{end}}
 {{if .Deployments}}<section class="grid">{{range .Deployments}}<article class="card">
 <div class="card-top"><span class="type">{{.Type}}</span><span class="status {{.Status}}">{{.Status}}</span></div><h2 class="name">{{.Name}}</h2><dl>
-{{if eq .Type "static"}}<dt>Index</dt><dd>{{.Index}}</dd><dt>SPA</dt><dd>{{if .SPA}}Enabled{{else}}Disabled{{end}}</dd>{{else}}<dt>Health</dt><dd>{{.Health}}</dd><dt>Hostname</dt><dd>{{.Hostname}}</dd><dt>Release</dt><dd>{{.ReleaseID}}</dd>{{end}}<dt>Updated</dt><dd>{{.UpdatedAt}}</dd><dt>URL</dt><dd>{{.URL}}</dd></dl>
+{{if eq .Type "static"}}<dt>Index</dt><dd>{{.Index}}</dd><dt>SPA</dt><dd>{{if .SPA}}Enabled{{else}}Disabled{{end}}</dd>{{else}}<dt>Health</dt><dd>{{.Health}}</dd><dt>Hostname</dt><dd>{{.Hostname}}</dd><dt>Release</dt><dd>{{.ReleaseID}}</dd>{{end}}<dt>Access</dt><dd>{{.Access}}</dd><dt>Updated</dt><dd>{{.UpdatedAt}}</dd><dt>URL</dt><dd>{{.URL}}</dd></dl>
 <div class="actions"><a class="button primary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Open deployment</a>
+<form method="post" action="{{.AccessURL}}"><button class="button" type="submit">{{.AccessLabel}}</button></form>
 {{if .CanStop}}<form method="post" action="{{.StopURL}}"><button class="button stop" type="submit">Stop service</button></form>{{end}}
 {{if .CanStart}}<form method="post" action="{{.StartURL}}"><button class="button start" type="submit">Start service</button></form>{{end}}
 <details><summary>Delete deployment</summary><div class="danger"><span>Remove the deployment and published files. Approval may be required.</span><form method="post" action="{{.DeleteURL}}"><input type="hidden" name="confirm" value="delete"><button class="button delete" type="submit">Delete permanently</button></form></div></details></div>
@@ -77,13 +78,15 @@ func (a *API) handleDeploymentOverview(w http.ResponseWriter, r *http.Request) {
 		canStart := isDynamic && (item.Status == "stopped" || item.Status == "failed")
 		canStop := isDynamic && !canStart && item.Status != "deleting" && item.Status != "stopping"
 		items = append(items, deploymentOverviewItem{
-			Type: item.Type, Name: item.Site, URL: item.URL, Status: item.Status,
+			Type: item.Type, Name: item.Site, URL: item.URL, Access: item.Access, Status: item.Status,
 			Index: item.Index, SPA: item.SPA, Hostname: item.Hostname, Health: item.Health,
 			ReleaseID: item.ReleaseID, UpdatedAt: item.UpdatedAt,
 			CanStop: canStop, CanStart: canStart,
-			StopURL:   deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "stop"),
-			StartURL:  deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "start"),
-			DeleteURL: deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "delete"),
+			StopURL:     deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "stop"),
+			StartURL:    deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "start"),
+			DeleteURL:   deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, "delete"),
+			AccessURL:   deploymentActionURL(a.App.Admin.BaseURL, item.Type, item.Site, map[bool]string{true: "set-public", false: "set-private"}[item.Access == deployment.AccessPrivate]),
+			AccessLabel: map[bool]string{true: "Make public", false: "Make private"}[item.Access == deployment.AccessPrivate],
 		})
 	}
 	setDeploymentManagementHeaders(w)
@@ -159,6 +162,8 @@ func (a *API) handleDeploymentManagementAction(w http.ResponseWriter, r *http.Re
 			return
 		}
 		tool = "start_deployment"
+	case "set-public", "set-private":
+		tool = "set_deployment_access"
 	default:
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
@@ -170,7 +175,15 @@ func (a *API) handleDeploymentManagementAction(w http.ResponseWriter, r *http.Re
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
 		Transport: invocation.TransportAdmin, WorkspaceID: a.DefaultWSID, Requester: requester,
-	}, tool, map[string]any{"type": deploymentType, "name": name})
+	}, tool, func() map[string]any {
+		args := map[string]any{"type": deploymentType, "name": name}
+		if action == "set-public" {
+			args["access"] = deployment.AccessPublic
+		} else if action == "set-private" {
+			args["access"] = deployment.AccessPrivate
+		}
+		return args
+	}())
 	if err != nil {
 		a.redirectDeploymentManagement(w, r, "error", "Operation failed: "+err.Error())
 		return

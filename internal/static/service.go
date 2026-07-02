@@ -33,6 +33,7 @@ type Limits struct {
 type DeployOptions struct {
 	Overwrite    bool
 	RemoveSource bool
+	Access       string
 }
 
 type Deployment struct {
@@ -260,6 +261,7 @@ func (s *Service) DeploySiteWithOptions(ctx context.Context, name, source string
 	}
 	site := Site{
 		Path:      destination,
+		Access:    options.Access,
 		SPA:       true,
 		Index:     indexFile,
 		Headers:   map[string]string{},
@@ -380,6 +382,29 @@ func (s *Service) GetSite(name string) (Site, bool) {
 	}
 	site, ok := registry.Sites[name]
 	return site, ok
+}
+
+func (s *Service) SetAccess(name, access string) (Site, error) {
+	if s == nil || s.registry == nil {
+		return Site{}, errors.New("static service is not initialized")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registry, err := s.registry.Load()
+	if err != nil {
+		return Site{}, err
+	}
+	site, ok := registry.Sites[name]
+	if !ok {
+		return Site{}, errors.New("site not found")
+	}
+	site.Access = access
+	site.UpdatedAt = Now()
+	registry.Sites[name] = site
+	if err := s.registry.Save(registry); err != nil {
+		return Site{}, err
+	}
+	return site, nil
 }
 
 func (s *Service) ListSites() (*Registry, error) {

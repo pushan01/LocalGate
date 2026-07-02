@@ -50,12 +50,14 @@ func TestDynamicLifecycleEventsAreAudited(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.Enabled = false
-	cfg.DynamicHosting.Enabled = true
-	cfg.DynamicHosting.ControlHosts = []string{"control.test"}
-	cfg.DynamicHosting.AppDomain = "apps.test"
-	cfg.DynamicHosting.AllowedExecutables = []string{executable}
-	cfg.DynamicHosting.EnvAllowlist = []string{"LOCALGATE_APP_DYNAMIC_HELPER"}
-	cfg.DynamicHosting.RestartPolicy = "never"
+	cfg.Deployments.Dynamic.Enabled = true
+	cfg.HTTP.BaseURL = "https://control.test"
+	cfg.Deployments.PublicBaseURL = "https://apps.test"
+	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
+	cfg.Deployments.DefaultAccess = "public"
+	cfg.Deployments.Dynamic.AllowedExecutables = []string{executable}
+	cfg.Deployments.Dynamic.EnvAllowlist = []string{"LOCALGATE_APP_DYNAMIC_HELPER"}
+	cfg.Deployments.Dynamic.RestartPolicy = "never"
 	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
 	a, err := New(cfg)
 	if err != nil {
@@ -118,7 +120,11 @@ func TestGlobalApprovalSwitchBypassesDeployApproval(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.Enabled = false
-	cfg.StaticHosting.RequireApproval = true
+	cfg.Deployments.Static.RequireApproval = true
+	cfg.Deployments.PublicBaseURL = "https://apps.test"
+	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
+	cfg.Deployments.DefaultAccess = "public"
+	cfg.HTTP.BaseURL = "https://control.test"
 	cfg.Workspaces = []config.Workspace{{
 		ID:    "ws",
 		Roots: []string{workspaceRoot},
@@ -175,7 +181,11 @@ func TestDeleteDeploymentRequiresApproval(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.Enabled = true
-	cfg.StaticHosting.RequireApproval = true
+	cfg.Deployments.Static.RequireApproval = true
+	cfg.Deployments.PublicBaseURL = "https://apps.test"
+	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
+	cfg.Deployments.DefaultAccess = "public"
+	cfg.HTTP.BaseURL = "https://control.test"
 	cfg.Workspaces = []config.Workspace{{
 		ID:    "ws",
 		Roots: []string{workspaceRoot},
@@ -215,11 +225,13 @@ func TestDynamicDeploymentRequiresCriticalApproval(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
-	cfg.StaticHosting.RequireApproval = false
-	cfg.DynamicHosting.Enabled = true
-	cfg.DynamicHosting.ControlHosts = []string{"control.example.test"}
-	cfg.DynamicHosting.AppDomain = "apps.example.test"
-	cfg.DynamicHosting.AllowedExecutables = []string{"node"}
+	cfg.Deployments.Static.RequireApproval = false
+	cfg.Deployments.Dynamic.Enabled = true
+	cfg.HTTP.BaseURL = "https://control.example.test"
+	cfg.Deployments.PublicBaseURL = "https://apps.example.test"
+	cfg.Deployments.PrivateBaseURL = "https://private.apps.example.test"
+	cfg.Deployments.DefaultAccess = "public"
+	cfg.Deployments.Dynamic.AllowedExecutables = []string{"node"}
 	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
 	a, err := New(cfg)
 	if err != nil {

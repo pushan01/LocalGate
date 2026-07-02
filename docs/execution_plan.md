@@ -1064,7 +1064,7 @@ type Decision struct {
 **21D：当前规则能力**
 
 - 已实现有序、首条命中的工具级规则：`allow`、`deny`、`require_approval`，支持 `id`、`tools` 和 `risk`；`localgate.yaml` 已加入正式示例。
-- 保留 `static_hosting.require_approval` 和 workspace `approval_policy.commands/write_paths` 作为无全局规则命中时的兼容兜底。
+- 保留 `deployments.static.require_approval` 和 workspace `approval_policy.commands/write_paths` 作为无全局规则命中时的兼容兜底。
 - 尚未实现基于规范化 facts 的 `when` 条件、policy version、幂等键、pending 去重和有限范围 grant；这些仍属于后续增强，不应标记为 Step 21D 全量完成。
 
 **验收**

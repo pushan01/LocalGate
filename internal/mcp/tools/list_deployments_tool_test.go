@@ -22,7 +22,7 @@ func TestListDeploymentsToolReturnsSortedDeployments(t *testing.T) {
 		}
 	}
 
-	tool := NewListDeploymentsTool(service, "https://example.test/root/")
+	tool := NewListDeploymentsTool(service, "https://apps.example.test/")
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("list deployments: %v", err)
@@ -38,7 +38,7 @@ func TestListDeploymentsToolReturnsSortedDeployments(t *testing.T) {
 	if items[0]["site"] != "alpha" || items[1]["site"] != "zeta" {
 		t.Fatalf("deployments should be sorted: %#v", items)
 	}
-	if items[0]["url"] != "https://example.test/root/static/alpha/" {
+	if items[0]["url"] != "https://alpha.apps.example.test/" || items[0]["hostname"] != "alpha.apps.example.test" {
 		t.Fatalf("unexpected public url: %#v", items[0])
 	}
 }

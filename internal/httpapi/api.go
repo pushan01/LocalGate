@@ -45,6 +45,11 @@ type API struct {
 }
 
 func (a *API) Register(mux *http.ServeMux) {
+	a.RegisterAdmin(mux)
+	a.RegisterControl(mux)
+}
+
+func (a *API) RegisterAdmin(mux *http.ServeMux) {
 	if a.App.Admin.Enabled {
 		(&adminapi.API{App: a.App, DefaultWSID: a.DefaultWSID, BaseURL: a.App.Admin.BaseURL}).Register(mux)
 		mux.Handle("/admin", adminui.Handler(a.App.Admin.BaseURL))
@@ -56,14 +61,15 @@ func (a *API) Register(mux *http.ServeMux) {
 		mux.HandleFunc("/deploy-mgr", a.handleDeploymentOverview)
 		mux.HandleFunc("/deploy-mgr/", a.handleDeploymentOverview)
 	}
+}
+
+func (a *API) RegisterControl(mux *http.ServeMux) {
 	mux.HandleFunc("/tools", a.handleTools)
 	mux.HandleFunc("/tools/", a.handleToolRoutes)
 	mux.HandleFunc("/tasks", a.handleTasks)
 	mux.HandleFunc("/tasks/", a.handleTaskRoutes)
 	mux.HandleFunc("/sessions/exec", a.handleSessionExec)
 	mux.HandleFunc("/sessions/", a.handleSessionRoutes)
-	mux.HandleFunc("/deploys", a.handleDeploymentList)
-	mux.HandleFunc("/deploys/", a.handleDeploymentList)
 	mux.HandleFunc("/audits", a.handleAuditQuery)
 	mux.HandleFunc("/system/downloads", a.handleDownloads)
 	mux.HandleFunc("/system/uploads", a.handleUploads)

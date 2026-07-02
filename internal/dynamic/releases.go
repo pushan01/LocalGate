@@ -71,7 +71,7 @@ func (s *Service) Rollback(ctx context.Context, name, releaseID string) (View, e
 		return View{}, &CodedError{Code: "deployment_not_found", Err: ErrNotFound}
 	}
 	if deployment.ActiveRelease == releaseID && alreadyRunning {
-		return deployment.PublicView(), nil
+		return s.publicView(deployment), nil
 	}
 	releaseRoot := filepath.Join(s.root, "apps", name, "releases", releaseID, "source")
 	if !withinRoot(releaseRoot, s.root) {
@@ -118,5 +118,5 @@ func (s *Service) Rollback(ctx context.Context, name, releaseID string) (View, e
 	}
 	s.emit(ctx, "deployment_rolled_back", candidate, nil, map[string]any{"from_release": deployment.ActiveRelease})
 	go s.monitor(name, proc)
-	return candidate.PublicView(), nil
+	return s.publicView(candidate), nil
 }

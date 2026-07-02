@@ -8,9 +8,7 @@ import (
 	"strings"
 )
 
-const PublicPathPrefix = "/static/"
-
-func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Service) ServeSite(name string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -19,13 +17,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "static service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if !strings.HasPrefix(r.URL.Path, PublicPathPrefix) {
-		http.NotFound(w, r)
-		return
-	}
-	remainder := strings.TrimPrefix(r.URL.Path, PublicPathPrefix)
-	parts := strings.SplitN(remainder, "/", 2)
-	name := parts[0]
 	if err := validateSiteName(name); err != nil {
 		http.NotFound(w, r)
 		return
@@ -48,10 +39,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	relative := ""
-	if len(parts) == 2 {
-		relative = filepath.FromSlash(parts[1])
-	}
+	relative := filepath.FromSlash(strings.TrimLeft(r.URL.Path, "/"))
 	target := filepath.Join(rootResolved, relative)
 	if !withinRoot(target, rootResolved) {
 		http.NotFound(w, r)

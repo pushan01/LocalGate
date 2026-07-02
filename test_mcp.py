@@ -1,7 +1,7 @@
 import json
 import requests
 
-BASE_URL = "http://127.0.0.1:8000/mcp"
+BASE_URL = "http://127.0.0.1:2525/mcp"
 
 def mcp_post(session: requests.Session, payload: dict):
     resp = session.post(

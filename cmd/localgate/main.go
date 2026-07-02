@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -25,13 +26,16 @@ var Version = "dev"
 
 func main() {
 	var (
-		configPath = flag.String("config", "./localgate.yaml", "config file path")
-		bind       = flag.String("bind", "", "override bind address")
-		printCfg   = flag.Bool("print-config", false, "print loaded config summary and exit")
-		mcpMode    = flag.Bool("mcp", false, "run MCP stdio server")
-		showVer    = flag.Bool("version", false, "print version and exit")
-		upgradeRun = flag.Bool("upgrade-runner", false, "internal detached upgrade runner")
-		upgradeSt  = flag.String("upgrade-state", "", "internal upgrade state file")
+		configPath             = flag.String("config", "./localgate.yaml", "config file path")
+		bind                   = flag.String("bind", "", "override control-plane bind address")
+		adminBind              = flag.String("admin-bind", "", "override admin service bind address")
+		publicDeploymentsBind  = flag.String("public-deployments-bind", "", "override public deployments bind address")
+		privateDeploymentsBind = flag.String("private-deployments-bind", "", "override private deployments bind address")
+		printCfg               = flag.Bool("print-config", false, "print loaded config summary and exit")
+		mcpMode                = flag.Bool("mcp", false, "run MCP stdio server")
+		showVer                = flag.Bool("version", false, "print version and exit")
+		upgradeRun             = flag.Bool("upgrade-runner", false, "internal detached upgrade runner")
+		upgradeSt              = flag.String("upgrade-state", "", "internal upgrade state file")
 	)
 	flag.Parse()
 
@@ -61,9 +65,12 @@ func main() {
 	}
 
 	cfg, err := config.Load(config.LoadOptions{
-		Path:         *configPath,
-		PathProvided: flag.Lookup("config") != nil && *configPath != "./localgate.yaml",
-		Bind:         *bind,
+		Path:                   *configPath,
+		PathProvided:           flag.Lookup("config") != nil && *configPath != "./localgate.yaml",
+		Bind:                   *bind,
+		AdminBind:              *adminBind,
+		PublicDeploymentsBind:  *publicDeploymentsBind,
+		PrivateDeploymentsBind: *privateDeploymentsBind,
 	})
 	if err != nil {
 		logger.Error("failed to load config", "err", err)
@@ -71,6 +78,15 @@ func main() {
 	}
 	if cfg.Runtime.Bind == "" {
 		cfg.Runtime.Bind = cfg.Bind
+	}
+	if cfg.Runtime.AdminBind == "" && cfg.Admin.Enabled {
+		cfg.Runtime.AdminBind = cfg.Admin.Bind
+	}
+	if cfg.Runtime.PublicDeploymentBind == "" && cfg.Deployments.PublicBaseURL != "" {
+		cfg.Runtime.PublicDeploymentBind = cfg.Deployments.PublicBind
+	}
+	if cfg.Runtime.PrivateDeploymentBind == "" && cfg.Deployments.PrivateBaseURL != "" {
+		cfg.Runtime.PrivateDeploymentBind = cfg.Deployments.PrivateBind
 	}
 	if cfg.Runtime.ConfigPath == "" {
 		cfg.Runtime.ConfigPath = *configPath
@@ -114,12 +130,7 @@ func main() {
 	}
 
 	api := &httpapi.API{App: application, DefaultWSID: application.DefaultWSID}
-	adminBaseURL := ""
-	if cfg.Admin.Enabled {
-		adminBaseURL = cfg.Admin.BaseURL
-	}
-
-	srv := server.New(server.Options{
+	controlSrv := server.New(server.Options{
 		Bind:    cfg.Bind,
 		Version: Version,
 		Auth: server.AuthOptions{
@@ -127,21 +138,13 @@ func main() {
 			BearerToken: cfg.HTTPAuth.BearerToken,
 			AllowPaths:  cfg.HTTPAuth.AllowPaths,
 		},
-		AdminBaseURL:   adminBaseURL,
 		ControlBaseURL: cfg.HTTP.BaseURL,
 		CORS: server.CORSOptions{
 			Enabled:        cfg.HTTP.AllowCORS,
 			AllowedOrigins: cfg.HTTP.AllowedOrigins,
 		},
-		HostRouting: server.HostRoutingOptions{
-			Enabled:      cfg.DynamicHosting.Enabled,
-			ControlHosts: cfg.DynamicHosting.ControlHosts,
-			AppDomain:    cfg.DynamicHosting.AppDomain,
-			AppHandler:   application.DynamicService,
-			AdminBaseURL: adminBaseURL,
-		},
 		Register: func(mux *http.ServeMux) {
-			api.Register(mux)
+			api.RegisterControl(mux)
 			// Mount MCP Streamable-HTTP at /mcp
 			if s, err := mcpgo.New(application, "localgate", Version, application.DefaultWSID); err == nil {
 				s.MountHTTP(mux, "/mcp", mcpgo.HTTPOptions{
@@ -151,22 +154,88 @@ func main() {
 		},
 	})
 
+	var adminSrv *server.Server
+	if cfg.Admin.Enabled {
+		adminSrv = server.NewAdmin(server.AdminOptions{
+			Bind:    cfg.Admin.Bind,
+			BaseURL: cfg.Admin.BaseURL,
+			Auth: server.AuthOptions{
+				Enabled:     cfg.HTTPAuth.Enabled,
+				BearerToken: cfg.HTTPAuth.BearerToken,
+				AllowPaths:  cfg.HTTPAuth.AllowPaths,
+			},
+			CORS: server.CORSOptions{
+				Enabled:        cfg.HTTP.AllowCORS,
+				AllowedOrigins: cfg.HTTP.AllowedOrigins,
+			},
+			Register: func(mux *http.ServeMux) {
+				api.RegisterAdmin(mux)
+			},
+		})
+	}
+
+	var publicDeploymentSrv *server.DeploymentServer
+	var privateDeploymentSrv *server.DeploymentServer
+	if application.DeploymentManager.AppHostingEnabled() {
+		publicDeploymentSrv = server.NewDeployment(server.DeploymentOptions{
+			Bind:    cfg.Deployments.PublicBind,
+			Handler: application.DeploymentManager.HandlerForAccess("public"),
+		})
+		privateDeploymentSrv = server.NewDeployment(server.DeploymentOptions{
+			Bind:    cfg.Deployments.PrivateBind,
+			Handler: application.DeploymentManager.HandlerForAccess("private"),
+		})
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
+	type serverResult struct {
+		name string
+		err  error
+	}
+	errCh := make(chan serverResult, 4)
 	go func() {
-		errCh <- srv.Start()
+		errCh <- serverResult{name: "control", err: controlSrv.Start()}
 	}()
+	if adminSrv != nil {
+		go func() {
+			errCh <- serverResult{name: "admin", err: adminSrv.Start()}
+		}()
+	}
+	if publicDeploymentSrv != nil {
+		go func() {
+			errCh <- serverResult{name: "public_deployment", err: publicDeploymentSrv.Start()}
+		}()
+	}
+	if privateDeploymentSrv != nil {
+		go func() {
+			errCh <- serverResult{name: "private_deployment", err: privateDeploymentSrv.Start()}
+		}()
+	}
+
+	shutdown := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if adminSrv != nil {
+			_ = adminSrv.Shutdown(shutdownCtx)
+		}
+		if publicDeploymentSrv != nil {
+			_ = publicDeploymentSrv.Shutdown(shutdownCtx)
+		}
+		if privateDeploymentSrv != nil {
+			_ = privateDeploymentSrv.Shutdown(shutdownCtx)
+		}
+		_ = controlSrv.Shutdown(shutdownCtx)
+	}
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	case err := <-errCh:
-		if err != nil {
-			logger.Error("server stopped with error", "err", err)
+		shutdown()
+	case result := <-errCh:
+		shutdown()
+		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			logger.Error("server stopped with error", "server", result.name, "err", result.err)
 			os.Exit(1)
 		}
 	}

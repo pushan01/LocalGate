@@ -54,7 +54,7 @@ func (t applyPatchTool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"patch": map[string]any{
-				"type": "string",
+				"type":        "string",
 				"description": "Patch document. Required envelope: *** Begin Patch ... *** End Patch. Supported file ops: *** Add File: <path>, *** Update File: <path>, *** Delete File: <path>. Add-file contents must use only + lines. Update hunks must start with @@ and then use patch lines prefixed with space (context), - (remove), or + (add). *** End of File is optional. Multiple file ops may appear in one patch and are applied atomically. Example:\n*** Begin Patch\n*** Update File: /abs/path/to/file.txt\n@@\n-old line\n+new line\n*** End Patch",
 			},
 		},

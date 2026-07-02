@@ -88,10 +88,7 @@ func NewService(root string, cfg config.DynamicHosting, workspaces map[string]co
 }
 
 func normalizeConfig(cfg config.DynamicHosting) config.DynamicHosting {
-	defaults := config.Default().DynamicHosting
-	if cfg.PublicScheme == "" {
-		cfg.PublicScheme = defaults.PublicScheme
-	}
+	defaults := config.Default().Deployments.Dynamic
 	if len(cfg.ReservedNames) == 0 {
 		cfg.ReservedNames = append([]string(nil), defaults.ReservedNames...)
 	}
@@ -149,7 +146,11 @@ func normalizeConfig(cfg config.DynamicHosting) config.DynamicHosting {
 	if cfg.MaxResponseHeaderBytes <= 0 {
 		cfg.MaxResponseHeaderBytes = defaults.MaxResponseHeaderBytes
 	}
-	cfg.AppDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(cfg.AppDomain), "."))
+	cfg.PublicBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
+	cfg.PrivateBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PrivateBaseURL), "/")
+	if cfg.DefaultAccess == "" {
+		cfg.DefaultAccess = "private"
+	}
 	return cfg
 }
 
@@ -294,7 +295,6 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 		defer restoreSource()
 	}
 
-	hostname := request.Name + "." + s.config.AppDomain
 	now := nowString()
 	createdAt := now
 	if exists && previous.CreatedAt != "" {
@@ -302,7 +302,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 	}
 	deployment := Deployment{
 		Name: request.Name, Type: Type, WorkspaceID: request.WorkspaceID,
-		Hostname: hostname, URL: s.config.PublicScheme + "://" + hostname + "/",
+		Access:        normalizeAccess(request.Options.Access, s.config.DefaultAccess),
 		ActiveRelease: releaseID, DesiredState: DesiredRunning, Status: StatusStarting, Health: "checking",
 		Argv: append([]string(nil), request.Runtime.Argv...), Executable: executable, WorkingDir: workingDir, Env: environment,
 		HealthPath: healthPath, RestartPolicy: restartPolicy, CreatedAt: createdAt, UpdatedAt: now,
@@ -334,7 +334,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 	s.emit(ctx, "deployment_activated", deployment, nil, nil)
 	rollbackRelease = false
 	restoreSource = func() {}
-	result := DeployResult{Deployment: deployment.PublicView(), SourcePreserved: request.Options.PreserveSource}
+	result := DeployResult{Deployment: s.publicView(deployment), SourcePreserved: request.Options.PreserveSource}
 	if sourceStash != "" {
 		if err := os.RemoveAll(sourceStash); err != nil {
 			deployment.CleanupPending = true
@@ -344,7 +344,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 			if persistErr := s.updateDeployment(deployment); persistErr != nil {
 				return DeployResult{}, errors.Join(errorf("deployment_source_cleanup_failed", "%v", err), persistErr)
 			}
-			result.Deployment = deployment.PublicView()
+			result.Deployment = s.publicView(deployment)
 			result.WarningCode = "deployment_source_cleanup_failed"
 			result.Warning = err.Error()
 			result.CleanupPending = true
@@ -511,7 +511,7 @@ func (s *Service) Stop(ctx context.Context, name string) (View, error) {
 		return View{}, err
 	}
 	s.emit(ctx, "deployment_stopped", deployment, nil, nil)
-	return deployment.PublicView(), nil
+	return s.publicView(deployment), nil
 }
 
 func (s *Service) Start(ctx context.Context, name string) (View, error) {
@@ -582,7 +582,7 @@ func (s *Service) startExistingLocked(ctx context.Context, name string, resetRes
 		return View{}, &CodedError{Code: "deployment_not_found", Err: ErrNotFound}
 	}
 	if alreadyRunning {
-		return deployment.PublicView(), nil
+		return s.publicView(deployment), nil
 	}
 	executable, err := s.executableForDeployment(deployment)
 	if err != nil {
@@ -632,7 +632,7 @@ func (s *Service) startExistingLocked(ctx context.Context, name string, resetRes
 	}
 	s.emit(ctx, "deployment_activated", deployment, nil, nil)
 	go s.monitor(name, proc)
-	return deployment.PublicView(), nil
+	return s.publicView(deployment), nil
 }
 
 func (s *Service) Get(name string) (View, error) {
@@ -642,12 +642,53 @@ func (s *Service) Get(name string) (View, error) {
 	if !ok {
 		return View{}, &CodedError{Code: "deployment_not_found", Err: ErrNotFound}
 	}
-	view := deployment.PublicView()
+	view := s.publicView(deployment)
 	if !s.config.Enabled {
 		view.Status = "disabled"
 		view.Health = "unavailable"
 	}
 	return view, nil
+}
+
+func (s *Service) SetAccess(ctx context.Context, name, access string) (View, error) {
+	if s == nil {
+		return View{}, &CodedError{Code: "deployment_not_found", Err: ErrNotFound}
+	}
+	access = strings.ToLower(strings.TrimSpace(access))
+	if access != "public" && access != "private" {
+		return View{}, errorf("deployment_access_invalid", "access must be public or private")
+	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.mu.RLock()
+	deployment, ok := s.deployments[name]
+	proc := s.processes[name]
+	s.mu.RUnlock()
+	if !ok {
+		return View{}, &CodedError{Code: "deployment_not_found", Err: ErrNotFound}
+	}
+	if normalizeAccess(deployment.Access, "public") == access {
+		return s.publicView(deployment), nil
+	}
+	if proc != nil {
+		if err := terminateProcess(proc, time.Duration(s.config.ShutdownTimeoutSeconds)*time.Second); err != nil {
+			return View{}, errorf("deployment_stop_failed", "%v", err)
+		}
+		s.mu.Lock()
+		if s.processes[name] == proc {
+			delete(s.processes, name)
+		}
+		s.mu.Unlock()
+	}
+	deployment.Access = access
+	deployment.UpdatedAt = nowString()
+	if err := s.updateDeployment(deployment); err != nil {
+		return View{}, err
+	}
+	if proc != nil && deployment.DesiredState == DesiredRunning {
+		return s.startExistingLocked(ctx, name, true)
+	}
+	return s.publicView(deployment), nil
 }
 
 func (s *Service) List() []View {
@@ -660,7 +701,7 @@ func (s *Service) List() []View {
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	out := make([]View, 0, len(values))
 	for _, deployment := range values {
-		view := deployment.PublicView()
+		view := s.publicView(deployment)
 		if !s.config.Enabled {
 			view.Status = "disabled"
 			view.Health = "unavailable"
@@ -904,9 +945,13 @@ func (s *Service) validateName(name string) error {
 			return errorf("deployment_name_invalid", "deployment name is reserved")
 		}
 	}
-	for _, host := range s.config.ControlHosts {
-		if name+"."+s.config.AppDomain == strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), ".")) {
-			return errorf("deployment_host_conflict", "deployment hostname conflicts with a control host")
+	controlHost := appBaseHostname(s.config.ControlBaseURL)
+	if controlHost != "" {
+		for _, baseURL := range []string{s.config.PublicBaseURL, s.config.PrivateBaseURL} {
+			domain := appBaseHostname(baseURL)
+			if domain != "" && name+"."+domain == controlHost {
+				return errorf("deployment_host_conflict", "deployment hostname conflicts with http.base_url")
+			}
 		}
 	}
 	return nil

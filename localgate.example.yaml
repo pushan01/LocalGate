@@ -6,6 +6,7 @@
 # 该模板默认只监听本机、关闭动态托管，并且不包含任何真实凭证。
 # 对外暴露前，请至少检查 http_auth、admin、workspaces 和命令白名单。
 
+# LocalGate 控制面 listener。
 bind: "127.0.0.1:3737"
 max_concurrency: 4
 default_timeout_ms: 600000
@@ -16,7 +17,8 @@ log_store: "./.localgate"
 
 admin:
   enabled: true
-  base_url: "http://127.0.0.1:3737"
+  bind: "127.0.0.1:3739"
+  base_url: "http://127.0.0.1:3739"
   approval:
     enabled: true
     default_ttl_seconds: 600
@@ -119,21 +121,14 @@ http:
   allow_cors: false
   allowed_origins: []
 
-static_hosting:
-  max_files: 10000
-  max_total_bytes: 52428800
-  max_file_bytes: 52428800
-  require_approval: true
+deployments:
+  # public/private 应用面使用独立 listener。
+  public_bind: "127.0.0.1:3738"
+  private_bind: "127.0.0.1:3740"
 
-# 动态应用托管默认关闭。
-# 启用前必须设置 control_hosts、app_domain 和 allowed_executables。
-dynamic_hosting:
-  enabled: false
-  control_hosts:
-    - "control.example.com"
-  app_domain: "apps.example.com"
-  public_scheme: "https"
-  require_approval: true
+  public_base_url: "https://apps.example.com"
+  private_base_url: "https://private-apps.example.com"
+  default_access: "private"
 
   reserved_names:
     - localgate
@@ -146,38 +141,46 @@ dynamic_hosting:
     - approvals
     - static
 
-  # 启用动态托管时，argv[0] 必须匹配这里的绝对路径。
-  allowed_executables:
-    - "/absolute/path/to/node"
-    - "/absolute/path/to/python3"
+  static:
+    max_files: 10000
+    max_total_bytes: 52428800
+    max_file_bytes: 52428800
+    require_approval: true
 
-  # 敏感变量名仍会被额外拒绝。
-  env_allowlist:
-    - NODE_ENV
-    - APP_ENV
-    - PYTHONPATH
+  dynamic:
+    enabled: false
+    require_approval: true
 
-  max_apps: 20
-  max_files: 20000
-  max_total_bytes: 536870912
-  max_file_bytes: 104857600
+    allowed_executables:
+      - "/absolute/path/to/node"
+      - "/absolute/path/to/python3"
 
-  startup_timeout_seconds: 20
-  shutdown_timeout_seconds: 5
-  restart_policy: "on-failure"
-  restart_max_attempts: 3
-  restart_backoff_seconds: 2
-  restart_reset_seconds: 60
+    env_allowlist:
+      - NODE_ENV
+      - APP_ENV
+      - PYTHONPATH
 
-  max_log_bytes: 10485760
-  max_log_files: 3
-  release_retention: 3
+    max_apps: 20
+    max_files: 20000
+    max_total_bytes: 536870912
+    max_file_bytes: 104857600
 
-  max_request_body_bytes: 33554432
-  max_request_header_bytes: 1048576
-  max_concurrent_requests: 100
-  upstream_header_timeout_seconds: 30
-  max_response_header_bytes: 1048576
+    startup_timeout_seconds: 20
+    shutdown_timeout_seconds: 5
+    restart_policy: "on-failure"
+    restart_max_attempts: 3
+    restart_backoff_seconds: 2
+    restart_reset_seconds: 60
+
+    max_log_bytes: 10485760
+    max_log_files: 3
+    release_retention: 3
+
+    max_request_body_bytes: 33554432
+    max_request_header_bytes: 1048576
+    max_concurrent_requests: 100
+    upstream_header_timeout_seconds: 30
+    max_response_header_bytes: 1048576
 
 mcp_http:
   stateless: true

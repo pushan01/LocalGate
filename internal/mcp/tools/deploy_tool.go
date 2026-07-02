@@ -32,12 +32,12 @@ type DeployTool struct {
 	Workspace config.Workspace
 }
 
-func NewDeployTool(service *static.Service, workspace config.Workspace, baseURL string) *DeployTool {
-	return NewDeployToolWithDynamic(service, nil, workspace, baseURL)
+func NewDeployTool(service *static.Service, workspace config.Workspace, appBaseURL string) *DeployTool {
+	return NewDeployToolWithDynamic(service, nil, workspace, appBaseURL)
 }
 
-func NewDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, baseURL string) *DeployTool {
-	return NewDeployToolWithManager(deployment.NewManager(staticService, dynamicService, baseURL), workspace)
+func NewDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, appBaseURL string) *DeployTool {
+	return NewDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), workspace)
 }
 
 func NewDeployToolWithManager(manager *deployment.Manager, workspace config.Workspace) *DeployTool {
@@ -85,6 +85,7 @@ func (t *DeployTool) InputSchema() any {
 				"properties": map[string]any{
 					"overwrite":          map[string]any{"type": "boolean"},
 					"preserve_source":    map[string]any{"type": "boolean"},
+					"access":             map[string]any{"type": "string", "enum": []any{"private", "public"}},
 					"health_path":        map[string]any{"type": "string"},
 					"startup_timeout_ms": map[string]any{"type": "integer"},
 					"restart_policy":     map[string]any{"type": "string", "enum": []any{"never", "on-failure"}},
@@ -108,6 +109,7 @@ func (t *DeployTool) OutputSchema() any {
 			"total_bytes":      map[string]any{"type": "integer"},
 			"source_preserved": map[string]any{"type": "boolean"},
 			"hostname":         map[string]any{"type": "string"},
+			"access":           map[string]any{"type": "string", "enum": []any{"private", "public"}},
 			"release_id":       map[string]any{"type": "string"},
 			"runtime_status":   map[string]any{"type": "string"},
 			"health":           map[string]any{"type": "string"},
@@ -129,6 +131,7 @@ func (t *DeployTool) Execute(ctx context.Context, input json.RawMessage) (any, e
 	options := deployment.DeployOptions{PreserveSource: true}
 	if request.Options != nil {
 		options.Overwrite, _ = request.Options["overwrite"].(bool)
+		options.Access, _ = request.Options["access"].(string)
 		if value, ok := request.Options["preserve_source"].(bool); ok {
 			options.PreserveSource = value
 		}
@@ -150,6 +153,7 @@ func (t *DeployTool) Execute(ctx context.Context, input json.RawMessage) (any, e
 	}
 	out := map[string]any{
 		"status": result.Status, "type": result.Type, "site": result.Site, "url": result.URL,
+		"access":     result.Access,
 		"file_count": result.FileCount, "total_bytes": result.TotalBytes,
 		"source_preserved": result.SourcePreserved,
 	}
@@ -202,12 +206,12 @@ type CoreDeployTool struct {
 	requireApproval bool
 }
 
-func NewCoreDeployTool(service *static.Service, workspace config.Workspace, baseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
-	return NewCoreDeployToolWithDynamic(service, nil, workspace, baseURL, approvals, requireApproval)
+func NewCoreDeployTool(service *static.Service, workspace config.Workspace, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
+	return NewCoreDeployToolWithDynamic(service, nil, workspace, appBaseURL, approvals, requireApproval)
 }
 
-func NewCoreDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, baseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
-	return NewCoreDeployToolWithManager(deployment.NewManager(staticService, dynamicService, baseURL), workspace, approvals, requireApproval)
+func NewCoreDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
+	return NewCoreDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), workspace, approvals, requireApproval)
 }
 
 func NewCoreDeployToolWithManager(manager *deployment.Manager, workspace config.Workspace, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
@@ -336,6 +340,9 @@ func coreDeployAuditDetails(args map[string]any) map[string]any {
 		}
 		if preserveSource, ok := options["preserve_source"].(bool); ok {
 			details["preserve_source"] = preserveSource
+		}
+		if access, ok := options["access"].(string); ok {
+			details["access"] = access
 		}
 	}
 	return details

@@ -43,8 +43,15 @@ type Options struct {
 	CORS           CORSOptions
 	AdminBaseURL   string
 	ControlBaseURL string
-	HostRouting    HostRoutingOptions
 	Register       func(mux *http.ServeMux)
+}
+
+type AdminOptions struct {
+	Bind     string
+	BaseURL  string
+	Auth     AuthOptions
+	CORS     CORSOptions
+	Register func(mux *http.ServeMux)
 }
 
 type AuthOptions struct {
@@ -56,14 +63,6 @@ type AuthOptions struct {
 type CORSOptions struct {
 	Enabled        bool
 	AllowedOrigins []string
-}
-
-type HostRoutingOptions struct {
-	Enabled      bool
-	ControlHosts []string
-	AppDomain    string
-	AppHandler   http.Handler
-	AdminBaseURL string
 }
 
 func MatchHeaderToken(r *http.Request, headerName, expected string) bool {
@@ -92,8 +91,8 @@ func New(opts Options) *Server {
 		opts.ControlBaseURL,
 	)
 	handler := http.Handler(controlHandler)
-	if opts.HostRouting.Enabled {
-		handler = newHostRouter(controlHandler, opts.HostRouting)
+	if approvalURLHost(opts.ControlBaseURL) != "" || approvalURLHost(opts.AdminBaseURL) != "" {
+		handler = newControlHostBoundary(controlHandler, opts.ControlBaseURL, opts.AdminBaseURL, opts.Bind)
 	}
 	s := &Server{
 		opts: opts,
@@ -105,6 +104,28 @@ func New(opts Options) *Server {
 		},
 	}
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	if opts.Register != nil {
+		opts.Register(mux)
+	}
+	return s
+}
+
+func NewAdmin(opts AdminOptions) *Server {
+	mux := http.NewServeMux()
+	adminHandler := wrapCORS(wrapBearerAuth(mux, opts.Auth), opts.CORS)
+	handler := http.Handler(adminHandler)
+	if approvalURLHost(opts.BaseURL) != "" {
+		handler = newAdminHostBoundary(adminHandler, opts.BaseURL)
+	}
+	s := &Server{
+		opts: Options{Bind: opts.Bind},
+		srv: &http.Server{
+			Addr:              opts.Bind,
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		},
+	}
 	if opts.Register != nil {
 		opts.Register(mux)
 	}

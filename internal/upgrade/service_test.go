@@ -76,3 +76,26 @@ func TestServiceRejectsActiveUpgrade(t *testing.T) {
 		t.Fatalf("expected ErrActiveUpgrade, got %v", err)
 	}
 }
+
+func TestRuntimeEnvIncludesServiceBinds(t *testing.T) {
+	env := runtimeEnv(config.Runtime{
+		Mode:                  "http_daemon",
+		Bind:                  "127.0.0.1:8000",
+		AdminBind:             "127.0.0.1:8002",
+		PublicDeploymentBind:  "127.0.0.1:8001",
+		PrivateDeploymentBind: "127.0.0.1:8003",
+	})
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "LOCALGATE_RUNTIME_BIND=127.0.0.1:8000") {
+		t.Fatalf("control runtime bind missing: %s", joined)
+	}
+	if !strings.Contains(joined, "LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND=127.0.0.1:8001") {
+		t.Fatalf("public deployment runtime bind missing: %s", joined)
+	}
+	if !strings.Contains(joined, "LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND=127.0.0.1:8003") {
+		t.Fatalf("private deployment runtime bind missing: %s", joined)
+	}
+	if !strings.Contains(joined, "LOCALGATE_RUNTIME_ADMIN_BIND=127.0.0.1:8002") {
+		t.Fatalf("admin runtime bind missing: %s", joined)
+	}
+}

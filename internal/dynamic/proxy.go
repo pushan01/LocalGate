@@ -19,19 +19,18 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
 		return
 	}
-	s.mu.RLock()
-	var deployment Deployment
-	var proc *managedProcess
-	found := false
-	for name, candidate := range s.deployments {
-		if candidate.Hostname == host {
-			deployment = candidate
-			proc = s.processes[name]
-			found = true
-			break
-		}
+	name, access, ok := s.resolveHost(host)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
+	s.mu.RLock()
+	deployment, found := s.deployments[name]
+	proc := s.processes[name]
 	s.mu.RUnlock()
+	if found && normalizeAccess(deployment.Access, "public") != access {
+		found = false
+	}
 	if !found {
 		http.NotFound(w, r)
 		return
@@ -66,7 +65,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		originalDirector(request)
 		request.Host = originalHost
 		request.Header.Set("X-Forwarded-Host", originalHost)
-		request.Header.Set("X-Forwarded-Proto", s.publicScheme(r))
+		request.Header.Set("X-Forwarded-Proto", s.baseSchemeForAccess(access))
 		if remoteHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 			request.Header.Set("X-Real-IP", remoteHost)
 		}
@@ -77,6 +76,22 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "deployment backend unavailable", http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func (s *Service) resolveHost(host string) (string, string, bool) {
+	for _, candidate := range []struct{ access, domain string }{
+		{"public", appBaseHostname(s.config.PublicBaseURL)},
+		{"private", appBaseHostname(s.config.PrivateBaseURL)},
+	} {
+		if candidate.domain == "" || !strings.HasSuffix(host, "."+candidate.domain) {
+			continue
+		}
+		name := strings.TrimSuffix(host, "."+candidate.domain)
+		if name != "" && !strings.Contains(name, ".") {
+			return name, candidate.access, true
+		}
+	}
+	return "", "", false
 }
 
 func normalizeHost(raw string) (string, bool) {
@@ -95,14 +110,4 @@ func normalizeHost(raw string) (string, bool) {
 		return "", false
 	}
 	return host, true
-}
-
-func (s *Service) publicScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	if s != nil && (s.config.PublicScheme == "http" || s.config.PublicScheme == "https") {
-		return s.config.PublicScheme
-	}
-	return "http"
 }

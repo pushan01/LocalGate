@@ -55,13 +55,13 @@ func TestServiceDeployOverwriteDeleteAndServe(t *testing.T) {
 		path string
 		want string
 	}{
-		{path: "/static/demo/", want: "v2"},
-		{path: "/static/demo/assets/app.js", want: "console.log('ok')"},
-		{path: "/static/demo/client/route", want: "v2"},
+		{path: "/", want: "v2"},
+		{path: "/assets/app.js", want: "console.log('ok')"},
+		{path: "/client/route", want: "v2"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, test.path, nil)
 		w := httptest.NewRecorder()
-		service.ServeHTTP(w, req)
+		service.ServeSite("demo", w, req)
 		if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != test.want {
 			t.Fatalf("serve %s: code=%d body=%q", test.path, w.Code, w.Body.String())
 		}
@@ -99,9 +99,9 @@ func TestServiceUsesSingleRootHTMLAsIndex(t *testing.T) {
 		t.Fatalf("unexpected detected index: %q", deployment.Site.Index)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/static/quiz/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
-	service.ServeHTTP(w, req)
+	service.ServeSite("quiz", w, req)
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "quiz" {
 		t.Fatalf("serve detected index: code=%d body=%q", w.Code, w.Body.String())
 	}
@@ -237,12 +237,22 @@ func TestServiceHonorsCanceledContext(t *testing.T) {
 
 func TestStaticServerRejectsTraversalAndUnknownSite(t *testing.T) {
 	service := NewServiceAt(filepath.Join(t.TempDir(), "managed"))
-	for _, requestPath := range []string{"/static/missing/", "/static/demo/../../secret"} {
-		req := httptest.NewRequest(http.MethodGet, requestPath, nil)
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeploySite(context.Background(), "demo", source, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		path string
+	}{{name: "missing", path: "/"}, {name: "demo", path: "/../../secret"}} {
+		req := httptest.NewRequest(http.MethodGet, test.path, nil)
 		w := httptest.NewRecorder()
-		service.ServeHTTP(w, req)
+		service.ServeSite(test.name, w, req)
 		if w.Code != http.StatusNotFound {
-			t.Fatalf("expected 404 for %s, got %d", requestPath, w.Code)
+			t.Fatalf("expected 404 for %s%s, got %d", test.name, test.path, w.Code)
 		}
 	}
 }

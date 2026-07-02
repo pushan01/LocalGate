@@ -3,9 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -29,30 +31,32 @@ type Workspace struct {
 }
 
 type Config struct {
-	Bind             string         `yaml:"bind"`
-	MaxConcurrency   int            `yaml:"max_concurrency"`
-	DefaultTimeoutMs int64          `yaml:"default_timeout_ms"`
-	MaxOutputBytes   int64          `yaml:"max_output_bytes"`
-	LogStore         string         `yaml:"log_store"`
-	Admin            AdminConfig    `yaml:"admin"`
-	SessionCleanup   SessionCleanup `yaml:"session_cleanup"`
-	HTTP             HTTP           `yaml:"http"`
-	MCPHTTP          MCPHTTP        `yaml:"mcp_http"`
-	StaticHosting    StaticHosting  `yaml:"static_hosting"`
-	DynamicHosting   DynamicHosting `yaml:"dynamic_hosting"`
-	HTTPAuth         HTTPAuth       `yaml:"http_auth"`
-	ToolArguments    ToolArguments  `yaml:"tool_arguments"`
-	ToolHTTPMode     ToolHTTPMode   `yaml:"tool_http_mode"`
-	MCPServers       []MCPServer    `yaml:"mcp_servers"`
-	Upgrade          Upgrade        `yaml:"-"`
-	Runtime          Runtime        `yaml:"-"`
-	Workspaces       []Workspace    `yaml:"workspaces"`
+	Bind             string            `yaml:"bind"`
+	MaxConcurrency   int               `yaml:"max_concurrency"`
+	DefaultTimeoutMs int64             `yaml:"default_timeout_ms"`
+	MaxOutputBytes   int64             `yaml:"max_output_bytes"`
+	LogStore         string            `yaml:"log_store"`
+	Admin            AdminConfig       `yaml:"admin"`
+	SessionCleanup   SessionCleanup    `yaml:"session_cleanup"`
+	HTTP             HTTP              `yaml:"http"`
+	MCPHTTP          MCPHTTP           `yaml:"mcp_http"`
+	Deployments      DeploymentsConfig `yaml:"deployments"`
+	HTTPAuth         HTTPAuth          `yaml:"http_auth"`
+	ToolArguments    ToolArguments     `yaml:"tool_arguments"`
+	ToolHTTPMode     ToolHTTPMode      `yaml:"tool_http_mode"`
+	MCPServers       []MCPServer       `yaml:"mcp_servers"`
+	Upgrade          Upgrade           `yaml:"-"`
+	Runtime          Runtime           `yaml:"-"`
+	Workspaces       []Workspace       `yaml:"workspaces"`
 }
 
 type LoadOptions struct {
-	Path         string
-	PathProvided bool
-	Bind         string
+	Path                   string
+	PathProvided           bool
+	Bind                   string
+	AdminBind              string
+	PublicDeploymentsBind  string
+	PrivateDeploymentsBind string
 }
 
 type ApprovalPolicy struct {
@@ -69,6 +73,7 @@ type ApprovalConfig struct {
 
 type AdminConfig struct {
 	Enabled  bool           `yaml:"enabled"`
+	Bind     string         `yaml:"bind"`
 	BaseURL  string         `yaml:"base_url"`
 	Approval ApprovalConfig `yaml:"approval"`
 }
@@ -97,6 +102,17 @@ type MCPHTTP struct {
 	Stateless bool `yaml:"stateless"`
 }
 
+type DeploymentsConfig struct {
+	PublicBind     string         `yaml:"public_bind"`
+	PrivateBind    string         `yaml:"private_bind"`
+	PublicBaseURL  string         `yaml:"public_base_url"`
+	PrivateBaseURL string         `yaml:"private_base_url"`
+	DefaultAccess  string         `yaml:"default_access"`
+	ReservedNames  []string       `yaml:"reserved_names"`
+	Static         StaticHosting  `yaml:"static"`
+	Dynamic        DynamicHosting `yaml:"dynamic"`
+}
+
 type StaticHosting struct {
 	MaxFiles        int   `yaml:"max_files"`
 	MaxTotalBytes   int64 `yaml:"max_total_bytes"`
@@ -106,11 +122,12 @@ type StaticHosting struct {
 
 type DynamicHosting struct {
 	Enabled                      bool     `yaml:"enabled"`
-	ControlHosts                 []string `yaml:"control_hosts"`
-	AppDomain                    string   `yaml:"app_domain"`
-	PublicScheme                 string   `yaml:"public_scheme"`
+	ControlBaseURL               string   `yaml:"-"`
+	PublicBaseURL                string   `yaml:"-"`
+	PrivateBaseURL               string   `yaml:"-"`
+	DefaultAccess                string   `yaml:"-"`
 	RequireApproval              bool     `yaml:"require_approval"`
-	ReservedNames                []string `yaml:"reserved_names"`
+	ReservedNames                []string `yaml:"-"`
 	AllowedExecutables           []string `yaml:"allowed_executables"`
 	EnvAllowlist                 []string `yaml:"env_allowlist"`
 	MaxApps                      int      `yaml:"max_apps"`
@@ -153,13 +170,16 @@ type Upgrade struct {
 }
 
 type Runtime struct {
-	Mode       string `yaml:"-"`
-	Bin        string `yaml:"-"`
-	ConfigPath string `yaml:"-"`
-	Bind       string `yaml:"-"`
-	PIDFile    string `yaml:"-"`
-	LogFile    string `yaml:"-"`
-	RunDir     string `yaml:"-"`
+	Mode                  string `yaml:"-"`
+	Bin                   string `yaml:"-"`
+	ConfigPath            string `yaml:"-"`
+	Bind                  string `yaml:"-"`
+	AdminBind             string `yaml:"-"`
+	PublicDeploymentBind  string `yaml:"-"`
+	PrivateDeploymentBind string `yaml:"-"`
+	PIDFile               string `yaml:"-"`
+	LogFile               string `yaml:"-"`
+	RunDir                string `yaml:"-"`
 }
 
 type MCPServer struct {
@@ -179,7 +199,7 @@ var DefaultHiddenTools = []string{
 }
 
 func Default() Config {
-	return Config{
+	cfg := Config{
 		Bind:             "127.0.0.1:3737",
 		MaxConcurrency:   4,
 		DefaultTimeoutMs: 10 * 60 * 1000,
@@ -194,39 +214,45 @@ func Default() Config {
 		ToolHTTPMode: ToolHTTPMode{
 			AccessTokenTTLSeconds: 10 * 60,
 		},
-		StaticHosting: StaticHosting{
-			MaxFiles:        10_000,
-			MaxTotalBytes:   50 << 20,
-			MaxFileBytes:    50 << 20,
-			RequireApproval: true,
-		},
-		DynamicHosting: DynamicHosting{
-			PublicScheme:                 "https",
-			RequireApproval:              true,
-			ReservedNames:                []string{"macgate", "www", "api", "admin", "mcp", "tasks", "approvals", "static"},
-			MaxApps:                      20,
-			MaxFiles:                     20_000,
-			MaxTotalBytes:                512 << 20,
-			MaxFileBytes:                 100 << 20,
-			StartupTimeoutSeconds:        20,
-			ShutdownTimeoutSeconds:       5,
-			RestartPolicy:                "on-failure",
-			RestartMaxAttempts:           3,
-			RestartBackoffSeconds:        2,
-			RestartResetSeconds:          60,
-			MaxLogBytes:                  10 << 20,
-			MaxLogFiles:                  3,
-			ReleaseRetention:             3,
-			MaxRequestBodyBytes:          32 << 20,
-			MaxRequestHeaderBytes:        1 << 20,
-			MaxConcurrentRequests:        100,
-			UpstreamHeaderTimeoutSeconds: 30,
-			MaxResponseHeaderBytes:       1 << 20,
+		Deployments: DeploymentsConfig{
+			PublicBind:    "127.0.0.1:3738",
+			PrivateBind:   "127.0.0.1:3740",
+			DefaultAccess: "private",
+			ReservedNames: []string{"macgate", "www", "api", "admin", "mcp", "tasks", "approvals", "static"},
+			Static: StaticHosting{
+				MaxFiles:        10_000,
+				MaxTotalBytes:   50 << 20,
+				MaxFileBytes:    50 << 20,
+				RequireApproval: true,
+			},
+			Dynamic: DynamicHosting{
+				RequireApproval:              true,
+				MaxApps:                      20,
+				MaxFiles:                     20_000,
+				MaxTotalBytes:                512 << 20,
+				MaxFileBytes:                 100 << 20,
+				StartupTimeoutSeconds:        20,
+				ShutdownTimeoutSeconds:       5,
+				RestartPolicy:                "on-failure",
+				RestartMaxAttempts:           3,
+				RestartBackoffSeconds:        2,
+				RestartResetSeconds:          60,
+				MaxLogBytes:                  10 << 20,
+				MaxLogFiles:                  3,
+				ReleaseRetention:             3,
+				MaxRequestBodyBytes:          32 << 20,
+				MaxRequestHeaderBytes:        1 << 20,
+				MaxConcurrentRequests:        100,
+				UpstreamHeaderTimeoutSeconds: 30,
+				MaxResponseHeaderBytes:       1 << 20,
+			},
 		},
 		HTTPAuth: HTTPAuth{
 			AllowPaths: []string{"/healthz"},
 		},
 	}
+	applyDeploymentShared(&cfg.Deployments, cfg.HTTP.BaseURL)
+	return cfg
 }
 
 func DefaultApprovalConfig() ApprovalConfig {
@@ -240,7 +266,8 @@ func DefaultApprovalConfig() ApprovalConfig {
 func DefaultAdminConfig() AdminConfig {
 	return AdminConfig{
 		Enabled:  true,
-		BaseURL:  "http://127.0.0.1:3737",
+		Bind:     "127.0.0.1:3739",
+		BaseURL:  "http://127.0.0.1:3739",
 		Approval: DefaultApprovalConfig(),
 	}
 }
@@ -276,6 +303,9 @@ func NormalizeAdminConfig(cfg AdminConfig, httpConfig HTTP) AdminConfig {
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = DefaultAdminConfig().BaseURL
 	}
+	if strings.TrimSpace(cfg.Bind) == "" {
+		cfg.Bind = DefaultAdminConfig().Bind
+	}
 	return cfg
 }
 
@@ -296,7 +326,7 @@ func Load(opts LoadOptions) (Config, error) {
 			return Config{}, fmt.Errorf("read default config file: %w", err)
 		}
 	} else {
-		if err := rejectLegacyApprovalConfig(b); err != nil {
+		if err := rejectLegacyConfig(b); err != nil {
 			return Config{}, err
 		}
 		if err := yaml.Unmarshal(b, &cfg); err != nil {
@@ -307,6 +337,15 @@ func Load(opts LoadOptions) (Config, error) {
 	// Env overrides (minimal set)
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_BIND")); v != "" {
 		cfg.Bind = v
+	}
+	if strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_BIND")) != "" {
+		return Config{}, errors.New("LOCALGATE_DEPLOYMENTS_BIND was removed; use LOCALGATE_DEPLOYMENTS_PUBLIC_BIND and LOCALGATE_DEPLOYMENTS_PRIVATE_BIND")
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_PUBLIC_BIND")); v != "" {
+		cfg.Deployments.PublicBind = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_PRIVATE_BIND")); v != "" {
+		cfg.Deployments.PrivateBind = v
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_MAX_CONCURRENCY")); v != "" {
 		if iv, err := atoi(v); err == nil {
@@ -345,6 +384,9 @@ func Load(opts LoadOptions) (Config, error) {
 		if bv, ok := atob(v); ok {
 			cfg.Admin.Enabled = bv
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_ADMIN_BIND")); v != "" {
+		cfg.Admin.Bind = v
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_ADMIN_BASE_URL")); v != "" {
 		cfg.Admin.BaseURL = v
@@ -393,140 +435,140 @@ func Load(opts LoadOptions) (Config, error) {
 			cfg.MCPHTTP.Stateless = bv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_STATIC_MAX_FILES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILES")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.StaticHosting.MaxFiles = iv
+			cfg.Deployments.Static.MaxFiles = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_STATIC_MAX_TOTAL_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_TOTAL_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.StaticHosting.MaxTotalBytes = iv
+			cfg.Deployments.Static.MaxTotalBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_STATIC_MAX_FILE_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILE_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.StaticHosting.MaxFileBytes = iv
+			cfg.Deployments.Static.MaxFileBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_STATIC_REQUIRE_APPROVAL")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_REQUIRE_APPROVAL")); v != "" {
 		if bv, ok := atob(v); ok {
-			cfg.StaticHosting.RequireApproval = bv
+			cfg.Deployments.Static.RequireApproval = bv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_ENABLED")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_ENABLED")); v != "" {
 		if bv, ok := atob(v); ok {
-			cfg.DynamicHosting.Enabled = bv
+			cfg.Deployments.Dynamic.Enabled = bv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_CONTROL_HOSTS")); v != "" {
-		cfg.DynamicHosting.ControlHosts = splitCommaSeparated(v)
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_PUBLIC_BASE_URL")); v != "" {
+		cfg.Deployments.PublicBaseURL = v
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_APP_DOMAIN")); v != "" {
-		cfg.DynamicHosting.AppDomain = v
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_PRIVATE_BASE_URL")); v != "" {
+		cfg.Deployments.PrivateBaseURL = v
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_PUBLIC_SCHEME")); v != "" {
-		cfg.DynamicHosting.PublicScheme = v
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DEFAULT_ACCESS")); v != "" {
+		cfg.Deployments.DefaultAccess = v
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_ALLOWED_EXECUTABLES")); v != "" {
-		cfg.DynamicHosting.AllowedExecutables = splitCommaSeparated(v)
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_ALLOWED_EXECUTABLES")); v != "" {
+		cfg.Deployments.Dynamic.AllowedExecutables = splitCommaSeparated(v)
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_REQUIRE_APPROVAL")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_REQUIRE_APPROVAL")); v != "" {
 		if bv, ok := atob(v); ok {
-			cfg.DynamicHosting.RequireApproval = bv
+			cfg.Deployments.Dynamic.RequireApproval = bv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RESERVED_NAMES")); v != "" {
-		cfg.DynamicHosting.ReservedNames = splitCommaSeparated(v)
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_RESERVED_NAMES")); v != "" {
+		cfg.Deployments.ReservedNames = splitCommaSeparated(v)
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_ENV_ALLOWLIST")); v != "" {
-		cfg.DynamicHosting.EnvAllowlist = splitCommaSeparated(v)
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_ENV_ALLOWLIST")); v != "" {
+		cfg.Deployments.Dynamic.EnvAllowlist = splitCommaSeparated(v)
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_APPS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_APPS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.MaxApps = iv
+			cfg.Deployments.Dynamic.MaxApps = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_FILES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_FILES")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.MaxFiles = iv
+			cfg.Deployments.Dynamic.MaxFiles = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_TOTAL_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_TOTAL_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxTotalBytes = iv
+			cfg.Deployments.Dynamic.MaxTotalBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_FILE_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_FILE_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxFileBytes = iv
+			cfg.Deployments.Dynamic.MaxFileBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_STARTUP_TIMEOUT_SECONDS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_STARTUP_TIMEOUT_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.StartupTimeoutSeconds = iv
+			cfg.Deployments.Dynamic.StartupTimeoutSeconds = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_SHUTDOWN_TIMEOUT_SECONDS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_SHUTDOWN_TIMEOUT_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.ShutdownTimeoutSeconds = iv
+			cfg.Deployments.Dynamic.ShutdownTimeoutSeconds = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RESTART_POLICY")); v != "" {
-		cfg.DynamicHosting.RestartPolicy = v
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_POLICY")); v != "" {
+		cfg.Deployments.Dynamic.RestartPolicy = v
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RESTART_MAX_ATTEMPTS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_MAX_ATTEMPTS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.RestartMaxAttempts = iv
+			cfg.Deployments.Dynamic.RestartMaxAttempts = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RESTART_BACKOFF_SECONDS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_BACKOFF_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.RestartBackoffSeconds = iv
+			cfg.Deployments.Dynamic.RestartBackoffSeconds = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RESTART_RESET_SECONDS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_RESET_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.RestartResetSeconds = iv
+			cfg.Deployments.Dynamic.RestartResetSeconds = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_LOG_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_LOG_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxLogBytes = iv
+			cfg.Deployments.Dynamic.MaxLogBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_LOG_FILES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_LOG_FILES")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.MaxLogFiles = iv
+			cfg.Deployments.Dynamic.MaxLogFiles = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_RELEASE_RETENTION")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_RELEASE_RETENTION")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.ReleaseRetention = iv
+			cfg.Deployments.Dynamic.ReleaseRetention = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_REQUEST_BODY_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_REQUEST_BODY_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxRequestBodyBytes = iv
+			cfg.Deployments.Dynamic.MaxRequestBodyBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_REQUEST_HEADER_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_REQUEST_HEADER_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxRequestHeaderBytes = iv
+			cfg.Deployments.Dynamic.MaxRequestHeaderBytes = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_CONCURRENT_REQUESTS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_CONCURRENT_REQUESTS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.MaxConcurrentRequests = iv
+			cfg.Deployments.Dynamic.MaxConcurrentRequests = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_UPSTREAM_HEADER_TIMEOUT_SECONDS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_UPSTREAM_HEADER_TIMEOUT_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
-			cfg.DynamicHosting.UpstreamHeaderTimeoutSeconds = iv
+			cfg.Deployments.Dynamic.UpstreamHeaderTimeoutSeconds = iv
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DYNAMIC_MAX_RESPONSE_HEADER_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_RESPONSE_HEADER_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
-			cfg.DynamicHosting.MaxResponseHeaderBytes = iv
+			cfg.Deployments.Dynamic.MaxResponseHeaderBytes = iv
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_TOOL_ARGUMENTS_ENABLE_BASE64")); v != "" {
@@ -538,18 +580,30 @@ func Load(opts LoadOptions) (Config, error) {
 		cfg.Upgrade.Token = v
 	}
 	cfg.Runtime = Runtime{
-		Mode:       strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_MODE")),
-		Bin:        strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_BIN")),
-		ConfigPath: strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_CONFIG")),
-		Bind:       strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_BIND")),
-		PIDFile:    strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_PID_FILE")),
-		LogFile:    strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_LOG_FILE")),
-		RunDir:     strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_RUN_DIR")),
+		Mode:                  strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_MODE")),
+		Bin:                   strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_BIN")),
+		ConfigPath:            strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_CONFIG")),
+		Bind:                  strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_BIND")),
+		AdminBind:             strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_ADMIN_BIND")),
+		PublicDeploymentBind:  strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND")),
+		PrivateDeploymentBind: strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND")),
+		PIDFile:               strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_PID_FILE")),
+		LogFile:               strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_LOG_FILE")),
+		RunDir:                strings.TrimSpace(os.Getenv("LOCALGATE_RUNTIME_RUN_DIR")),
 	}
 
 	// Flag overrides
 	if opts.Bind != "" {
 		cfg.Bind = opts.Bind
+	}
+	if opts.AdminBind != "" {
+		cfg.Admin.Bind = opts.AdminBind
+	}
+	if opts.PublicDeploymentsBind != "" {
+		cfg.Deployments.PublicBind = opts.PublicDeploymentsBind
+	}
+	if opts.PrivateDeploymentsBind != "" {
+		cfg.Deployments.PrivateBind = opts.PrivateDeploymentsBind
 	}
 
 	// Normalize paths
@@ -582,10 +636,13 @@ func Load(opts LoadOptions) (Config, error) {
 	if !cfg.Admin.Enabled {
 		cfg.Admin.Approval.Enabled = false
 	}
-	cfg.DynamicHosting.AppDomain = normalizeHostname(cfg.DynamicHosting.AppDomain)
-	for i := range cfg.DynamicHosting.ControlHosts {
-		cfg.DynamicHosting.ControlHosts[i] = normalizeHostname(cfg.DynamicHosting.ControlHosts[i])
+	cfg.Deployments.PublicBaseURL = normalizeBaseURL(cfg.Deployments.PublicBaseURL)
+	cfg.Deployments.PrivateBaseURL = normalizeBaseURL(cfg.Deployments.PrivateBaseURL)
+	cfg.Deployments.DefaultAccess = strings.ToLower(strings.TrimSpace(cfg.Deployments.DefaultAccess))
+	if cfg.Deployments.DefaultAccess == "" {
+		cfg.Deployments.DefaultAccess = "private"
 	}
+	applyDeploymentShared(&cfg.Deployments, cfg.HTTP.BaseURL)
 	allowedOrigins, err := normalizeAllowedOrigins(cfg.HTTP.AllowedOrigins)
 	if err != nil {
 		return Config{}, err
@@ -600,10 +657,13 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateAdminConfig(cfg.Admin); err != nil {
 		return Config{}, err
 	}
-	if err := validateStaticHosting(cfg.StaticHosting); err != nil {
+	if err := validateListenerBinds(cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
 		return Config{}, err
 	}
-	if err := validateDynamicHosting(cfg.DynamicHosting); err != nil {
+	if err := validateStaticHosting(cfg.Deployments.Static); err != nil {
+		return Config{}, err
+	}
+	if err := validateDynamicHosting(cfg.Deployments.Dynamic); err != nil {
 		return Config{}, err
 	}
 	if err := validateToolHTTPMode(cfg); err != nil {
@@ -616,13 +676,34 @@ func Load(opts LoadOptions) (Config, error) {
 	return cfg, nil
 }
 
-func rejectLegacyApprovalConfig(data []byte) error {
+func rejectLegacyConfig(data []byte) error {
 	var root map[string]any
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil
 	}
 	if _, exists := root["approval"]; exists {
 		return errors.New("top-level approval config was removed; move it to admin.approval and move base_url to admin.base_url")
+	}
+	for _, legacy := range []string{"deployment_bind", "static_hosting", "dynamic_hosting"} {
+		if _, exists := root[legacy]; exists {
+			return fmt.Errorf("top-level %s was removed; move deployment settings under deployments", legacy)
+		}
+	}
+	deployments, _ := root["deployments"].(map[string]any)
+	if _, exists := deployments["bind"]; exists {
+		return errors.New("deployments.bind was removed; use deployments.public_bind and deployments.private_bind")
+	}
+	if _, exists := deployments["control_hosts"]; exists {
+		return errors.New("deployments.control_hosts was removed; control host is derived from http.base_url")
+	}
+	dynamic, _ := deployments["dynamic"].(map[string]any)
+	for _, shared := range []string{"bind", "public_bind", "private_bind", "public_base_url", "private_base_url", "default_access", "reserved_names"} {
+		if _, exists := dynamic[shared]; exists {
+			return fmt.Errorf("deployments.dynamic.%s is invalid; move it to deployments.%s", shared, shared)
+		}
+	}
+	if _, exists := dynamic["control_hosts"]; exists {
+		return errors.New("deployments.dynamic.control_hosts was removed; control host is derived from http.base_url")
 	}
 	admin, _ := root["admin"].(map[string]any)
 	approval, _ := admin["approval"].(map[string]any)
@@ -658,6 +739,7 @@ func (c Config) SafeSummary() map[string]any {
 		"max_output_bytes":   c.MaxOutputBytes,
 		"admin": map[string]any{
 			"enabled":  c.Admin.Enabled,
+			"bind":     c.Admin.Bind,
 			"base_url": c.Admin.BaseURL,
 			"approval": map[string]any{
 				"enabled":               c.Admin.Approval.Enabled,
@@ -684,37 +766,43 @@ func (c Config) SafeSummary() map[string]any {
 		"mcp_http": map[string]any{
 			"stateless": c.MCPHTTP.Stateless,
 		},
-		"static_hosting": map[string]any{
-			"max_files":        c.StaticHosting.MaxFiles,
-			"max_total_bytes":  c.StaticHosting.MaxTotalBytes,
-			"max_file_bytes":   c.StaticHosting.MaxFileBytes,
-			"require_approval": c.StaticHosting.RequireApproval,
-		},
-		"dynamic_hosting": map[string]any{
-			"enabled":                         c.DynamicHosting.Enabled,
-			"control_hosts":                   c.DynamicHosting.ControlHosts,
-			"app_domain":                      c.DynamicHosting.AppDomain,
-			"public_scheme":                   c.DynamicHosting.PublicScheme,
-			"require_approval":                c.DynamicHosting.RequireApproval,
-			"allowed_executables":             c.DynamicHosting.AllowedExecutables,
-			"max_apps":                        c.DynamicHosting.MaxApps,
-			"max_files":                       c.DynamicHosting.MaxFiles,
-			"max_total_bytes":                 c.DynamicHosting.MaxTotalBytes,
-			"max_file_bytes":                  c.DynamicHosting.MaxFileBytes,
-			"startup_timeout_seconds":         c.DynamicHosting.StartupTimeoutSeconds,
-			"shutdown_timeout_seconds":        c.DynamicHosting.ShutdownTimeoutSeconds,
-			"restart_policy":                  c.DynamicHosting.RestartPolicy,
-			"restart_max_attempts":            c.DynamicHosting.RestartMaxAttempts,
-			"restart_backoff_seconds":         c.DynamicHosting.RestartBackoffSeconds,
-			"restart_reset_seconds":           c.DynamicHosting.RestartResetSeconds,
-			"max_log_bytes":                   c.DynamicHosting.MaxLogBytes,
-			"max_log_files":                   c.DynamicHosting.MaxLogFiles,
-			"release_retention":               c.DynamicHosting.ReleaseRetention,
-			"max_request_body_bytes":          c.DynamicHosting.MaxRequestBodyBytes,
-			"max_request_header_bytes":        c.DynamicHosting.MaxRequestHeaderBytes,
-			"max_concurrent_requests":         c.DynamicHosting.MaxConcurrentRequests,
-			"upstream_header_timeout_seconds": c.DynamicHosting.UpstreamHeaderTimeoutSeconds,
-			"max_response_header_bytes":       c.DynamicHosting.MaxResponseHeaderBytes,
+		"deployments": map[string]any{
+			"public_bind":      c.Deployments.PublicBind,
+			"private_bind":     c.Deployments.PrivateBind,
+			"public_base_url":  c.Deployments.PublicBaseURL,
+			"private_base_url": c.Deployments.PrivateBaseURL,
+			"default_access":   c.Deployments.DefaultAccess,
+			"reserved_names":   c.Deployments.ReservedNames,
+			"static": map[string]any{
+				"max_files":        c.Deployments.Static.MaxFiles,
+				"max_total_bytes":  c.Deployments.Static.MaxTotalBytes,
+				"max_file_bytes":   c.Deployments.Static.MaxFileBytes,
+				"require_approval": c.Deployments.Static.RequireApproval,
+			},
+			"dynamic": map[string]any{
+				"enabled":                         c.Deployments.Dynamic.Enabled,
+				"require_approval":                c.Deployments.Dynamic.RequireApproval,
+				"allowed_executables":             c.Deployments.Dynamic.AllowedExecutables,
+				"env_allowlist":                   c.Deployments.Dynamic.EnvAllowlist,
+				"max_apps":                        c.Deployments.Dynamic.MaxApps,
+				"max_files":                       c.Deployments.Dynamic.MaxFiles,
+				"max_total_bytes":                 c.Deployments.Dynamic.MaxTotalBytes,
+				"max_file_bytes":                  c.Deployments.Dynamic.MaxFileBytes,
+				"startup_timeout_seconds":         c.Deployments.Dynamic.StartupTimeoutSeconds,
+				"shutdown_timeout_seconds":        c.Deployments.Dynamic.ShutdownTimeoutSeconds,
+				"restart_policy":                  c.Deployments.Dynamic.RestartPolicy,
+				"restart_max_attempts":            c.Deployments.Dynamic.RestartMaxAttempts,
+				"restart_backoff_seconds":         c.Deployments.Dynamic.RestartBackoffSeconds,
+				"restart_reset_seconds":           c.Deployments.Dynamic.RestartResetSeconds,
+				"max_log_bytes":                   c.Deployments.Dynamic.MaxLogBytes,
+				"max_log_files":                   c.Deployments.Dynamic.MaxLogFiles,
+				"release_retention":               c.Deployments.Dynamic.ReleaseRetention,
+				"max_request_body_bytes":          c.Deployments.Dynamic.MaxRequestBodyBytes,
+				"max_request_header_bytes":        c.Deployments.Dynamic.MaxRequestHeaderBytes,
+				"max_concurrent_requests":         c.Deployments.Dynamic.MaxConcurrentRequests,
+				"upstream_header_timeout_seconds": c.Deployments.Dynamic.UpstreamHeaderTimeoutSeconds,
+				"max_response_header_bytes":       c.Deployments.Dynamic.MaxResponseHeaderBytes,
+			},
 		},
 		"tool_arguments": map[string]any{
 			"enable_base64": c.ToolArguments.EnableBase64,
@@ -727,8 +815,11 @@ func (c Config) SafeSummary() map[string]any {
 			"enabled": c.Upgrade.Token != "",
 		},
 		"runtime": map[string]any{
-			"mode": c.Runtime.Mode,
-			"bind": c.Runtime.Bind,
+			"mode":                    c.Runtime.Mode,
+			"bind":                    c.Runtime.Bind,
+			"admin_bind":              c.Runtime.AdminBind,
+			"public_deployment_bind":  c.Runtime.PublicDeploymentBind,
+			"private_deployment_bind": c.Runtime.PrivateDeploymentBind,
 		},
 		"mcp_servers":      mcpServers,
 		"mcp_server_count": len(c.MCPServers),
@@ -776,81 +867,164 @@ func validateAdminConfig(cfg AdminConfig) error {
 	return validateApprovalConfig(cfg.Approval)
 }
 
+func NormalizeDeploymentsConfig(cfg DeploymentsConfig, controlBaseURL string) DeploymentsConfig {
+	applyDeploymentShared(&cfg, controlBaseURL)
+	return cfg
+}
+
+func applyDeploymentShared(cfg *DeploymentsConfig, controlBaseURL string) {
+	if cfg == nil {
+		return
+	}
+	cfg.Dynamic.ControlBaseURL = strings.TrimSpace(controlBaseURL)
+	cfg.Dynamic.PublicBaseURL = cfg.PublicBaseURL
+	cfg.Dynamic.PrivateBaseURL = cfg.PrivateBaseURL
+	cfg.Dynamic.DefaultAccess = cfg.DefaultAccess
+	cfg.Dynamic.ReservedNames = append([]string(nil), cfg.ReservedNames...)
+}
+
+func validateListenerBinds(controlBind, adminBind, publicDeploymentBind, privateDeploymentBind string, adminEnabled bool) error {
+	controlPort, err := bindPort(controlBind)
+	if err != nil {
+		return fmt.Errorf("bind is invalid: %w", err)
+	}
+	publicPort, err := bindPort(publicDeploymentBind)
+	if err != nil {
+		return fmt.Errorf("deployments.public_bind is invalid: %w", err)
+	}
+	privatePort, err := bindPort(privateDeploymentBind)
+	if err != nil {
+		return fmt.Errorf("deployments.private_bind is invalid: %w", err)
+	}
+	if publicPort == privatePort {
+		return errors.New("deployments.public_bind and deployments.private_bind must use different TCP ports")
+	}
+	for field, port := range map[string]string{
+		"deployments.public_bind":  publicPort,
+		"deployments.private_bind": privatePort,
+	} {
+		if controlPort == port {
+			return fmt.Errorf("%s must use a different TCP port from bind", field)
+		}
+	}
+	adminPort := ""
+	if adminEnabled {
+		adminPort, err = bindPort(adminBind)
+		if err != nil {
+			return fmt.Errorf("admin.bind is invalid: %w", err)
+		}
+		if controlPort == adminPort {
+			return errors.New("admin.bind must use a different TCP port from bind")
+		}
+		for field, port := range map[string]string{
+			"deployments.public_bind":  publicPort,
+			"deployments.private_bind": privatePort,
+		} {
+			if adminPort == port {
+				return fmt.Errorf("%s must use a different TCP port from admin.bind", field)
+			}
+		}
+	}
+	return nil
+}
+
+func bindPort(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("address is empty")
+	}
+	_, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", err
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil || value < 1 || value > 65535 {
+		return "", errors.New("port must be between 1 and 65535")
+	}
+	return port, nil
+}
+
 func validateStaticHosting(cfg StaticHosting) error {
 	if cfg.MaxFiles <= 0 {
-		return errors.New("static_hosting.max_files must be positive")
+		return errors.New("deployments.static.max_files must be positive")
 	}
 	if cfg.MaxTotalBytes <= 0 {
-		return errors.New("static_hosting.max_total_bytes must be positive")
+		return errors.New("deployments.static.max_total_bytes must be positive")
 	}
 	if cfg.MaxFileBytes <= 0 {
-		return errors.New("static_hosting.max_file_bytes must be positive")
+		return errors.New("deployments.static.max_file_bytes must be positive")
 	}
 	if cfg.MaxFileBytes > cfg.MaxTotalBytes {
-		return errors.New("static_hosting.max_file_bytes must not exceed max_total_bytes")
+		return errors.New("deployments.static.max_file_bytes must not exceed max_total_bytes")
 	}
 	return nil
 }
 
 func validateDynamicHosting(cfg DynamicHosting) error {
 	if cfg.MaxApps <= 0 {
-		return errors.New("dynamic_hosting.max_apps must be positive")
+		return errors.New("deployments.dynamic.max_apps must be positive")
 	}
 	if cfg.MaxFiles <= 0 || cfg.MaxTotalBytes <= 0 || cfg.MaxFileBytes <= 0 {
-		return errors.New("dynamic_hosting file limits must be positive")
+		return errors.New("deployments.dynamic file limits must be positive")
 	}
 	if cfg.MaxFileBytes > cfg.MaxTotalBytes {
-		return errors.New("dynamic_hosting.max_file_bytes must not exceed max_total_bytes")
+		return errors.New("deployments.dynamic.max_file_bytes must not exceed max_total_bytes")
 	}
 	if cfg.StartupTimeoutSeconds <= 0 || cfg.ShutdownTimeoutSeconds <= 0 {
-		return errors.New("dynamic_hosting startup and shutdown timeouts must be positive")
+		return errors.New("deployments.dynamic startup and shutdown timeouts must be positive")
 	}
 	if cfg.RestartMaxAttempts < 0 || cfg.RestartBackoffSeconds < 0 || cfg.RestartResetSeconds <= 0 {
-		return errors.New("dynamic_hosting restart limits are invalid")
+		return errors.New("deployments.dynamic restart limits are invalid")
 	}
 	if cfg.MaxLogBytes <= 0 || cfg.MaxLogFiles <= 0 || cfg.ReleaseRetention <= 0 {
-		return errors.New("dynamic_hosting log and release limits are invalid")
+		return errors.New("deployments.dynamic log and release limits are invalid")
 	}
 	if cfg.MaxRequestBodyBytes <= 0 || cfg.MaxRequestHeaderBytes <= 0 || cfg.MaxConcurrentRequests <= 0 || cfg.UpstreamHeaderTimeoutSeconds <= 0 || cfg.MaxResponseHeaderBytes <= 0 {
-		return errors.New("dynamic_hosting proxy limits are invalid")
+		return errors.New("deployments.dynamic proxy limits are invalid")
 	}
 	switch cfg.RestartPolicy {
 	case "never", "on-failure":
 	default:
-		return errors.New("dynamic_hosting.restart_policy must be never or on-failure")
+		return errors.New("deployments.dynamic.restart_policy must be never or on-failure")
 	}
-	if cfg.PublicScheme != "http" && cfg.PublicScheme != "https" {
-		return errors.New("dynamic_hosting.public_scheme must be http or https")
-	}
-	if !cfg.Enabled {
+	if cfg.PublicBaseURL == "" && cfg.PrivateBaseURL == "" && !cfg.Enabled {
 		return nil
 	}
-	if cfg.AppDomain == "" {
-		return errors.New("dynamic_hosting.app_domain is required when enabled")
+	if cfg.PublicBaseURL == "" || cfg.PrivateBaseURL == "" {
+		return errors.New("deployments.public_base_url and deployments.private_base_url must both be configured")
 	}
-	if len(cfg.ControlHosts) == 0 {
-		return errors.New("dynamic_hosting.control_hosts must not be empty when enabled")
+	publicURL, err := validateAppBaseURL("public_base_url", cfg.PublicBaseURL)
+	if err != nil {
+		return err
 	}
-	if len(cfg.AllowedExecutables) == 0 {
-		return errors.New("dynamic_hosting.allowed_executables must not be empty when enabled")
+	privateURL, err := validateAppBaseURL("private_base_url", cfg.PrivateBaseURL)
+	if err != nil {
+		return err
 	}
-	seen := map[string]struct{}{}
-	for _, host := range cfg.ControlHosts {
-		if host == "" || !validHostname(host) {
-			return fmt.Errorf("invalid dynamic_hosting control host: %q", host)
-		}
-		if host == cfg.AppDomain || strings.HasSuffix(host, "."+cfg.AppDomain) {
-			// Exact control hosts are permitted under the app domain and take precedence.
-		}
-		if _, ok := seen[host]; ok {
-			return fmt.Errorf("duplicate dynamic_hosting control host: %s", host)
-		}
-		seen[host] = struct{}{}
+	if strings.EqualFold(publicURL.Hostname(), privateURL.Hostname()) {
+		return errors.New("deployments.public_base_url and private_base_url must use different hostnames")
 	}
-	if !validHostname(cfg.AppDomain) {
-		return errors.New("dynamic_hosting.app_domain is invalid")
+	if cfg.DefaultAccess != "public" && cfg.DefaultAccess != "private" {
+		return errors.New("deployments.default_access must be public or private")
+	}
+	if cfg.Enabled && len(cfg.AllowedExecutables) == 0 {
+		return errors.New("deployments.dynamic.allowed_executables must not be empty when enabled")
 	}
 	return nil
+}
+
+func validateAppBaseURL(field, raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("deployments.%s must be a valid http or https URL", field)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, fmt.Errorf("deployments.%s must not contain credentials, path, query, or fragment", field)
+	}
+	if !validHostname(normalizeHostname(parsed.Hostname())) {
+		return nil, fmt.Errorf("deployments.%s hostname is invalid", field)
+	}
+	return parsed, nil
 }
 
 func normalizeHostname(host string) string {

@@ -64,6 +64,7 @@ type App struct {
 }
 
 func New(cfg config.Config) (*App, error) {
+	cfg.Deployments = config.NormalizeDeploymentsConfig(cfg.Deployments, cfg.HTTP.BaseURL)
 	adminConfig := config.NormalizeAdminConfig(cfg.Admin, cfg.HTTP)
 	approvalConfig := adminConfig.Approval
 	sink := core.NewEventSink()
@@ -105,9 +106,9 @@ func New(cfg config.Config) (*App, error) {
 		}
 	}
 	staticSvc := static.NewServiceAtWithLimits(filepath.Join(storeBase, "static"), static.Limits{
-		MaxFiles:      cfg.StaticHosting.MaxFiles,
-		MaxTotalBytes: cfg.StaticHosting.MaxTotalBytes,
-		MaxFileBytes:  cfg.StaticHosting.MaxFileBytes,
+		MaxFiles:      cfg.Deployments.Static.MaxFiles,
+		MaxTotalBytes: cfg.Deployments.Static.MaxTotalBytes,
+		MaxFileBytes:  cfg.Deployments.Static.MaxFileBytes,
 	})
 	downloadSvc := download.NewService()
 	uploadSvc := upload.NewService()
@@ -126,7 +127,7 @@ func New(cfg config.Config) (*App, error) {
 		wss[ws.ID] = ws
 	}
 	ownsDynamicRuntime := cfg.Runtime.Mode != "mcp_stdio"
-	dynamicSvc, err := dynamic.NewService(filepath.Join(storeBase, "dynamic"), cfg.DynamicHosting, wss, ownsDynamicRuntime)
+	dynamicSvc, err := dynamic.NewService(filepath.Join(storeBase, "dynamic"), cfg.Deployments.Dynamic, wss, ownsDynamicRuntime)
 	if err != nil {
 		return nil, fmt.Errorf("init dynamic hosting: %w", err)
 	}
@@ -160,7 +161,10 @@ func New(cfg config.Config) (*App, error) {
 			Error:     event.Error, Details: details, CreatedAt: event.CreatedAt,
 		})
 	})
-	deploymentManager := deployment.NewManager(staticSvc, dynamicSvc, cfg.HTTP.BaseURL)
+	deploymentManager := deployment.NewManager(staticSvc, dynamicSvc, "")
+	dynamicRoutingConfig := dynamicSvc.Config()
+	deploymentManager.ConfigureAppHosting(dynamicRoutingConfig.PublicBaseURL, dynamicRoutingConfig.PrivateBaseURL, dynamicRoutingConfig.DefaultAccess)
+	deploymentManager.ConfigureAppRouting(cfg.HTTP.BaseURL, dynamicRoutingConfig.ReservedNames)
 	regs := make(map[string]*core.Registry, len(cfg.Workspaces))
 	for _, ws := range cfg.Workspaces {
 		reg := core.NewRegistry(sink)
@@ -180,11 +184,12 @@ func New(cfg config.Config) (*App, error) {
 		reg.Register(shell.NewWriteStdinTool(sessions))
 		reg.Register(shell.NewReadThreadTerminalTool(sessions))
 		reg.Register(toolcap.NewGetToolSchemaTool(reg))
-		deployRequiresApproval := approvalConfig.Enabled && (cfg.StaticHosting.RequireApproval || cfg.DynamicHosting.RequireApproval)
+		deployRequiresApproval := approvalConfig.Enabled && (cfg.Deployments.Static.RequireApproval || cfg.Deployments.Dynamic.RequireApproval)
 		reg.Register(mcptools.NewCoreDeployToolWithManager(deploymentManager, ws, approvalSvc, deployRequiresApproval))
 		reg.Register(mcptools.NewCoreDeleteDeploymentToolWithManager(deploymentManager, approvalSvc, deployRequiresApproval))
+		reg.Register(mcptools.NewCoreSetDeploymentAccessToolWithManager(deploymentManager, deployRequiresApproval))
 		reg.Register(mcptools.NewCoreListDeploymentsToolWithManager(deploymentManager))
-		if cfg.DynamicHosting.Enabled {
+		if cfg.Deployments.Dynamic.Enabled {
 			for _, tool := range mcptools.NewCoreDynamicDeploymentToolsWithManager(deploymentManager, approvalSvc) {
 				reg.Register(tool)
 			}
@@ -228,9 +233,9 @@ func New(cfg config.Config) (*App, error) {
 		ToolAccess:        toolAccessSvc,
 		ToolArguments:     cfg.ToolArguments,
 		ToolHTTPMode:      cfg.ToolHTTPMode,
-		StaticHosting:     cfg.StaticHosting,
+		StaticHosting:     cfg.Deployments.Static,
 		StaticService:     staticSvc,
-		DynamicHosting:    cfg.DynamicHosting,
+		DynamicHosting:    cfg.Deployments.Dynamic,
 		DynamicService:    dynamicSvc,
 		DeploymentManager: deploymentManager,
 		HTTPBaseURL:       cfg.HTTP.BaseURL,
@@ -378,11 +383,13 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 			if tool == "restart_deployment" || tool == "start_deployment" || tool == "stop_deployment" || tool == "rollback_deployment" {
 				risk = "high"
 			}
-		} else if (tool == "deploy_tool" || tool == "delete_deployment") && a.StaticHosting.RequireApproval {
+		} else if (tool == "deploy_tool" || tool == "delete_deployment" || tool == "set_deployment_access") && a.StaticHosting.RequireApproval {
 			needApproval = true
 			reason = "approval.policy.static_deploy"
 			if tool == "delete_deployment" {
 				reason = "approval.policy.static_delete"
+			} else if tool == "set_deployment_access" {
+				reason = "approval.policy.deployment_access"
 			}
 		} else if need, policyReason := a.Approvals.RequiresApproval(tool, ws, args); need {
 			needApproval = true
@@ -562,6 +569,8 @@ func approvalSummary(tool string, args map[string]any) string {
 		return "Deploy " + typeName + " site " + name
 	case "delete_deployment":
 		return "Delete " + typeName + " deployment " + name
+	case "set_deployment_access":
+		return "Set " + typeName + " deployment " + name + " access to " + fmt.Sprint(args["access"])
 	case "restart_deployment", "start_deployment", "stop_deployment", "rollback_deployment":
 		return strings.TrimSuffix(tool, "_deployment") + " dynamic deployment " + name
 	default:
@@ -572,7 +581,7 @@ func approvalSummary(tool string, args map[string]any) string {
 func isDynamicMutation(tool string, args map[string]any) bool {
 	typeName, _ := args["type"].(string)
 	switch tool {
-	case "deploy_tool", "delete_deployment":
+	case "deploy_tool", "delete_deployment", "set_deployment_access":
 		return typeName == "dynamic"
 	case "restart_deployment", "start_deployment", "stop_deployment", "rollback_deployment":
 		return true
@@ -582,7 +591,7 @@ func isDynamicMutation(tool string, args map[string]any) bool {
 }
 
 func approvalRisk(tool string) string {
-	if tool == "delete_deployment" {
+	if tool == "delete_deployment" || tool == "set_deployment_access" {
 		return "critical"
 	}
 	return "high"

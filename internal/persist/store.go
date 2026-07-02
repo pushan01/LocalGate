@@ -118,4 +118,3 @@ func (s *Store) LoadEvents(taskID string, limit int) ([]core.Event, error) {
 	}
 	return out, sc.Err()
 }
-

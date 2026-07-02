@@ -90,6 +90,10 @@ func deploymentActionSuccessMessage(action, deploymentType, name string) string 
 		return "Dynamic deployment " + name + " was stopped."
 	case "start":
 		return "Dynamic deployment " + name + " was started."
+	case "set-public":
+		return deploymentType + " deployment " + name + " is now public."
+	case "set-private":
+		return deploymentType + " deployment " + name + " is now private."
 	default:
 		return "Deployment operation completed."
 	}

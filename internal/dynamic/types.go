@@ -46,6 +46,7 @@ type RuntimeSpec struct {
 type DeployOptions struct {
 	Overwrite        bool   `json:"overwrite,omitempty"`
 	PreserveSource   bool   `json:"preserve_source"`
+	Access           string `json:"access,omitempty"`
 	HealthPath       string `json:"health_path,omitempty"`
 	StartupTimeoutMS int    `json:"startup_timeout_ms,omitempty"`
 	RestartPolicy    string `json:"restart_policy,omitempty"`
@@ -63,8 +64,7 @@ type Deployment struct {
 	Name              string            `json:"name"`
 	Type              string            `json:"type"`
 	WorkspaceID       string            `json:"workspace_id"`
-	Hostname          string            `json:"hostname"`
-	URL               string            `json:"url"`
+	Access            string            `json:"access,omitempty"`
 	ActiveRelease     string            `json:"active_release"`
 	DesiredState      string            `json:"desired_state"`
 	Status            string            `json:"status"`
@@ -92,6 +92,7 @@ type View struct {
 	Name           string   `json:"site"`
 	Type           string   `json:"type"`
 	WorkspaceID    string   `json:"workspace_id"`
+	Access         string   `json:"access"`
 	Hostname       string   `json:"hostname"`
 	URL            string   `json:"url"`
 	ReleaseID      string   `json:"release_id"`
@@ -136,7 +137,6 @@ type releaseMetadata struct {
 	Type          string   `json:"type,omitempty"`
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
 	ReleaseID     string   `json:"release_id"`
-	Hostname      string   `json:"hostname,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 	FileCount     int      `json:"file_count"`
 	TotalBytes    int64    `json:"total_bytes"`
@@ -234,15 +234,16 @@ func ErrorCode(err error) string {
 	return ""
 }
 
-func (d Deployment) PublicView() View {
+func publicView(d Deployment, hostname, publicURL string) View {
 	envKeys := make([]string, 0, len(d.Env))
 	for key := range d.Env {
 		envKeys = append(envKeys, key)
 	}
 	sort.Strings(envKeys)
+	access := normalizeAccess(d.Access, "public")
 	return View{
-		Name: d.Name, Type: Type, WorkspaceID: d.WorkspaceID, Hostname: d.Hostname,
-		URL: d.URL, ReleaseID: d.ActiveRelease, DesiredState: d.DesiredState,
+		Name: d.Name, Type: Type, WorkspaceID: d.WorkspaceID, Access: access, Hostname: hostname,
+		URL: publicURL, ReleaseID: d.ActiveRelease, DesiredState: d.DesiredState,
 		Status: d.Status, Health: d.Health, Argv: append([]string(nil), d.Argv...),
 		WorkingDir: d.WorkingDir, HealthPath: d.HealthPath, RestartPolicy: d.RestartPolicy,
 		RestartCount: d.RestartCount, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
@@ -250,6 +251,18 @@ func (d Deployment) PublicView() View {
 		LastWarning: d.LastWarning, CleanupPending: d.CleanupPending,
 		FileCount: d.FileCount, TotalBytes: d.TotalBytes, EnvKeys: envKeys,
 	}
+}
+
+func normalizeAccess(access, fallback string) string {
+	access = strings.ToLower(strings.TrimSpace(access))
+	if access == "public" || access == "private" {
+		return access
+	}
+	fallback = strings.ToLower(strings.TrimSpace(fallback))
+	if fallback == "private" {
+		return "private"
+	}
+	return "public"
 }
 
 func nowString() string { return time.Now().UTC().Format(time.RFC3339Nano) }

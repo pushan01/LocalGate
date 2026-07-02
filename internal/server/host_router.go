@@ -6,35 +6,53 @@ import (
 	"strings"
 )
 
-type hostRouter struct {
+type controlHostBoundary struct {
 	control        http.Handler
-	application    http.Handler
-	controlHosts   map[string]struct{}
-	appDomain      string
+	controlHost    string
 	adminHost      string
 	adminExclusive bool
+	localMCPPort   string
 }
 
-func newHostRouter(control http.Handler, options HostRoutingOptions) http.Handler {
-	controlHosts := make(map[string]struct{}, len(options.ControlHosts))
-	for _, host := range options.ControlHosts {
-		if normalized, ok := normalizeRequestHost(host); ok {
-			controlHosts[normalized] = struct{}{}
-		}
+type adminHostBoundary struct {
+	admin     http.Handler
+	adminHost string
+}
+
+func newAdminHostBoundary(admin http.Handler, adminBaseURL string) http.Handler {
+	return &adminHostBoundary{admin: admin, adminHost: approvalURLHost(adminBaseURL)}
+}
+
+func (h *adminHostBoundary) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	host, ok := normalizeRequestHost(r.Host)
+	if !ok {
+		WriteError(w, http.StatusBadRequest, "invalid_host", "invalid request host", nil)
+		return
 	}
-	adminHost := approvalURLHost(options.AdminBaseURL)
-	_, adminIsControl := controlHosts[adminHost]
-	return &hostRouter{
+	if h.adminHost != "" && host == h.adminHost {
+		h.admin.ServeHTTP(w, r)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func newControlHostBoundary(control http.Handler, controlBaseURL, adminBaseURL, controlBind string) http.Handler {
+	controlHost := approvalURLHost(controlBaseURL)
+	adminHost := approvalURLHost(adminBaseURL)
+	return &controlHostBoundary{
 		control:        control,
-		application:    options.AppHandler,
-		controlHosts:   controlHosts,
-		appDomain:      strings.ToLower(strings.TrimSuffix(strings.TrimSpace(options.AppDomain), ".")),
+		controlHost:    controlHost,
 		adminHost:      adminHost,
-		adminExclusive: adminHost != "" && !adminIsControl,
+		adminExclusive: adminHost != "" && adminHost != controlHost,
+		localMCPPort:   listenerPort(controlBind),
 	}
 }
 
-func (h *hostRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *controlHostBoundary) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/mcp" && isLoopbackAuthorityOnPort(r.Host, h.localMCPPort) {
+		h.control.ServeHTTP(w, r)
+		return
+	}
 	host, ok := normalizeRequestHost(r.Host)
 	if !ok {
 		WriteError(w, http.StatusBadRequest, "invalid_host", "invalid request host", nil)
@@ -52,15 +70,35 @@ func (h *hostRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, ok := h.controlHosts[host]; ok {
+	if h.controlHost != "" && host == h.controlHost {
 		h.control.ServeHTTP(w, r)
 		return
 	}
-	if h.application != nil && isSingleLabelSubdomain(host, h.appDomain) {
-		h.application.ServeHTTP(w, r)
-		return
-	}
 	http.NotFound(w, r)
+}
+
+func listenerPort(bind string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(bind))
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+func isLoopbackAuthorityOnPort(raw, expectedPort string) bool {
+	if expectedPort == "" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil || port != expectedPort {
+		return false
+	}
+	host = strings.TrimSpace(strings.TrimSuffix(host, "."))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizeRequestHost(raw string) (string, bool) {
@@ -72,7 +110,6 @@ func normalizeRequestHost(raw string) (string, bool) {
 	if parsedHost, _, err := net.SplitHostPort(raw); err == nil {
 		host = parsedHost
 	} else if strings.Contains(raw, ":") {
-		// IPv6 literals are not valid deployment or control hostnames.
 		return "", false
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
@@ -91,12 +128,4 @@ func normalizeRequestHost(raw string) (string, bool) {
 		}
 	}
 	return host, true
-}
-
-func isSingleLabelSubdomain(host, domain string) bool {
-	if host == "" || domain == "" || !strings.HasSuffix(host, "."+domain) {
-		return false
-	}
-	label := strings.TrimSuffix(host, "."+domain)
-	return label != "" && !strings.Contains(label, ".")
 }

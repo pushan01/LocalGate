@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +35,7 @@ func (s *Service) emit(ctx context.Context, action string, deployment Deployment
 	event := Event{
 		Action: action, Name: deployment.Name, WorkspaceID: deployment.WorkspaceID,
 		ReleaseID: deployment.ActiveRelease, Executable: deployment.Executable,
-		Hostname: deployment.Hostname, HealthPath: deployment.HealthPath,
+		Hostname: s.hostnameForAccess(deployment.Name, deployment.Access), HealthPath: deployment.HealthPath,
 		RestartCount: deployment.RestartCount, Details: details,
 		Operation: operationFromContext(ctx), CreatedAt: time.Now().UTC(),
 	}
@@ -171,7 +173,7 @@ func (s *Service) retryRegistryPersistence(name, updatedAt string) {
 func writeReleaseMetadata(releaseRoot string, deployment Deployment) error {
 	metadata := releaseMetadata{
 		Name: deployment.Name, Type: Type, WorkspaceID: deployment.WorkspaceID,
-		ReleaseID: deployment.ActiveRelease, Hostname: deployment.Hostname, CreatedAt: nowString(),
+		ReleaseID: deployment.ActiveRelease, CreatedAt: nowString(),
 		FileCount: deployment.FileCount, TotalBytes: deployment.TotalBytes,
 		Executable: deployment.Executable, Argv: append([]string(nil), deployment.Argv...),
 		WorkingDir: deployment.WorkingDir, HealthPath: deployment.HealthPath,
@@ -261,13 +263,15 @@ func (s *Service) validatePendingSourceCleanup(deployment Deployment) (string, e
 }
 
 func (s *Service) startProcessWithPortRetry(ctx context.Context, executable string, deployment Deployment, releaseRoot string, startupTimeout time.Duration) (*managedProcess, int, error) {
+	hostname := s.hostnameForAccess(deployment.Name, deployment.Access)
+	publicURL := s.publicURLForAccess(deployment.Name, deployment.Access)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		port, err := allocatePort()
 		if err != nil {
 			return nil, 0, errorf("deployment_port_allocation_failed", "%v", err)
 		}
-		proc, err := startManagedProcess(ctx, executable, deployment, releaseRoot, port, startupTimeout, s.config.MaxLogBytes, s.config.MaxLogFiles)
+		proc, err := startManagedProcess(ctx, executable, deployment, hostname, publicURL, releaseRoot, port, startupTimeout, s.config.MaxLogBytes, s.config.MaxLogFiles)
 		if err == nil {
 			return proc, port, nil
 		}
@@ -280,4 +284,96 @@ func (s *Service) startProcessWithPortRetry(ctx context.Context, executable stri
 		lastErr = errorf("deployment_port_allocation_failed", "unable to allocate an application port")
 	}
 	return nil, 0, lastErr
+}
+
+func (s *Service) hostname(name string) string {
+	if s == nil || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	s.mu.RLock()
+	deployment, ok := s.deployments[name]
+	s.mu.RUnlock()
+	access := s.config.DefaultAccess
+	if ok {
+		access = deployment.Access
+	}
+	return s.hostnameForAccess(name, access)
+}
+
+func (s *Service) hostnameForAccess(name, access string) string {
+	hostname, _ := s.appLocationForAccess(name, access)
+	return hostname
+}
+
+func (s *Service) publicURL(name string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	deployment, ok := s.deployments[name]
+	s.mu.RUnlock()
+	access := s.config.DefaultAccess
+	if ok {
+		access = deployment.Access
+	}
+	return s.publicURLForAccess(name, access)
+}
+
+func (s *Service) publicURLForAccess(name, access string) string {
+	_, publicURL := s.appLocationForAccess(name, access)
+	return publicURL
+}
+
+func (s *Service) publicView(deployment Deployment) View {
+	if s == nil {
+		return publicView(deployment, "", "")
+	}
+	hostname, publicURL := s.appLocationForAccess(deployment.Name, deployment.Access)
+	return publicView(deployment, hostname, publicURL)
+}
+
+func (s *Service) appLocationForAccess(name, access string) (string, string) {
+	if s == nil || strings.TrimSpace(name) == "" {
+		return "", ""
+	}
+	base := s.config.PublicBaseURL
+	if normalizeAccess(access, "public") == "private" {
+		base = s.config.PrivateBaseURL
+	}
+	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(base), "/"))
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", ""
+	}
+	hostname := name + "." + strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	location := *parsed
+	location.Host = hostname
+	if port := parsed.Port(); port != "" {
+		location.Host = net.JoinHostPort(hostname, port)
+	}
+	location.Path = "/"
+	location.RawPath = ""
+	return hostname, location.String()
+}
+
+func (s *Service) baseSchemeForAccess(access string) string {
+	if s == nil {
+		return ""
+	}
+	base := s.config.PublicBaseURL
+	if normalizeAccess(access, "public") == "private" {
+		base = s.config.PrivateBaseURL
+	}
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return ""
+	}
+	return parsed.Scheme
+}
+
+func appBaseHostname(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 }

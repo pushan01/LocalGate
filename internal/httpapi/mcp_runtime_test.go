@@ -20,8 +20,9 @@ func newMCPRuntimeTestAPI(t *testing.T) (*API, *http.ServeMux, string, string) {
 	workspaceRoot := t.TempDir()
 	storeRoot := t.TempDir()
 	cfg := config.Config{
-		LogStore: storeRoot,
-		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		LogStore:    storeRoot,
+		HTTP:        config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public"},
 		Workspaces: []config.Workspace{
 			{
 				ID:               "ws",
@@ -59,7 +60,7 @@ func TestMCPRuntimeToolDiscovery(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(body.Tools) != 3 || body.Tools[0].Name != "delete_deployment" || body.Tools[1].Name != "deploy_tool" || body.Tools[2].Name != "list_deployments" {
+	if len(body.Tools) != 4 || body.Tools[0].Name != "delete_deployment" || body.Tools[1].Name != "deploy_tool" || body.Tools[2].Name != "list_deployments" || body.Tools[3].Name != "set_deployment_access" {
 		t.Fatalf("unexpected tools: %#v", body.Tools)
 	}
 	for _, tool := range body.Tools {
@@ -116,11 +117,17 @@ func TestMCPRuntimeExecuteDeployTool(t *testing.T) {
 	if got, err := os.ReadFile(deployed); err != nil || string(got) != "hello" {
 		t.Fatalf("unexpected deployed file=%q err=%v", got, err)
 	}
-	staticReq := httptest.NewRequest(http.MethodGet, "/static/demo/", nil)
+	staticReq := httptest.NewRequest(http.MethodGet, "https://demo.apps.test/", nil)
 	staticW := httptest.NewRecorder()
-	mux.ServeHTTP(staticW, staticReq)
+	api.App.DeploymentManager.ServeHTTP(staticW, staticReq)
 	if staticW.Code != http.StatusOK || staticW.Body.String() != "hello" {
 		t.Fatalf("static site unavailable: code=%d body=%q", staticW.Code, staticW.Body.String())
+	}
+	legacyReq := httptest.NewRequest(http.MethodGet, "/static/demo/", nil)
+	legacyW := httptest.NewRecorder()
+	mux.ServeHTTP(legacyW, legacyReq)
+	if legacyW.Code != http.StatusNotFound {
+		t.Fatalf("legacy static path must be unavailable, got %d", legacyW.Code)
 	}
 	records, err := api.App.Approvals.QueryAudit(map[string]string{"tool": "deploy_tool"}, 20, 0)
 	if err != nil {
@@ -209,11 +216,13 @@ func TestMCPRuntimeDeploymentApprovalAndAuditFlow(t *testing.T) {
 		LogStore: storeRoot,
 		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
 		Admin:    config.AdminConfig{Enabled: true, BaseURL: "http://admin.test", Approval: config.ApprovalConfig{Enabled: true}},
-		StaticHosting: config.StaticHosting{
-			MaxFiles:        100,
-			MaxTotalBytes:   50 << 20,
-			MaxFileBytes:    50 << 20,
-			RequireApproval: true,
+		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public",
+			Static: config.StaticHosting{
+				MaxFiles:        100,
+				MaxTotalBytes:   50 << 20,
+				MaxFileBytes:    50 << 20,
+				RequireApproval: true,
+			},
 		},
 		Workspaces: []config.Workspace{{
 			ID:               "ws",
@@ -308,9 +317,9 @@ func TestMCPRuntimeDeploymentApprovalAndAuditFlow(t *testing.T) {
 		t.Fatalf("approved deployment should remove source when preserve_source=false: %v", err)
 	}
 
-	staticReq := httptest.NewRequest(http.MethodGet, "/static/approved-site/", nil)
+	staticReq := httptest.NewRequest(http.MethodGet, "https://approved-site.apps.test/", nil)
 	staticW := httptest.NewRecorder()
-	mux.ServeHTTP(staticW, staticReq)
+	application.DeploymentManager.ServeHTTP(staticW, staticReq)
 	if staticW.Code != http.StatusOK || staticW.Body.String() != "approved" {
 		t.Fatalf("approved site unavailable: code=%d body=%q", staticW.Code, staticW.Body.String())
 	}
@@ -347,7 +356,11 @@ func TestMCPRuntimeGlobalApprovalSwitchBypassesStaticApproval(t *testing.T) {
 	cfg.LogStore = storeRoot
 	cfg.HTTP.BaseURL = "http://127.0.0.1:8000"
 	cfg.Admin.Approval.Enabled = false
-	cfg.StaticHosting.RequireApproval = true
+	cfg.Deployments.Static.RequireApproval = true
+	cfg.Deployments.PublicBaseURL = "https://apps.test"
+	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
+	cfg.Deployments.DefaultAccess = "public"
+	cfg.HTTP.BaseURL = "https://control.test"
 	cfg.Workspaces = []config.Workspace{{
 		ID:    "ws",
 		Roots: []string{workspaceRoot},
@@ -500,7 +513,11 @@ func TestMCPRuntimeUsesUnifiedApprovalRules(t *testing.T) {
 			MaxSyncWaitSeconds: 2,
 			Rules:              rules,
 		}
-		cfg.StaticHosting.RequireApproval = true
+		cfg.Deployments.Static.RequireApproval = true
+		cfg.Deployments.PublicBaseURL = "https://apps.test"
+		cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
+		cfg.Deployments.DefaultAccess = "public"
+		cfg.HTTP.BaseURL = "https://control.test"
 		cfg.Workspaces = []config.Workspace{{
 			ID:    "ws",
 			Roots: []string{workspaceRoot},

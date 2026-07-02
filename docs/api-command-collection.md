@@ -52,7 +52,8 @@ tool_arguments:
 
 分为 8 类：
 
-- 部署只读页面：`http.base_url/deploys`
+- public 部署只读页面：`deployments.public_base_url/deploys`
+- private 部署只读页面：`deployments.private_base_url/deploys`
 - 部署管理页面：`approval.base_url/deploy-mgr`
 - 工具发现与直调：`/tools`、`/tools/{name}`、`/tools/{name}/call`
 - 任务提交与查询：`/tasks`、`/tasks/{id}/*`
@@ -249,26 +250,28 @@ xargs -I{} curl "http://127.0.0.1:8000/tools/read_file/call" \
 
 ### 部署查看与管理页面
 
-两个页面按 Host 和 Path 完全分离：
+查看与管理页面按 Host、Path 和 listener 完全分离：
 
-- `GET {http.base_url}/deploys`：只读查看全部静态和动态部署，不生成停止、启动或删除表单。
+- `GET {deployments.public_base_url}/deploys`：只读查看 public 部署。
+- `GET {deployments.private_base_url}/deploys`：只读查看 private 部署。
 - `GET {approval.base_url}/deploy-mgr`：部署管理页面。
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/stop`
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/start`
 - `POST {approval.base_url}/deploy-mgr/actions/{type}/{name}/delete`
 
-`/deploys` 只允许通过 `http.base_url` 的 Host 访问；`/deploy-mgr` 及其操作只允许通过 `approval.base_url` 的 Host 访问。交叉访问统一返回 `404`。旧 `/deployment-ui` 路径不再提供服务。
+public `/deploys` 只挂载在 `deployments.public_bind`，private `/deploys` 只挂载在 `deployments.private_bind`；控制面不再提供 `/deploys`。`/deploy-mgr` 及其操作只允许通过 `approval.base_url` 的 Host 访问。交叉访问统一返回 `404`。旧 `/deployment-ui` 路径不再提供服务。
 
-管理操作通过现有 task/approval 管线执行，不会绕过 `approval.rules`、`static_hosting.require_approval` 或 `dynamic_hosting.require_approval`；需要审批时浏览器会跳转到对应审批页面，批准后原任务继续执行。
+管理操作通过现有 task/approval 管线执行，不会绕过 `approval.rules`、`deployments.static.require_approval` 或 `deployments.dynamic.require_approval`；需要审批时浏览器会跳转到对应审批页面，批准后原任务继续执行。
 
 删除表单必须包含 `confirm=delete`。浏览器管理操作要求 `Origin` 与 `approval.base_url` 的 scheme 和 host 一致，跨站请求返回 `403`。两个页面都兼容各自 base URL 中的反向代理路径前缀。
 
 ```bash
-curl "https://control.example.com/deploys" \
+curl "https://apps.example.com/deploys"
+curl "https://private-apps.example.com/deploys" \
   -H "Authorization: Bearer <your-token>"
 ```
 
-### 动态网页部署
+### 应用入口与动态网页部署
 
 仓库提供完整占位模板 `localgate.example.yaml`。首次配置可执行：
 
@@ -276,9 +279,13 @@ curl "https://control.example.com/deploys" \
 cp localgate.example.yaml localgate.yaml
 ```
 
-启用动态托管前，至少替换 `dynamic_hosting.control_hosts`、`dynamic_hosting.app_domain` 和 `dynamic_hosting.allowed_executables`；生产环境建议为 executable 使用绝对路径。
+控制面 Host 直接由 `http.base_url` 派生；`deployments.public_base_url` 和 `deployments.private_base_url` 用于静态站点与动态应用的 Host 路由。部署参数 `options.access` 支持 `public` 或 `private`，省略时使用 `default_access`。静态部署不再提供控制面 `/static/docs/` 路径。
 
-启用 `dynamic_hosting` 后，可通过统一工具部署长期运行的 HTTP 应用。进程必须读取 LocalGate 注入的 `HOST=127.0.0.1` 和 `PORT`，并且 `argv[0]` 必须命中 `allowed_executables`。
+管理页面 `/deploy-mgr` 可以把现有静态或动态 deployment 在 public/private 之间转换。转换会进入现有 task/approval 管线，成功后旧域名立即返回 `404`。
+
+启用动态进程托管前，还必须配置 `deployments.dynamic.allowed_executables`；生产环境建议为 executable 使用绝对路径。
+
+启用 `deployments.dynamic` 后，可通过统一工具部署长期运行的 HTTP 应用。进程必须读取 LocalGate 注入的 `HOST=127.0.0.1` 和 `PORT`，并且 `argv[0]` 必须命中 `allowed_executables`。
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/tasks" \
@@ -306,7 +313,7 @@ curl -X POST "http://127.0.0.1:8000/tasks" \
   }'
 ```
 
-部署通过健康检查后，默认公开地址为 `https://blog.<dynamic_hosting.app_domain>/`。
+部署通过健康检查后，地址由 `options.access` 选择的 base URL 派生。例如 `public_base_url=https://apps.example.com` 时，`blog` 的 public 地址为 `https://blog.apps.example.com/`。
 
 生命周期工具：`get_deployment`、`restart_deployment`、`get_deployment_logs`、`stop_deployment`、`start_deployment`、`list_deployment_releases`、`rollback_deployment`。动态部署、覆盖、删除和 rollback 默认进入高风险审批；审批前不会启动进程。
 
@@ -844,13 +851,25 @@ OUTPUT=./bin/localgate-dev ./scripts/build.sh
 GOOS=linux GOARCH=arm64 ./scripts/build.sh
 ```
 
+
+控制面、public deployment 和 private deployment 使用三个独立 listener：
+
+```yaml
+bind: "127.0.0.1:3737"
+deployments:
+  public_bind: "127.0.0.1:3738"
+  private_bind: "127.0.0.1:3740"
+```
+
+三个配置必须使用不同 TCP 端口。控制面 listener 不注册任何 deployment handler；public/private listener 分别只服务对应 access 的部署和 `/deploys` 列表，也不注册 `/tasks`、`/mcp`、管理后台或控制面 `/healthz`。
+
 ### 启动脚本参数
 
 HTTP 启动脚本支持：
 
 ```bash
 CONFIG=./localgate.yaml ./scripts/start-http.sh
-BIND=127.0.0.1:9000 ./scripts/start-http.sh
+BIND=127.0.0.1:9000 PUBLIC_DEPLOYMENTS_BIND=127.0.0.1:9001 PRIVATE_DEPLOYMENTS_BIND=127.0.0.1:9003 ./scripts/start-http.sh
 SKIP_BUILD=1 ./scripts/start-http.sh
 DAEMON=1 ./scripts/start-http.sh
 DAEMON=1 LOG_FILE=./.localgate/run/http.log PID_FILE=./.localgate/run/http.pid ./scripts/start-http.sh
@@ -902,6 +921,8 @@ daemon 启动的子进程会自动注入以下 runtime 环境变量，供自升�
 - `LOCALGATE_RUNTIME_BIN`
 - `LOCALGATE_RUNTIME_CONFIG`
 - `LOCALGATE_RUNTIME_BIND`
+- `LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND`
+- `LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND`
 - `LOCALGATE_RUNTIME_PID_FILE`
 - `LOCALGATE_RUNTIME_LOG_FILE`
 - `LOCALGATE_RUNTIME_RUN_DIR`

@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	baseURL := flag.String("base-url", "http://127.0.0.1:3737", "LocalGate base URL")
+	baseURL := flag.String("base-url", "http://127.0.0.1:3739", "LocalGate admin base URL")
 	id := flag.String("id", "", "approval id")
 	action := flag.String("action", "approve", "approve or reject")
 	actor := flag.String("actor", "cli", "approval actor")

@@ -127,8 +127,8 @@ func newDynamicTestService(t *testing.T, managedRoot string) (*Service, string, 
 		t.Fatal(err)
 	}
 	cfg := config.DynamicHosting{
-		Enabled: true, ControlHosts: []string{"control.test"}, AppDomain: "apps.test",
-		PublicScheme: "https", AllowedExecutables: []string{executable},
+		Enabled: true, ControlBaseURL: "https://control.test", PublicBaseURL: "https://apps.test",
+		PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public", AllowedExecutables: []string{executable},
 		EnvAllowlist: []string{"LOCALGATE_DYNAMIC_HELPER"}, MaxApps: 5,
 		MaxFiles: 100, MaxTotalBytes: 10 << 20, MaxFileBytes: 1 << 20,
 		StartupTimeoutSeconds: 5, ShutdownTimeoutSeconds: 2,
@@ -220,6 +220,81 @@ func TestDynamicDeploymentLifecycleAndProxy(t *testing.T) {
 	}
 }
 
+func TestDynamicRoutingMetadataIsDerivedFromCurrentConfig(t *testing.T) {
+	managedRoot := filepath.Join(t.TempDir(), "managed")
+	if err := os.MkdirAll(managedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry := `{
+  "deployments": {
+    "demo": {
+      "name": "demo",
+      "type": "dynamic",
+      "workspace_id": "ws",
+      "hostname": "demo.old.test",
+      "url": "https://demo.old.test/",
+      "active_release": "release-a",
+      "desired_state": "stopped",
+      "status": "stopped",
+      "health": "stopped",
+      "argv": ["unused"],
+      "working_dir": ".",
+      "health_path": "/healthz",
+      "restart_policy": "never",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z",
+      "file_count": 1,
+      "total_bytes": 2
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(managedRoot, "deployments.json"), []byte(registry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(managedRoot, config.DynamicHosting{
+		Enabled: true, PublicBaseURL: "http://apps.new.test", PrivateBaseURL: "http://private.apps.new.test", DefaultAccess: "public",
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+
+	view, err := service.Get("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Hostname != "demo.apps.new.test" || view.URL != "http://demo.apps.new.test/" {
+		t.Fatalf("routing metadata was not derived from current config: %#v", view)
+	}
+
+	service.mu.RLock()
+	deployment := service.deployments["demo"]
+	service.mu.RUnlock()
+	if err := service.updateDeployment(deployment); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := os.ReadFile(filepath.Join(managedRoot, "deployments.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), `"hostname"`) || strings.Contains(string(persisted), `"url"`) {
+		t.Fatalf("derived routing metadata must not be persisted: %s", persisted)
+	}
+
+	oldReq := httptest.NewRequest(http.MethodGet, "http://demo.old.test/", nil)
+	oldW := httptest.NewRecorder()
+	service.ServeHTTP(oldW, oldReq)
+	if oldW.Code != http.StatusNotFound {
+		t.Fatalf("old configured host should not route, got %d", oldW.Code)
+	}
+	newReq := httptest.NewRequest(http.MethodGet, "http://demo.apps.new.test/", nil)
+	newW := httptest.NewRecorder()
+	service.ServeHTTP(newW, newReq)
+	if newW.Code != http.StatusServiceUnavailable {
+		t.Fatalf("current configured host should resolve the stopped deployment, got %d", newW.Code)
+	}
+}
+
 func TestDynamicDeploymentRecovery(t *testing.T) {
 	managedRoot := filepath.Join(t.TempDir(), "managed")
 	service, source, executable := newDynamicTestService(t, managedRoot)
@@ -246,8 +321,8 @@ func TestDynamicDeploymentRecovery(t *testing.T) {
 func newDynamicTestServiceAtExistingWorkspace(t *testing.T, managedRoot, workspaceRoot, executable string) (*Service, string, string) {
 	t.Helper()
 	cfg := config.DynamicHosting{
-		Enabled: true, ControlHosts: []string{"control.test"}, AppDomain: "apps.test",
-		PublicScheme: "https", AllowedExecutables: []string{executable},
+		Enabled: true, ControlBaseURL: "https://control.test", PublicBaseURL: "https://apps.test",
+		PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public", AllowedExecutables: []string{executable},
 		EnvAllowlist: []string{"LOCALGATE_DYNAMIC_HELPER"}, MaxApps: 5,
 		MaxFiles: 100, MaxTotalBytes: 10 << 20, MaxFileBytes: 1 << 20,
 		StartupTimeoutSeconds: 5, ShutdownTimeoutSeconds: 2,

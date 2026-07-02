@@ -21,7 +21,7 @@
 
 当前分支已经实现：
 
-- `dynamic_hosting` 配置、默认关闭和启动校验；
+- `deployments.dynamic` 配置、默认关闭和启动校验；
 - 控制面 Host 白名单与应用 Host 隔离；
 - workspace 源码安全快照和托管 release；
 - argv 启动、loopback 端口、健康检查和进程组终止；
@@ -49,15 +49,17 @@
 LocalGate 当前已经具备：
 
 - 统一的 `deploy_tool`、`list_deployments`、`delete_deployment` 工具入口；
-- 静态站点的安全复制、原子激活、注册表和 `/static/{site}/` 服务；
+- 静态站点的安全复制、原子激活和注册表；静态与动态部署现统一使用 所选 base URL 主机下的 `{name}` 单层子域名路由，不再提供 `/static/{site}/` 服务；
+- 动态 deployment 注册表只保存稳定运行事实，不持久化 `hostname` 或 `url`；公开地址始终由当前 deployment name 与所选 base URL 派生，因此修改 base URL 并重启后不需要迁移动态注册表；
+- deployment 持久化 `access: public | private`，并分别映射到 `public_base_url` 与 `private_base_url`；旧记录缺省按 public 兼容，新部署默认 private，管理页面可通过受审批操作转换访问级别；
 - task、approval、audit 和统一错误返回；
 - HTTP、MCP stdio、MCP Go、HTTP MCP Runtime 等多种调用入口；
 - shell task 和交互 session；
-- Cloudflare Tunnel 可将公网 Host 转发到同一个 LocalGate HTTP 端口。
+- Cloudflare Tunnel 必须将控制面 Host 转发到 `bind`，将 public 应用 Host 转发到 `deployments.public_bind`，将 private 应用 Host 转发到 `deployments.private_bind`。
 
 本计划提出时主要缺少：
 
-- 按 Host 区分控制面和动态应用；
+- 控制面和应用面使用独立监听端口，并在各自端口继续执行 Host 校验；
 - 长期运行进程的独立 supervisor；
 - 动态 deployment 注册表、健康检查、日志和恢复；
 - 动态应用反向代理；
@@ -136,7 +138,7 @@ shop.pushan.eu.org    → shop 动态应用
 动态应用默认使用独立 hostname：
 
 ```text
-{name}.{dynamic_hosting.app_domain}
+{name}.<selected-base-host>
 ```
 
 例如：
@@ -155,24 +157,25 @@ blog.pushan.eu.org
 
 这样客户端继续运行在 `/`，通常不需要 base path 或 path rewrite。
 
-### 4.2 控制面和应用面必须按 Host 隔离
+### 4.2 控制面和应用面必须按端口与 Host 双重隔离
 
-当前 LocalGate 只按 path 路由，并接受所有能到达监听端口的 Host。动态功能上线前必须先完成 Host 隔离。
-
-预期行为：
+控制面和 deployment 应用面不能共享 listener：
 
 ```text
-Host == control_hosts 中的精确值
-    → LocalGate 控制面
+bind
+    → 只挂载 LocalGate 控制面、MCP、任务、审批和管理后台
+    → 普通控制面路由仅接受 `http.base_url` 的 Host；管理路由仅接受 `admin.base_url` 的 Host
 
-Host == {registered_name}.{app_domain}
-    → 对应动态 deployment
+deployments.public_bind
+    → 只挂载 public deployment handler
+    → 接受 public 根域 `/deploys` 和 public deployment 子域
 
-其他 Host
-    → 404
+deployments.private_bind
+    → 只挂载 private deployment handler
+    → 接受 private 根域 `/deploys` 和 private deployment 子域
 ```
 
-控制面 host 的优先级必须高于应用域名后缀匹配。
+`bind`、`deployments.public_bind` 和 `deployments.private_bind` 必须使用不同 TCP 端口。public/private handler 固定绑定 access，即使错误 Host 被转发到另一个端口，也不能跨 access 提供应用。
 
 ### 4.3 动态进程由独立 supervisor 管理
 
@@ -269,81 +272,51 @@ internal/dynamic/
 
 ## 6. 配置模型
 
-仓库中的 `localgate.example.yaml` 提供无个人路径、域名和凭据的完整占位配置。实际启用动态托管前，必须替换 control host、app domain 和 executable 绝对路径。
-
-建议新增：
+静态与动态部署统一放在 `deployments` 下。共享入口和名称空间配置位于父级，类型专属配置位于 `static`、`dynamic` 子结构：
 
 ```yaml
-dynamic_hosting:
-  enabled: false
+deployments:
+  public_bind: 127.0.0.1:3738
+  private_bind: 127.0.0.1:3740
+  public_base_url: https://apps.example.com
+  private_base_url: https://private-apps.example.com
+  default_access: private
+  reserved_names: [localgate, control, www, api, admin]
 
-  control_hosts:
-    - macgate.pushan.eu.org
+  static:
+    max_files: 10000
+    max_total_bytes: 52428800
+    max_file_bytes: 52428800
+    require_approval: true
 
-  app_domain: pushan.eu.org
-  routing_mode: host
-
-  require_approval: true
-
-  reserved_names:
-    - macgate
-    - www
-    - api
-    - admin
-    - mcp
-    - tasks
-    - approvals
-    - static
-
-  allowed_executables:
-    - node
-    - npm
-    - python3
-    - uvicorn
-    - gunicorn
-
-  env_allowlist:
-    - NODE_ENV
-    - PYTHONPATH
-    - APP_ENV
-
-  max_apps: 20
-  max_files: 20000
-  max_total_bytes: 536870912
-  max_file_bytes: 104857600
-
-  startup_timeout_seconds: 20
-  shutdown_timeout_seconds: 5
-
-  restart_policy: on-failure
-  restart_max_attempts: 3
-  restart_backoff_seconds: 2
-  restart_reset_seconds: 60
-
-  max_log_bytes: 10485760
-  max_log_files: 3
-  release_retention: 3
-
-  max_request_body_bytes: 33554432
-  max_concurrent_requests: 100
-  upstream_header_timeout_seconds: 30
-  max_response_header_bytes: 1048576
+  dynamic:
+    enabled: false
+    require_approval: true
+    allowed_executables:
+      - /absolute/path/to/node
+      - /absolute/path/to/python3
+    env_allowlist: [NODE_ENV, APP_ENV]
+    max_apps: 20
+    max_files: 20000
+    max_total_bytes: 536870912
+    max_file_bytes: 104857600
+    startup_timeout_seconds: 20
+    shutdown_timeout_seconds: 5
+    restart_policy: on-failure
+    restart_max_attempts: 3
+    restart_backoff_seconds: 2
+    restart_reset_seconds: 60
+    max_log_bytes: 10485760
+    max_log_files: 3
+    release_retention: 3
+    max_request_body_bytes: 33554432
+    max_request_header_bytes: 1048576
+    max_concurrent_requests: 100
+    upstream_header_timeout_seconds: 30
+    max_response_header_bytes: 1048576
 ```
 
-默认值原则：
-
-- `enabled=false`；
-- `require_approval=true`；
-- 不默认允许任意 executable；
-- 不默认信任 `X-Forwarded-Host`；
-- 未配置 `control_hosts` 或 `app_domain` 时拒绝启用动态托管。
-
-当前实现说明：
-
-- 已实现上述主要字段以及 `public_scheme`、restart reset、日志保留、release 保留和 proxy 限制；
-- 当前只支持 Host 路由，因此没有暴露 `routing_mode` 配置；
-- executable 和 env 均采用显式 allowlist；
-- 动态托管关闭时，损坏的 dynamic registry 不阻断 LocalGate 控制面启动。
+`deployments.public_bind`、`deployments.private_bind`、控制面 `bind` 和 `admin.bind` 必须使用不同 TCP 端口。只有启用 `deployments.dynamic.enabled` 时才强制要求 `allowed_executables`。
 
 ## 7. Host 路由和安全边界
 
@@ -394,16 +367,17 @@ default:
 
 ### 7.4 Cloudflare Tunnel
 
-推荐远程 Tunnel 只配置一个动态应用通配符入口：
+public 和 private 应用分别配置入口：
 
 ```text
-*.pushan.eu.org → http://127.0.0.1:8000
+apps.example.com, *.apps.example.com → http://127.0.0.1:3738
+private-apps.example.com, *.private-apps.example.com → http://127.0.0.1:3740
 ```
 
 控制面可以使用一个精确 hostname：
 
 ```text
-macgate.pushan.eu.org → http://127.0.0.1:8000
+macgate.pushan.eu.org → http://127.0.0.1:3737
 ```
 
 Cloudflare 侧不得固定覆盖发送给 LocalGate 的 HTTP Host header，否则 LocalGate 无法分流。
@@ -1136,8 +1110,8 @@ deployment_proxy_unavailable
 
 实现：
 
-- `control_hosts`；
-- `app_domain`；
+- 控制面 Host 由 `http.base_url` 派生；
+- selected base URL host；
 - Host normalize；
 - 控制面 Host 白名单；
 - 未知 Host 404；

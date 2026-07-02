@@ -12,6 +12,7 @@ import (
 
 	"localgate/internal/app"
 	"localgate/internal/core"
+	"localgate/internal/deployment"
 	"localgate/internal/invocation"
 	mcpruntime "localgate/internal/mcp"
 	mcptools "localgate/internal/mcp/tools"
@@ -25,11 +26,10 @@ const (
 )
 
 type mcpRuntime struct {
-	api           *API
-	workspaceID   string
-	registry      *mcpruntime.Registry
-	dispatcher    *mcpruntime.Dispatcher
-	staticService *static.Service
+	api         *API
+	workspaceID string
+	registry    *mcpruntime.Registry
+	dispatcher  *mcpruntime.Dispatcher
 }
 
 type mcpRuntimeResponse struct {
@@ -54,8 +54,7 @@ func newMCPRuntime(api *API) (*mcpRuntime, error) {
 	if !ok {
 		return nil, errors.New("default workspace is not configured")
 	}
-	staticService := api.App.StaticService
-	if staticService == nil || api.App.DeploymentManager == nil {
+	if api.App.StaticService == nil || api.App.DeploymentManager == nil {
 		return nil, errors.New("deployment service is not configured")
 	}
 	registry := mcpruntime.NewRegistry()
@@ -63,6 +62,9 @@ func newMCPRuntime(api *API) (*mcpRuntime, error) {
 		return nil, err
 	}
 	if err := registry.Register(mcptools.NewDeleteDeploymentToolWithManager(api.App.DeploymentManager)); err != nil {
+		return nil, err
+	}
+	if err := registry.Register(mcptools.NewSetDeploymentAccessToolWithManager(api.App.DeploymentManager)); err != nil {
 		return nil, err
 	}
 	if err := registry.Register(mcptools.NewListDeploymentsToolWithManager(api.App.DeploymentManager)); err != nil {
@@ -76,11 +78,10 @@ func newMCPRuntime(api *API) (*mcpRuntime, error) {
 		}
 	}
 	return &mcpRuntime{
-		api:           api,
-		workspaceID:   api.DefaultWSID,
-		registry:      registry,
-		dispatcher:    mcpruntime.NewDispatcher(registry),
-		staticService: staticService,
+		api:         api,
+		workspaceID: api.DefaultWSID,
+		registry:    registry,
+		dispatcher:  mcpruntime.NewDispatcher(registry),
 	}, nil
 }
 
@@ -93,13 +94,11 @@ func (a *API) wireMCPRuntime(mux *http.ServeMux) {
 		}
 		mux.HandleFunc("/mcp/tools", unavailable)
 		mux.HandleFunc("/mcp/tools/execute", unavailable)
-		mux.HandleFunc(static.PublicPathPrefix, unavailable)
 		return
 	}
 	a.mcpRuntime = runtime
 	mux.HandleFunc("/mcp/tools", runtime.handleTools)
 	mux.HandleFunc("/mcp/tools/execute", runtime.handleExecute)
-	mux.Handle(static.PublicPathPrefix, runtime.staticService)
 }
 
 func (rt *mcpRuntime) handleTools(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +252,12 @@ func runtimeTaskErrorStatus(task *core.Task) (int, string) {
 	}
 	message := task.ErrorMsg
 	switch {
+	case strings.Contains(message, deployment.ErrAppHostingDisabled.Error()):
+		return http.StatusServiceUnavailable, "app_hosting_disabled"
+	case strings.Contains(message, deployment.ErrDeploymentNameConflict.Error()):
+		return http.StatusConflict, "deployment_name_conflict"
+	case strings.Contains(message, deployment.ErrDeploymentNameBlocked.Error()):
+		return http.StatusConflict, "deployment_name_unavailable"
 	case strings.Contains(message, mcptools.ErrUnsafeSourceRemoval.Error()):
 		return http.StatusBadRequest, "unsafe_source_removal"
 	case strings.Contains(message, static.ErrLimitExceeded.Error()):
@@ -318,6 +323,15 @@ func resolveRuntimeRequester(requester string, r *http.Request) string {
 func runtimeErrorStatus(err error) (int, string) {
 	if errors.Is(err, mcpruntime.ErrToolNotFound) {
 		return http.StatusNotFound, "tool_not_found"
+	}
+	if errors.Is(err, deployment.ErrAppHostingDisabled) {
+		return http.StatusServiceUnavailable, "app_hosting_disabled"
+	}
+	if errors.Is(err, deployment.ErrDeploymentNameConflict) {
+		return http.StatusConflict, "deployment_name_conflict"
+	}
+	if errors.Is(err, deployment.ErrDeploymentNameBlocked) {
+		return http.StatusConflict, "deployment_name_unavailable"
 	}
 	var inputErr *mcpruntime.InputValidationError
 	if errors.As(err, &inputErr) {

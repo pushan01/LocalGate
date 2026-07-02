@@ -169,6 +169,9 @@ func TestLoadUpgradeTokenFromEnvOnly(t *testing.T) {
 	withEnv(t, "LOCALGATE_UPGRADE_TOKEN", "upgrade-secret")
 	withEnv(t, "LOCALGATE_RUNTIME_MODE", "http_daemon")
 	withEnv(t, "LOCALGATE_RUNTIME_BIND", "127.0.0.1:8000")
+	withEnv(t, "LOCALGATE_RUNTIME_ADMIN_BIND", "127.0.0.1:8002")
+	withEnv(t, "LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND", "127.0.0.1:8001")
+	withEnv(t, "LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND", "127.0.0.1:8003")
 
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
@@ -182,6 +185,15 @@ func TestLoadUpgradeTokenFromEnvOnly(t *testing.T) {
 	}
 	if cfg.Runtime.Bind != "127.0.0.1:8000" {
 		t.Fatalf("unexpected runtime bind: %q", cfg.Runtime.Bind)
+	}
+	if cfg.Runtime.AdminBind != "127.0.0.1:8002" {
+		t.Fatalf("unexpected runtime admin bind: %q", cfg.Runtime.AdminBind)
+	}
+	if cfg.Runtime.PublicDeploymentBind != "127.0.0.1:8001" {
+		t.Fatalf("unexpected runtime public deployment bind: %q", cfg.Runtime.PublicDeploymentBind)
+	}
+	if cfg.Runtime.PrivateDeploymentBind != "127.0.0.1:8003" {
+		t.Fatalf("unexpected runtime private deployment bind: %q", cfg.Runtime.PrivateDeploymentBind)
 	}
 
 	summary := cfg.SafeSummary()
@@ -578,17 +590,17 @@ func toString(v any) string {
 
 func TestDefaultStaticHostingConfig(t *testing.T) {
 	cfg := Default()
-	if cfg.StaticHosting.MaxTotalBytes != 50<<20 || cfg.StaticHosting.MaxFileBytes != 50<<20 {
-		t.Fatalf("unexpected default static size limits: %#v", cfg.StaticHosting)
+	if cfg.Deployments.Static.MaxTotalBytes != 50<<20 || cfg.Deployments.Static.MaxFileBytes != 50<<20 {
+		t.Fatalf("unexpected default static size limits: %#v", cfg.Deployments.Static)
 	}
-	if cfg.StaticHosting.MaxFiles != 10_000 || !cfg.StaticHosting.RequireApproval {
-		t.Fatalf("unexpected default static config: %#v", cfg.StaticHosting)
+	if cfg.Deployments.Static.MaxFiles != 10_000 || !cfg.Deployments.Static.RequireApproval {
+		t.Fatalf("unexpected default static config: %#v", cfg.Deployments.Static)
 	}
 }
 
 func TestDefaultDynamicHostingConfig(t *testing.T) {
-	cfg := Default().DynamicHosting
-	if cfg.Enabled || !cfg.RequireApproval || cfg.PublicScheme != "https" {
+	cfg := Default().Deployments.Dynamic
+	if cfg.Enabled || !cfg.RequireApproval || cfg.DefaultAccess != "private" {
 		t.Fatalf("unexpected dynamic defaults: %#v", cfg)
 	}
 	if cfg.MaxApps != 20 || cfg.MaxFiles != 20_000 || cfg.RestartPolicy != "on-failure" {
@@ -715,7 +727,7 @@ func TestLoadApprovalRulesRejectInvalidEffect(t *testing.T) {
 func TestLoadStaticHostingConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "static_hosting:\n  max_files: 123\n  max_total_bytes: 4096\n  max_file_bytes: 2048\n  require_approval: false\nworkspaces:\n  - id: ws\n"
+	content := "deployments:\n  static:\n    max_files: 123\n    max_total_bytes: 4096\n    max_file_bytes: 2048\n    require_approval: false\nworkspaces:\n  - id: ws\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -723,29 +735,29 @@ func TestLoadStaticHostingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.StaticHosting.MaxFiles != 123 || cfg.StaticHosting.MaxTotalBytes != 4096 || cfg.StaticHosting.MaxFileBytes != 2048 || cfg.StaticHosting.RequireApproval {
-		t.Fatalf("unexpected static config: %#v", cfg.StaticHosting)
+	if cfg.Deployments.Static.MaxFiles != 123 || cfg.Deployments.Static.MaxTotalBytes != 4096 || cfg.Deployments.Static.MaxFileBytes != 2048 || cfg.Deployments.Static.RequireApproval {
+		t.Fatalf("unexpected static config: %#v", cfg.Deployments.Static)
 	}
 }
 
 func TestLoadStaticHostingFromEnv(t *testing.T) {
-	withEnv(t, "LOCALGATE_STATIC_MAX_FILES", "77")
-	withEnv(t, "LOCALGATE_STATIC_MAX_TOTAL_BYTES", "1000")
-	withEnv(t, "LOCALGATE_STATIC_MAX_FILE_BYTES", "500")
-	withEnv(t, "LOCALGATE_STATIC_REQUIRE_APPROVAL", "false")
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILES", "77")
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_TOTAL_BYTES", "1000")
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILE_BYTES", "500")
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_REQUIRE_APPROVAL", "false")
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.StaticHosting.MaxFiles != 77 || cfg.StaticHosting.MaxTotalBytes != 1000 || cfg.StaticHosting.MaxFileBytes != 500 || cfg.StaticHosting.RequireApproval {
-		t.Fatalf("unexpected static env config: %#v", cfg.StaticHosting)
+	if cfg.Deployments.Static.MaxFiles != 77 || cfg.Deployments.Static.MaxTotalBytes != 1000 || cfg.Deployments.Static.MaxFileBytes != 500 || cfg.Deployments.Static.RequireApproval {
+		t.Fatalf("unexpected static env config: %#v", cfg.Deployments.Static)
 	}
 }
 
 func TestLoadStaticHostingRejectsInvalidLimits(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "static_hosting:\n  max_files: 10\n  max_total_bytes: 100\n  max_file_bytes: 200\nworkspaces:\n  - id: ws\n"
+	content := "deployments:\n  static:\n    max_files: 10\n    max_total_bytes: 100\n    max_file_bytes: 200\nworkspaces:\n  - id: ws\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -759,14 +771,17 @@ func TestLoadDynamicHostingConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
 	content := `
-dynamic_hosting:
-  enabled: true
-  control_hosts: [Control.Example.Test.]
-  app_domain: Apps.Example.Test.
-  public_scheme: http
-  allowed_executables: [node]
-  env_allowlist: [NODE_ENV]
-  max_apps: 3
+http:
+  base_url: https://control.example.test
+deployments:
+  public_base_url: http://apps.example.test
+  private_base_url: https://private.apps.example.test
+  default_access: public
+  dynamic:
+    enabled: true
+    allowed_executables: [node]
+    env_allowlist: [NODE_ENV]
+    max_apps: 3
 workspaces:
   - id: ws
 `
@@ -777,13 +792,64 @@ workspaces:
 	if err != nil {
 		t.Fatalf("load dynamic config: %v", err)
 	}
-	dynamic := cfg.DynamicHosting
-	if !dynamic.Enabled || dynamic.AppDomain != "apps.example.test" || dynamic.ControlHosts[0] != "control.example.test" || dynamic.PublicScheme != "http" || dynamic.MaxApps != 3 {
+	dynamic := cfg.Deployments.Dynamic
+	if !dynamic.Enabled || dynamic.PublicBaseURL != "http://apps.example.test" || dynamic.PrivateBaseURL != "https://private.apps.example.test" || dynamic.DefaultAccess != "public" || dynamic.ControlBaseURL != "https://control.example.test" || dynamic.MaxApps != 3 {
 		t.Fatalf("unexpected dynamic config: %#v", dynamic)
 	}
-	summary := cfg.SafeSummary()["dynamic_hosting"].(map[string]any)
-	if summary["enabled"] != true || summary["app_domain"] != "apps.example.test" {
+	deploymentsSummary := cfg.SafeSummary()["deployments"].(map[string]any)
+	summary := deploymentsSummary["dynamic"].(map[string]any)
+	if summary["enabled"] != true || deploymentsSummary["public_base_url"] != "http://apps.example.test" || deploymentsSummary["private_base_url"] != "https://private.apps.example.test" {
 		t.Fatalf("unexpected dynamic summary: %#v", summary)
+	}
+}
+
+func TestLoadBaseURLRoutingWithoutDynamicRuntime(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "localgate.yaml")
+	content := `
+deployments:
+  public_base_url: https://apps.example.test
+  private_base_url: https://private.apps.example.test
+  dynamic:
+    enabled: false
+workspaces:
+  - id: ws
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load base URL routing config: %v", err)
+	}
+	if cfg.Deployments.Dynamic.Enabled || cfg.Deployments.PublicBaseURL != "https://apps.example.test" || cfg.Deployments.PrivateBaseURL != "https://private.apps.example.test" {
+		t.Fatalf("unexpected app routing config: %#v", cfg.Deployments.Dynamic)
+	}
+}
+
+func TestLoadPublicPrivateBaseURLs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	content := `
+deployments:
+  public_base_url: https://public.example.test
+  private_base_url: http://private.example.test
+  default_access: private
+  dynamic:
+    enabled: false
+workspaces:
+  - id: ws
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Deployments.Dynamic
+	if d.PublicBaseURL != "https://public.example.test" || d.PrivateBaseURL != "http://private.example.test" || d.DefaultAccess != "private" {
+		t.Fatalf("unexpected app hosting config: %#v", d)
 	}
 }
 
@@ -793,9 +859,11 @@ func TestLoadDynamicHostingRequiresRoutingAndExecutableConfig(t *testing.T) {
 		content string
 		want    string
 	}{
-		{"missing app domain", "dynamic_hosting:\n  enabled: true\n  control_hosts: [control.test]\n  allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "app_domain"},
-		{"missing control hosts", "dynamic_hosting:\n  enabled: true\n  app_domain: apps.test\n  allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "control_hosts"},
-		{"missing executables", "dynamic_hosting:\n  enabled: true\n  app_domain: apps.test\n  control_hosts: [control.test]\nworkspaces:\n  - id: ws\n", "allowed_executables"},
+		{"missing base URLs", "deployments:\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "base_url"},
+		{"missing private base URL", "deployments:\n  public_base_url: https://apps.test\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "must both be configured"},
+		{"missing executables", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\n  dynamic:\n    enabled: true\nworkspaces:\n  - id: ws\n", "allowed_executables"},
+		{"base URL with path", "deployments:\n  public_base_url: https://apps.test/root\n  private_base_url: https://private.apps.test\nworkspaces:\n  - id: ws\n", "must not contain"},
+		{"base URLs share hostname", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: http://apps.test\nworkspaces:\n  - id: ws\n", "different hostnames"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -814,27 +882,31 @@ func TestLoadDynamicHostingRequiresRoutingAndExecutableConfig(t *testing.T) {
 
 func TestLoadDynamicHostingProductionLimitsFromEnv(t *testing.T) {
 	values := map[string]string{
-		"LOCALGATE_DYNAMIC_REQUIRE_APPROVAL":                "false",
-		"LOCALGATE_DYNAMIC_RESERVED_NAMES":                  "one,two",
-		"LOCALGATE_DYNAMIC_ENV_ALLOWLIST":                   "APP_ENV,NODE_ENV",
-		"LOCALGATE_DYNAMIC_MAX_APPS":                        "9",
-		"LOCALGATE_DYNAMIC_MAX_FILES":                       "1000",
-		"LOCALGATE_DYNAMIC_MAX_TOTAL_BYTES":                 "9000",
-		"LOCALGATE_DYNAMIC_MAX_FILE_BYTES":                  "8000",
-		"LOCALGATE_DYNAMIC_STARTUP_TIMEOUT_SECONDS":         "11",
-		"LOCALGATE_DYNAMIC_SHUTDOWN_TIMEOUT_SECONDS":        "12",
-		"LOCALGATE_DYNAMIC_RESTART_POLICY":                  "never",
-		"LOCALGATE_DYNAMIC_RESTART_MAX_ATTEMPTS":            "4",
-		"LOCALGATE_DYNAMIC_RESTART_BACKOFF_SECONDS":         "5",
-		"LOCALGATE_DYNAMIC_RESTART_RESET_SECONDS":           "70",
-		"LOCALGATE_DYNAMIC_MAX_LOG_BYTES":                   "7000",
-		"LOCALGATE_DYNAMIC_MAX_LOG_FILES":                   "4",
-		"LOCALGATE_DYNAMIC_RELEASE_RETENTION":               "5",
-		"LOCALGATE_DYNAMIC_MAX_REQUEST_BODY_BYTES":          "6000",
-		"LOCALGATE_DYNAMIC_MAX_REQUEST_HEADER_BYTES":        "5500",
-		"LOCALGATE_DYNAMIC_MAX_CONCURRENT_REQUESTS":         "6",
-		"LOCALGATE_DYNAMIC_UPSTREAM_HEADER_TIMEOUT_SECONDS": "13",
-		"LOCALGATE_DYNAMIC_MAX_RESPONSE_HEADER_BYTES":       "5000",
+		"LOCALGATE_HTTP_BASE_URL":                                       "https://control.env.test",
+		"LOCALGATE_DEPLOYMENTS_PUBLIC_BASE_URL":                         "https://apps.env.test",
+		"LOCALGATE_DEPLOYMENTS_PRIVATE_BASE_URL":                        "http://private.apps.env.test",
+		"LOCALGATE_DEPLOYMENTS_DEFAULT_ACCESS":                          "public",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_REQUIRE_APPROVAL":                "false",
+		"LOCALGATE_DEPLOYMENTS_RESERVED_NAMES":                          "one,two",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_ENV_ALLOWLIST":                   "APP_ENV,NODE_ENV",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_APPS":                        "9",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_FILES":                       "1000",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_TOTAL_BYTES":                 "9000",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_FILE_BYTES":                  "8000",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_STARTUP_TIMEOUT_SECONDS":         "11",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_SHUTDOWN_TIMEOUT_SECONDS":        "12",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_POLICY":                  "never",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_MAX_ATTEMPTS":            "4",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_BACKOFF_SECONDS":         "5",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_RESTART_RESET_SECONDS":           "70",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_LOG_BYTES":                   "7000",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_LOG_FILES":                   "4",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_RELEASE_RETENTION":               "5",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_REQUEST_BODY_BYTES":          "6000",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_REQUEST_HEADER_BYTES":        "5500",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_CONCURRENT_REQUESTS":         "6",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_UPSTREAM_HEADER_TIMEOUT_SECONDS": "13",
+		"LOCALGATE_DEPLOYMENTS_DYNAMIC_MAX_RESPONSE_HEADER_BYTES":       "5000",
 	}
 	for key, value := range values {
 		withEnv(t, key, value)
@@ -843,9 +915,12 @@ func TestLoadDynamicHostingProductionLimitsFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	d := cfg.DynamicHosting
+	d := cfg.Deployments.Dynamic
 	if d.RequireApproval || d.MaxApps != 9 || d.MaxFiles != 1000 || d.MaxTotalBytes != 9000 || d.MaxFileBytes != 8000 {
 		t.Fatalf("unexpected dynamic capacity env config: %#v", d)
+	}
+	if d.PublicBaseURL != "https://apps.env.test" || d.PrivateBaseURL != "http://private.apps.env.test" || d.DefaultAccess != "public" || d.ControlBaseURL != "https://control.env.test" {
+		t.Fatalf("unexpected dynamic routing env config: %#v", d)
 	}
 	if d.StartupTimeoutSeconds != 11 || d.ShutdownTimeoutSeconds != 12 || d.RestartPolicy != "never" || d.RestartMaxAttempts != 4 || d.RestartBackoffSeconds != 5 || d.RestartResetSeconds != 70 {
 		t.Fatalf("unexpected dynamic lifecycle env config: %#v", d)
@@ -868,11 +943,14 @@ func TestExampleConfigLoadsWithDynamicPlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load example config: %v", err)
 	}
-	d := cfg.DynamicHosting
+	d := cfg.Deployments.Dynamic
 	if d.Enabled {
 		t.Fatal("example dynamic hosting must remain disabled by default")
 	}
-	if len(d.ControlHosts) != 1 || d.ControlHosts[0] != "control.example.com" || d.AppDomain != "apps.example.com" {
+	if cfg.Bind != "127.0.0.1:3737" || cfg.Admin.Bind != "127.0.0.1:3739" || cfg.Deployments.PublicBind != "127.0.0.1:3738" || cfg.Deployments.PrivateBind != "127.0.0.1:3740" {
+		t.Fatalf("example listeners must be separated: control=%q admin=%q public=%q private=%q", cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind)
+	}
+	if d.ControlBaseURL != cfg.HTTP.BaseURL || d.PublicBaseURL != "https://apps.example.com" || d.PrivateBaseURL != "https://private-apps.example.com" || d.DefaultAccess != "private" {
 		t.Fatalf("unexpected example routing placeholders: %#v", d)
 	}
 	if len(d.AllowedExecutables) != 2 || !strings.HasPrefix(d.AllowedExecutables[0], "/absolute/path/to/") {
@@ -880,5 +958,144 @@ func TestExampleConfigLoadsWithDynamicPlaceholders(t *testing.T) {
 	}
 	if d.MaxRequestHeaderBytes != 1<<20 || d.MaxRequestBodyBytes != 32<<20 || d.ReleaseRetention != 3 || d.MaxLogFiles != 3 {
 		t.Fatalf("unexpected example production limits: %#v", d)
+	}
+}
+
+func TestDeploymentBindOverridesAndUsesSeparatePorts(t *testing.T) {
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_PUBLIC_BIND", "127.0.0.1:4888")
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_PRIVATE_BIND", "127.0.0.1:4889")
+	cfg, err := Load(LoadOptions{PublicDeploymentsBind: "127.0.0.1:4998", PrivateDeploymentsBind: "127.0.0.1:4999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Deployments.PublicBind != "127.0.0.1:4998" || cfg.Deployments.PrivateBind != "127.0.0.1:4999" {
+		t.Fatalf("unexpected deployment bind overrides: public=%q private=%q", cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind)
+	}
+	summary := cfg.SafeSummary()
+	deployments := summary["deployments"].(map[string]any)
+	if deployments["public_bind"] != "127.0.0.1:4998" || deployments["private_bind"] != "127.0.0.1:4999" {
+		t.Fatalf("deployment binds missing from safe summary: %#v", summary)
+	}
+}
+
+func TestAdminBindOverridesAndUsesSeparatePort(t *testing.T) {
+	withEnv(t, "LOCALGATE_ADMIN_BIND", "127.0.0.1:4887")
+	cfg, err := Load(LoadOptions{AdminBind: "127.0.0.1:4998"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Admin.Bind != "127.0.0.1:4998" {
+		t.Fatalf("unexpected admin bind override: %q", cfg.Admin.Bind)
+	}
+	summary := cfg.SafeSummary()
+	if summary["admin"].(map[string]any)["bind"] != "127.0.0.1:4998" {
+		t.Fatalf("admin bind missing from safe summary: %#v", summary)
+	}
+}
+
+func TestAdminBindMustUseDifferentPortFromControl(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 0.0.0.0:4800\n  base_url: https://admin.test\nworkspaces:\n  - id: ws\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "admin.bind must use a different TCP port") {
+		t.Fatalf("expected separate admin port validation error, got %v", err)
+	}
+}
+
+func TestDeploymentBindsMustUseDifferentPortsFromAdmin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 127.0.0.1:4801\n  base_url: https://admin.test\ndeployments:\n  public_bind: 0.0.0.0:4801\n  private_bind: 0.0.0.0:4802\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\nworkspaces:\n  - id: ws\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "deployments.public_bind must use a different TCP port from admin.bind") {
+		t.Fatalf("expected admin/deployment port validation error, got %v", err)
+	}
+}
+
+func TestPublicAndPrivateDeploymentBindsMustDiffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	content := `
+bind: 127.0.0.1:4800
+deployments:
+  public_bind: 0.0.0.0:4802
+  private_bind: 127.0.0.1:4802
+  public_base_url: https://apps.test
+  private_base_url: https://private.apps.test
+  dynamic:
+    enabled: false
+workspaces:
+  - id: ws
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "public_bind and deployments.private_bind must use different TCP ports") {
+		t.Fatalf("expected separate deployment port validation error, got %v", err)
+	}
+}
+
+func TestDeploymentBindsRejectInvalidAddress(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	if err := os.WriteFile(path, []byte(`deployments:
+  public_bind: not-an-address
+  private_bind: 127.0.0.1:4803
+workspaces:
+  - id: ws
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "deployments.public_bind is invalid") {
+		t.Fatalf("expected invalid deployment bind error, got %v", err)
+	}
+}
+
+func TestRejectLegacyDeploymentConfigShape(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"top-level deployment bind", `deployment_bind: 127.0.0.1:3738
+`, "move deployment settings under deployments"},
+		{"top-level static hosting", `static_hosting:
+  max_files: 10
+`, "move deployment settings under deployments"},
+		{"top-level dynamic hosting", `dynamic_hosting:
+  enabled: false
+`, "move deployment settings under deployments"},
+		{"single deployment bind", `deployments:
+  bind: 127.0.0.1:3738
+`, "use deployments.public_bind and deployments.private_bind"},
+		{"shared field nested under dynamic", `deployments:
+  dynamic:
+    public_base_url: https://apps.test
+`, "move it to deployments.public_base_url"},
+		{"removed deployments control hosts", `deployments:
+  control_hosts: [control.test]
+`, "derived from http.base_url"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "localgate.yaml")
+			if err := os.WriteFile(path, []byte(test.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(LoadOptions{Path: path, PathProvided: true})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q error, got %v", test.want, err)
+			}
+		})
 	}
 }

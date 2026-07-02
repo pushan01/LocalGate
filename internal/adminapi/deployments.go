@@ -125,6 +125,13 @@ func (a *API) handleDeploymentRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		args["release_id"] = body.ReleaseID
 		tool = "rollback_deployment"
+	case "set-public", "set-private":
+		tool = "set_deployment_access"
+		if action == "set-public" {
+			args["access"] = deployment.AccessPublic
+		} else {
+			args["access"] = deployment.AccessPrivate
+		}
 	case "delete":
 		var body struct {
 			Confirmation string `json:"confirmation"`

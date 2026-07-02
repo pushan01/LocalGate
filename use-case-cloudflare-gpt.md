@@ -236,17 +236,23 @@ GPT 应用通过 LocalGate 执行：
 在 LocalGate 中启用动态托管：
 
 ```yaml
-dynamic_hosting:
-  enabled: true
-  control_hosts:
-    - "gate.example.com"
-  app_domain: "apps.example.com"
-  public_scheme: "https"
-  require_approval: true
+bind: "127.0.0.1:3737"
+http:
+  base_url: "https://gate.example.com"
 
-  allowed_executables:
-    - "/usr/bin/python3"
-    - "/usr/bin/node"
+deployments:
+  public_bind: "127.0.0.1:3738"
+  private_bind: "127.0.0.1:3740"
+  public_base_url: "https://apps.example.com"
+  private_base_url: "https://private-apps.example.com"
+  default_access: "private"
+
+  dynamic:
+    enabled: true
+    require_approval: true
+    allowed_executables:
+      - "/usr/bin/python3"
+      - "/usr/bin/node"
 ```
 
 GPT 应用完成代码修改和测试后，可以调用动态部署工具：
