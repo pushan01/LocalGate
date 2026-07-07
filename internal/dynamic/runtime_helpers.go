@@ -344,7 +344,7 @@ func (s *Service) appLocationForAccess(name, access string) (string, string) {
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", ""
 	}
-	hostname := name + "." + strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	hostname := name + s.config.DomainSuffix + "." + strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
 	location := *parsed
 	location.Host = hostname
 	if port := parsed.Port(); port != "" {

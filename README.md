@@ -425,6 +425,53 @@ GPT 应用可以先调用：
 - 文件大小、下载失败和目标路径冲突会作为结构化工具错误返回。
 - `create_upload_token` / `create_download_token` 更适合非 MCP 宿主之间的跨机器传输，不是 ChatGPT 附件上传的首选流程。
 
+## 把本地文件返回给 ChatGPT / Agent
+
+LocalGate 的 `export_file` 工具用于把 workspace 内的普通文件返回给 ChatGPT 或其他支持 MCP `resource_link` 的 Agent 宿主。工具不会把二进制或 Base64 写进 MCP 结果，而是签发一个短期 HTTPS 下载资源。
+
+```json
+{
+  "path": "/absolute/workspace/output/report.pdf",
+  "file_name": "project-report.pdf",
+  "ttl_seconds": 300
+}
+```
+
+执行成功后，结构化任务结果包含文件名、MIME、大小、SHA-256 和过期时间；MCP `content` 额外包含：
+
+```json
+{
+  "type": "resource_link",
+  "uri": "https://gate.example.com/system/exports/lgexp_xxx?signature=...",
+  "name": "project-report.pdf",
+  "mimeType": "application/pdf"
+}
+```
+
+启用配置：
+
+```yaml
+file_exports:
+  enabled: true
+  base_url: "https://gate.example.com"
+  default_ttl_seconds: 300
+  max_ttl_seconds: 600
+  max_file_bytes: 104857600
+  require_approval: true
+```
+
+首版要求 `file_exports.base_url` 与 `http.base_url` 使用相同的 scheme 和 authority。`/system/exports/*` 不要求 LocalGate 固定 Bearer 请求头，而是由高强度短期签名授权；其他 HTTP 路由仍保持原有鉴权。
+
+安全边界：
+
+- 只允许导出 workspace 内的普通文件，拒绝目录、符号链接和特殊文件。
+- 默认最大 100 MiB，默认有效期 5 分钟，最长 10 分钟。
+- 签发和下载时都会重新校验 workspace、denylist、文件大小、修改时间和 SHA-256。
+- 文件在签发后发生变化时，下载返回 `409 export_source_changed`。
+- 签名 URL 不写入持久化 Task 结果、工具事件或审批审计。
+- 数据外传默认需要审批；审批摘要会显示本地路径和对外文件名。
+- ChatGPT 场景应优先使用 `export_file`，不要用底层 `create_download_token` 替代。
+
 ## HTTP API 示例
 
 下面的示例假设使用默认地址且尚未开启 HTTP Bearer 鉴权。
@@ -492,6 +539,7 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `read_file`
 - `write_file`
 - `upload_file`：接收 ChatGPT/MCP 宿主文件对象，并保存到本地 workspace
+- `export_file`：把 workspace 文件作为短期 MCP `resource_link` 返回给 ChatGPT/Agent
 - `apply_patch`
 
 `apply_patch` 支持一个请求中原子地新增、修改或删除多个文件。
@@ -597,6 +645,7 @@ deployments:
   reserved_names: [localgate, control, admin, api]
 
   static:
+    domain_suffix: "site"
     max_files: 10000
     max_total_bytes: 52428800
     max_file_bytes: 52428800
@@ -604,15 +653,18 @@ deployments:
 
   dynamic:
     enabled: false
+    domain_suffix: "app"
     require_approval: true
     allowed_executables:
       - "/absolute/path/to/node"
 ```
 
-base URL 包含协议和根域名，deployment 名称会作为单层子域名前缀：
+base URL 包含协议和根域名。`domain_suffix` 分别配置在静态和动态结构中，并直接拼接到 deployment 名称后：
 
-- `public_base_url=https://apps.example.com` → `https://{deployment-name}.apps.example.com/`
-- `private_base_url=https://private-apps.example.com` → `https://{deployment-name}.private-apps.example.com/`
+- 静态 `domain_suffix=site`：`https://{deployment-name}site.apps.example.com/`
+- 动态 `domain_suffix=app`：`https://{deployment-name}app.private-apps.example.com/`
+- 配置 `domain_suffix=-app` 时得到 `https://{deployment-name}-app.<domain>/`
+- 留空时保持原来的 `https://{deployment-name}.<domain>/` 行为
 
 public 和 private 使用不同的本地 listener。反向代理必须将 public 根域及其子域转发到 `public_bind`，将 private 根域及其子域转发到 `private_bind`。`deploys.<public-domain>/` 与 `deploys.<private-domain>/` 分别只显示对应 access 的部署；控制面不提供部署列表。
 
@@ -682,7 +734,7 @@ mcp_servers:
 }
 ```
 
-例如 `name=docs`、`private_base_url=https://private-apps.example.com` 时，private 地址为 `https://docs.private-apps.example.com/`。管理页面可以在 public/private 之间转换，转换后旧入口域名立即失效。
+例如 `name=docs`、静态 `domain_suffix=site`、`private_base_url=https://private-apps.example.com` 时，private 地址为 `https://docssite.private-apps.example.com/`。管理页面可以在 public/private 之间转换，转换后旧入口域名立即失效。
 
 域名分流本身不等于身份认证。private 域名应由 Cloudflare Access、VPN、内网 DNS 或其他入口策略保护。
 

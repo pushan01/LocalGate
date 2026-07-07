@@ -40,6 +40,8 @@ type Manager struct {
 	publicDomain   string
 	privateDomain  string
 	defaultAccess  string
+	staticSuffix   string
+	dynamicSuffix  string
 	reserved       map[string]struct{}
 	controls       map[string]struct{}
 }
@@ -108,6 +110,9 @@ type View struct {
 
 func NewManager(staticService *static.Service, dynamicService *dynamic.Service, appBaseURL string) *Manager {
 	manager := &Manager{static: staticService, dynamic: dynamicService}
+	if dynamicService != nil {
+		manager.dynamicSuffix = normalizeDomainSuffix(dynamicService.Config().DomainSuffix)
+	}
 	if parsed := parseAppBaseURL(appBaseURL); parsed != nil {
 		manager.publicBaseURL = parsed
 		manager.privateBaseURL = cloneURL(parsed)
@@ -137,6 +142,10 @@ func (m *Manager) AppHostingEnabled() bool {
 }
 
 func (m *Manager) ConfigureAppHosting(publicBaseURL, privateBaseURL, defaultAccess string) {
+	m.ConfigureAppHostingWithSuffixes(publicBaseURL, privateBaseURL, defaultAccess, "", "")
+}
+
+func (m *Manager) ConfigureAppHostingWithSuffixes(publicBaseURL, privateBaseURL, defaultAccess, staticSuffix, dynamicSuffix string) {
 	if m == nil {
 		return
 	}
@@ -151,6 +160,8 @@ func (m *Manager) ConfigureAppHosting(publicBaseURL, privateBaseURL, defaultAcce
 		m.privateDomain = strings.ToLower(strings.TrimSuffix(m.privateBaseURL.Hostname(), "."))
 	}
 	m.defaultAccess = normalizeAccess(defaultAccess, AccessPrivate)
+	m.staticSuffix = normalizeDomainSuffix(staticSuffix)
+	m.dynamicSuffix = normalizeDomainSuffix(dynamicSuffix)
 }
 
 func (m *Manager) ConfigureAppRouting(controlBaseURL string, reservedNames []string) {
@@ -194,7 +205,7 @@ func (m *Manager) deployStatic(ctx context.Context, request DeployRequest) (Depl
 	if !m.AppHostingEnabled() {
 		return DeployResult{}, ErrAppHostingDisabled
 	}
-	if err := m.validateAppName(request.Name); err != nil {
+	if err := m.validateAppName(TypeStatic, request.Name); err != nil {
 		return DeployResult{}, err
 	}
 	if m.dynamic != nil {
@@ -203,6 +214,9 @@ func (m *Manager) deployStatic(ctx context.Context, request DeployRequest) (Depl
 		} else if !errors.Is(err, dynamic.ErrNotFound) {
 			return DeployResult{}, err
 		}
+	}
+	if err := m.validateHostnameAvailable(TypeStatic, request.Name); err != nil {
+		return DeployResult{}, err
 	}
 	decision := security.ValidatePath(request.Source, request.Workspace, security.Options{FollowSymlink: true})
 	if !decision.Allowed {
@@ -219,7 +233,7 @@ func (m *Manager) deployStatic(ctx context.Context, request DeployRequest) (Depl
 		return DeployResult{}, err
 	}
 	access := normalizeAccess(result.Site.Access, m.defaultAccess)
-	hostname, publicURL := m.appLocation(request.Name, access)
+	hostname, publicURL := m.appLocation(TypeStatic, request.Name, access)
 	return DeployResult{
 		Status: "deployed", Type: TypeStatic, Site: request.Name, URL: publicURL, Hostname: hostname, Access: access,
 		FileCount: result.FileCount, TotalBytes: result.TotalBytes, SourcePreserved: result.SourcePreserved,
@@ -233,13 +247,16 @@ func (m *Manager) deployDynamic(ctx context.Context, request DeployRequest) (Dep
 	if request.Runtime == nil {
 		return DeployResult{}, errors.New("runtime is required for dynamic deployment")
 	}
-	if err := m.validateAppName(request.Name); err != nil {
+	if err := m.validateAppName(TypeDynamic, request.Name); err != nil {
 		return DeployResult{}, err
 	}
 	if m.static != nil {
 		if _, exists := m.static.GetSite(request.Name); exists {
 			return DeployResult{}, fmt.Errorf("%w: %s is already a static deployment", ErrDeploymentNameConflict, request.Name)
 		}
+	}
+	if err := m.validateHostnameAvailable(TypeDynamic, request.Name); err != nil {
+		return DeployResult{}, err
 	}
 	result, err := m.dynamic.Deploy(ctx, dynamic.DeployRequest{
 		WorkspaceID: request.Workspace.ID,
@@ -304,7 +321,7 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	out := make([]View, 0, len(registry.Sites))
 	for name, site := range registry.Sites {
 		access := normalizeAccess(site.Access, AccessPublic)
-		hostname, publicURL := m.appLocation(name, access)
+		hostname, publicURL := m.appLocation(TypeStatic, name, access)
 		out = append(out, View{Type: TypeStatic, Site: name, URL: publicURL, Hostname: hostname, Access: access, Status: "active", Index: site.Index, SPA: site.SPA, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt})
 	}
 	if m.dynamic != nil {
@@ -321,7 +338,7 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	return out, nil
 }
 
-func (m *Manager) appLocation(name, access string) (string, string) {
+func (m *Manager) appLocation(deploymentType, name, access string) (string, string) {
 	if !m.AppHostingEnabled() {
 		return "", ""
 	}
@@ -332,7 +349,7 @@ func (m *Manager) appLocation(name, access string) (string, string) {
 	if base == nil {
 		return "", ""
 	}
-	hostname := name + "." + strings.ToLower(strings.TrimSuffix(base.Hostname(), "."))
+	hostname := m.hostLabel(deploymentType, name) + "." + strings.ToLower(strings.TrimSuffix(base.Hostname(), "."))
 	location := cloneURL(base)
 	location.Host = hostname
 	if port := base.Port(); port != "" {
@@ -343,7 +360,7 @@ func (m *Manager) appLocation(name, access string) (string, string) {
 	return hostname, location.String()
 }
 
-func (m *Manager) validateAppName(name string) error {
+func (m *Manager) validateAppName(deploymentType, name string) error {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == listHostLabel {
 		return fmt.Errorf("%w: %s is reserved for the deployment list", ErrDeploymentNameBlocked, name)
@@ -351,15 +368,54 @@ func (m *Manager) validateAppName(name string) error {
 	if _, blocked := m.reserved[name]; blocked {
 		return fmt.Errorf("%w: %s is reserved", ErrDeploymentNameBlocked, name)
 	}
+	label := m.hostLabel(deploymentType, name)
+	if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+		return fmt.Errorf("%w: %s with its domain suffix is not a valid DNS label", ErrDeploymentNameBlocked, name)
+	}
 	if m.AppHostingEnabled() {
 		for _, domain := range []string{m.publicDomain, m.privateDomain} {
-			hostname := name + "." + domain
+			hostname := label + "." + domain
 			if _, blocked := m.controls[hostname]; blocked {
 				return fmt.Errorf("%w: %s conflicts with a control host", ErrDeploymentNameBlocked, name)
 			}
 		}
 	}
 	return nil
+}
+
+func (m *Manager) validateHostnameAvailable(deploymentType, name string) error {
+	label := m.hostLabel(deploymentType, name)
+	switch deploymentType {
+	case TypeStatic:
+		if m.dynamic != nil {
+			for _, item := range m.dynamic.List() {
+				if label == m.hostLabel(TypeDynamic, item.Name) {
+					return fmt.Errorf("%w: hostname label %s is already used by dynamic deployment %s", ErrDeploymentNameConflict, label, item.Name)
+				}
+			}
+		}
+	case TypeDynamic:
+		if m.static != nil {
+			registry, err := m.static.ListSites()
+			if err != nil {
+				return err
+			}
+			for staticName := range registry.Sites {
+				if label == m.hostLabel(TypeStatic, staticName) {
+					return fmt.Errorf("%w: hostname label %s is already used by static deployment %s", ErrDeploymentNameConflict, label, staticName)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Manager) hostLabel(deploymentType, name string) string {
+	suffix := m.staticSuffix
+	if deploymentType == TypeDynamic {
+		suffix = m.dynamicSuffix
+	}
+	return strings.ToLower(strings.TrimSpace(name)) + suffix
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -380,12 +436,23 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveAccess(AccessPrivate, w, r)
 		return
 	}
-	name, access, ok := m.resolveHost(host)
-	if !ok {
-		http.NotFound(w, r)
-		return
+	candidates := []struct {
+		access string
+		domain string
+	}{
+		{access: AccessPublic, domain: m.publicDomain},
+		{access: AccessPrivate, domain: m.privateDomain},
 	}
-	m.serveNamedDeployment(name, access, w, r)
+	if len(candidates[1].domain) > len(candidates[0].domain) {
+		candidates[0], candidates[1] = candidates[1], candidates[0]
+	}
+	for _, candidate := range candidates {
+		if strings.HasSuffix(host, "."+candidate.domain) {
+			m.serveDeploymentHost(host, candidate.domain, candidate.access, w, r)
+			return
+		}
+	}
+	http.NotFound(w, r)
 }
 
 func (m *Manager) HandlerForAccess(access string) http.Handler {
@@ -417,22 +484,20 @@ func (m *Manager) serveAccess(access string, w http.ResponseWriter, r *http.Requ
 		m.serveDeploymentList(access, w, r)
 		return
 	}
-	name, ok := resolveHostForAccess(host, domain)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	m.serveNamedDeployment(name, access, w, r)
+	m.serveDeploymentHost(host, domain, access, w, r)
 }
 
-func (m *Manager) serveNamedDeployment(name, access string, w http.ResponseWriter, r *http.Request) {
-	staticSite, staticExists := m.staticSite(name)
+func (m *Manager) serveDeploymentHost(host, domain, access string, w http.ResponseWriter, r *http.Request) {
+	staticName, staticCandidate := resolveHostForAccess(host, domain, m.staticSuffix)
+	dynamicName, dynamicCandidate := resolveHostForAccess(host, domain, m.dynamicSuffix)
+	staticSite, staticExists := m.staticSite(staticName)
+	staticExists = staticCandidate && staticExists
 	if staticExists && normalizeAccess(staticSite.Access, AccessPublic) != access {
 		staticExists = false
 	}
 	dynamicExists := false
-	if m.dynamic != nil {
-		if item, err := m.dynamic.Get(name); err == nil {
+	if dynamicCandidate && m.dynamic != nil {
+		if item, err := m.dynamic.Get(dynamicName); err == nil {
 			dynamicExists = item.Access == access
 		} else if !errors.Is(err, dynamic.ErrNotFound) {
 			http.Error(w, "deployment lookup failed", http.StatusInternalServerError)
@@ -444,37 +509,25 @@ func (m *Manager) serveNamedDeployment(name, access string, w http.ResponseWrite
 		return
 	}
 	if staticExists {
-		m.static.ServeSite(name, w, r)
+		m.static.ServeSite(staticName, w, r)
 		return
 	}
 	m.dynamic.ServeHTTP(w, r)
 }
 
-func resolveHostForAccess(host, domain string) (string, bool) {
+func resolveHostForAccess(host, domain, suffix string) (string, bool) {
 	if domain == "" || !strings.HasSuffix(host, "."+domain) {
 		return "", false
 	}
-	name := strings.TrimSuffix(host, "."+domain)
-	if name == "" || strings.Contains(name, ".") {
+	label := strings.TrimSuffix(host, "."+domain)
+	if label == "" || strings.Contains(label, ".") || !strings.HasSuffix(label, suffix) {
+		return "", false
+	}
+	name := strings.TrimSuffix(label, suffix)
+	if name == "" {
 		return "", false
 	}
 	return name, true
-}
-
-func (m *Manager) resolveHost(host string) (string, string, bool) {
-	for _, candidate := range []struct{ access, domain string }{
-		{AccessPublic, m.publicDomain},
-		{AccessPrivate, m.privateDomain},
-	} {
-		if candidate.domain == "" || !strings.HasSuffix(host, "."+candidate.domain) {
-			continue
-		}
-		name := strings.TrimSuffix(host, "."+candidate.domain)
-		if name != "" && !strings.Contains(name, ".") {
-			return name, candidate.access, true
-		}
-	}
-	return "", "", false
 }
 
 func parseAppBaseURL(raw string) *url.URL {
@@ -507,6 +560,10 @@ func normalizeAccess(access, fallback string) string {
 		return AccessPrivate
 	}
 	return AccessPublic
+}
+
+func normalizeDomainSuffix(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func strictAccess(access string) (string, bool) {
@@ -565,7 +622,7 @@ func (m *Manager) SetAccess(ctx context.Context, deploymentType, name, access st
 		if err != nil {
 			return View{}, err
 		}
-		hostname, publicURL := m.appLocation(name, access)
+		hostname, publicURL := m.appLocation(TypeStatic, name, access)
 		return View{Type: TypeStatic, Site: name, URL: publicURL, Hostname: hostname, Access: access, Status: "active", Index: site.Index, SPA: site.SPA, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt}, nil
 	case TypeDynamic:
 		item, err := m.dynamic.SetAccess(ctx, name, access)

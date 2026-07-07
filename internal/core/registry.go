@@ -35,6 +35,26 @@ type ToolMetadataProvider interface {
 	ToolMetadata() map[string]any
 }
 
+type ResourceLink struct {
+	URI         string
+	Name        string
+	Description string
+	MIMEType    string
+	Size        int64
+}
+
+type ToolResourceLinkProvider interface {
+	ResourceLinks(result map[string]any) []ResourceLink
+}
+
+type ToolOutputSchemaProvider interface {
+	OutputSchema() any
+}
+
+type ToolAnnotationsProvider interface {
+	ToolAnnotations() map[string]any
+}
+
 func ToolMetadata(t Tool) map[string]any {
 	if t == nil {
 		return nil
@@ -49,6 +69,55 @@ func ToolMetadata(t Tool) map[string]any {
 	}
 	out := make(map[string]any, len(meta))
 	for k, v := range meta {
+		out[k] = v
+	}
+	return out
+}
+
+func ToolResourceLinks(t Tool, result map[string]any) []ResourceLink {
+	if t == nil || result == nil {
+		return nil
+	}
+	p, ok := t.(ToolResourceLinkProvider)
+	if !ok {
+		return nil
+	}
+	links := p.ResourceLinks(result)
+	out := make([]ResourceLink, 0, len(links))
+	for _, link := range links {
+		if strings.TrimSpace(link.URI) == "" || strings.TrimSpace(link.Name) == "" {
+			continue
+		}
+		out = append(out, link)
+	}
+	return out
+}
+
+func ToolOutputSchema(t Tool) any {
+	if t == nil {
+		return nil
+	}
+	p, ok := t.(ToolOutputSchemaProvider)
+	if !ok {
+		return nil
+	}
+	return p.OutputSchema()
+}
+
+func ToolAnnotations(t Tool) map[string]any {
+	if t == nil {
+		return nil
+	}
+	p, ok := t.(ToolAnnotationsProvider)
+	if !ok {
+		return nil
+	}
+	annotations := p.ToolAnnotations()
+	if len(annotations) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(annotations))
+	for k, v := range annotations {
 		out[k] = v
 	}
 	return out

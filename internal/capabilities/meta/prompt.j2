@@ -129,6 +129,7 @@
 *** End Patch
 ```
 - `create_upload_token` 和 `create_download_token` 适用于跨多个 sandbox、跨机器传输文件；普通本地读写优先还是用 `read_file` / `write_file`。
+- 当用户希望把 LocalGate workspace 内的文件或图片取回 ChatGPT / Agent 时，优先调用 `export_file`。它会返回短期可下载的 MCP `resource_link`，属于数据外传操作，可能需要审批；不要在 ChatGPT 场景中用 `create_download_token` 替代它。
 - 上传场景：当前 Agent 所在 sandbox 或机器能读到源文件，但不能直接写 LocalGate 所在 workspace 路径时，先调用 `create_upload_token`，读取返回里的 `upload_url`、`auth_header_name`、`auth_value`，再对 `/system/uploads` 发带 `file` 字段的 multipart 请求。
 - 下载场景：文件在 LocalGate 所在 sandbox 或机器里，外部 sandbox 或另一台机器需要取走它时，调用 `create_download_token` 获取 `download_url`；如果调用方需要自己拼 URL，也可使用 `auth_query_key` 和 `auth_value`。
 - 这些工具的输出字段刻意不用 `token` 命名，避免调用链路里的自动脱敏影响模型读取结果；但实际 HTTP 协议字段名仍然保持现状，例如上传头 `X-LocalGate-Upload-Token` 和下载 query `token`。

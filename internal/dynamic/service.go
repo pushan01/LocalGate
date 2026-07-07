@@ -42,6 +42,9 @@ type Service struct {
 
 func NewService(root string, cfg config.DynamicHosting, workspaces map[string]config.Workspace, ownsRuntime bool) (*Service, error) {
 	cfg = normalizeConfig(cfg)
+	if err := validateDomainSuffix(cfg.DomainSuffix); err != nil {
+		return nil, err
+	}
 	if !filepath.IsAbs(root) {
 		absolute, err := filepath.Abs(root)
 		if err != nil {
@@ -148,10 +151,27 @@ func normalizeConfig(cfg config.DynamicHosting) config.DynamicHosting {
 	}
 	cfg.PublicBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
 	cfg.PrivateBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PrivateBaseURL), "/")
+	cfg.DomainSuffix = strings.ToLower(strings.TrimSpace(cfg.DomainSuffix))
 	if cfg.DefaultAccess == "" {
 		cfg.DefaultAccess = "private"
 	}
 	return cfg
+}
+
+func validateDomainSuffix(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 62 || value[len(value)-1] == '-' {
+		return errorf("deployment_domain_suffix_invalid", "domain_suffix must form a valid DNS label when appended to a deployment name")
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+			continue
+		}
+		return errorf("deployment_domain_suffix_invalid", "domain_suffix may contain only lowercase letters, numbers, and hyphens")
+	}
+	return nil
 }
 
 func cloneWorkspaces(input map[string]config.Workspace) map[string]config.Workspace {
@@ -940,6 +960,10 @@ func (s *Service) validateName(name string) error {
 		}
 		return errorf("deployment_name_invalid", "deployment name must contain lowercase letters, numbers, and hyphens")
 	}
+	label := name + s.config.DomainSuffix
+	if len(label) > 63 || label[len(label)-1] == '-' {
+		return errorf("deployment_name_invalid", "deployment name with domain_suffix must be a valid DNS label")
+	}
 	for _, reserved := range s.config.ReservedNames {
 		if name == strings.ToLower(strings.TrimSpace(reserved)) {
 			return errorf("deployment_name_invalid", "deployment name is reserved")
@@ -949,7 +973,7 @@ func (s *Service) validateName(name string) error {
 	if controlHost != "" {
 		for _, baseURL := range []string{s.config.PublicBaseURL, s.config.PrivateBaseURL} {
 			domain := appBaseHostname(baseURL)
-			if domain != "" && name+"."+domain == controlHost {
+			if domain != "" && label+"."+domain == controlHost {
 				return errorf("deployment_host_conflict", "deployment hostname conflicts with http.base_url")
 			}
 		}

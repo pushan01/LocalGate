@@ -86,8 +86,12 @@ func (s *Service) resolveHost(host string) (string, string, bool) {
 		if candidate.domain == "" || !strings.HasSuffix(host, "."+candidate.domain) {
 			continue
 		}
-		name := strings.TrimSuffix(host, "."+candidate.domain)
-		if name != "" && !strings.Contains(name, ".") {
+		label := strings.TrimSuffix(host, "."+candidate.domain)
+		if label == "" || strings.Contains(label, ".") || !strings.HasSuffix(label, s.config.DomainSuffix) {
+			continue
+		}
+		name := strings.TrimSuffix(label, s.config.DomainSuffix)
+		if name != "" {
 			return name, candidate.access, true
 		}
 	}

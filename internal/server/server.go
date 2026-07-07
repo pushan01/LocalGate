@@ -55,9 +55,10 @@ type AdminOptions struct {
 }
 
 type AuthOptions struct {
-	Enabled     bool
-	BearerToken string
-	AllowPaths  []string
+	Enabled           bool
+	BearerToken       string
+	AllowPaths        []string
+	AllowPathPrefixes []string
 }
 
 type CORSOptions struct {
@@ -284,6 +285,14 @@ func wrapBearerAuth(next http.Handler, auth AuthOptions) http.Handler {
 		}
 		allowPaths[path] = struct{}{}
 	}
+	allowPathPrefixes := make([]string, 0, len(auth.AllowPathPrefixes))
+	for _, prefix := range auth.AllowPathPrefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		allowPathPrefixes = append(allowPathPrefixes, prefix)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !auth.Enabled || strings.TrimSpace(auth.BearerToken) == "" {
 			next.ServeHTTP(w, withPrincipal(r, Principal{
@@ -310,6 +319,16 @@ func wrapBearerAuth(next http.Handler, auth AuthOptions) http.Handler {
 				Authenticated: false,
 			}))
 			return
+		}
+		for _, allowedPrefix := range allowPathPrefixes {
+			if strings.HasPrefix(r.URL.Path, allowedPrefix) {
+				next.ServeHTTP(w, withPrincipal(r, Principal{
+					ID:            "public-unauthenticated",
+					AuthMethod:    "allow_path_prefix",
+					Authenticated: false,
+				}))
+				return
+			}
 		}
 		const prefix = "Bearer "
 		authz := strings.TrimSpace(r.Header.Get("Authorization"))

@@ -3,6 +3,7 @@ package mcpgo
 import (
 	"encoding/json"
 
+	"localgate/internal/core"
 	"localgate/internal/toolargs"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -22,6 +23,21 @@ func newToolWithRawSchema(name, description string, schema any, meta map[string]
 		t.Meta = mcp.NewMetaFromMap(meta)
 	}
 	return t
+}
+
+func applyCoreToolExtensions(tool *mcp.Tool, source core.Tool) {
+	if tool == nil || source == nil {
+		return
+	}
+	if raw := marshalSchema(core.ToolOutputSchema(source)); raw != nil {
+		tool.RawOutputSchema = raw
+		tool.OutputSchema = mcp.ToolOutputSchema{}
+	}
+	if annotations := core.ToolAnnotations(source); len(annotations) > 0 {
+		if b, err := json.Marshal(annotations); err == nil {
+			_ = json.Unmarshal(b, &tool.Annotations)
+		}
+	}
 }
 
 // newAsyncToolWithRawSchema exposes a business tool schema plus the MCP wrapper-level async flag.

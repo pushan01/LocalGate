@@ -727,7 +727,7 @@ func TestLoadApprovalRulesRejectInvalidEffect(t *testing.T) {
 func TestLoadStaticHostingConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "deployments:\n  static:\n    max_files: 123\n    max_total_bytes: 4096\n    max_file_bytes: 2048\n    require_approval: false\nworkspaces:\n  - id: ws\n"
+	content := "deployments:\n  static:\n    domain_suffix: SITE\n    max_files: 123\n    max_total_bytes: 4096\n    max_file_bytes: 2048\n    require_approval: false\nworkspaces:\n  - id: ws\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -735,12 +735,13 @@ func TestLoadStaticHostingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Deployments.Static.MaxFiles != 123 || cfg.Deployments.Static.MaxTotalBytes != 4096 || cfg.Deployments.Static.MaxFileBytes != 2048 || cfg.Deployments.Static.RequireApproval {
+	if cfg.Deployments.Static.DomainSuffix != "site" || cfg.Deployments.Static.MaxFiles != 123 || cfg.Deployments.Static.MaxTotalBytes != 4096 || cfg.Deployments.Static.MaxFileBytes != 2048 || cfg.Deployments.Static.RequireApproval {
 		t.Fatalf("unexpected static config: %#v", cfg.Deployments.Static)
 	}
 }
 
 func TestLoadStaticHostingFromEnv(t *testing.T) {
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_DOMAIN_SUFFIX", "-site")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILES", "77")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_TOTAL_BYTES", "1000")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILE_BYTES", "500")
@@ -749,7 +750,7 @@ func TestLoadStaticHostingFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Deployments.Static.MaxFiles != 77 || cfg.Deployments.Static.MaxTotalBytes != 1000 || cfg.Deployments.Static.MaxFileBytes != 500 || cfg.Deployments.Static.RequireApproval {
+	if cfg.Deployments.Static.DomainSuffix != "-site" || cfg.Deployments.Static.MaxFiles != 77 || cfg.Deployments.Static.MaxTotalBytes != 1000 || cfg.Deployments.Static.MaxFileBytes != 500 || cfg.Deployments.Static.RequireApproval {
 		t.Fatalf("unexpected static env config: %#v", cfg.Deployments.Static)
 	}
 }
@@ -779,6 +780,7 @@ deployments:
   default_access: public
   dynamic:
     enabled: true
+    domain_suffix: APP
     allowed_executables: [node]
     env_allowlist: [NODE_ENV]
     max_apps: 3
@@ -793,13 +795,47 @@ workspaces:
 		t.Fatalf("load dynamic config: %v", err)
 	}
 	dynamic := cfg.Deployments.Dynamic
-	if !dynamic.Enabled || dynamic.PublicBaseURL != "http://apps.example.test" || dynamic.PrivateBaseURL != "https://private.apps.example.test" || dynamic.DefaultAccess != "public" || dynamic.ControlBaseURL != "https://control.example.test" || dynamic.MaxApps != 3 {
+	if !dynamic.Enabled || dynamic.DomainSuffix != "app" || dynamic.PublicBaseURL != "http://apps.example.test" || dynamic.PrivateBaseURL != "https://private.apps.example.test" || dynamic.DefaultAccess != "public" || dynamic.ControlBaseURL != "https://control.example.test" || dynamic.MaxApps != 3 {
 		t.Fatalf("unexpected dynamic config: %#v", dynamic)
 	}
 	deploymentsSummary := cfg.SafeSummary()["deployments"].(map[string]any)
 	summary := deploymentsSummary["dynamic"].(map[string]any)
-	if summary["enabled"] != true || deploymentsSummary["public_base_url"] != "http://apps.example.test" || deploymentsSummary["private_base_url"] != "https://private.apps.example.test" {
+	if summary["enabled"] != true || summary["domain_suffix"] != "app" || deploymentsSummary["public_base_url"] != "http://apps.example.test" || deploymentsSummary["private_base_url"] != "https://private.apps.example.test" {
 		t.Fatalf("unexpected dynamic summary: %#v", summary)
+	}
+}
+
+func TestLoadDeploymentDomainSuffixFromEnv(t *testing.T) {
+	withEnv(t, "LOCALGATE_DEPLOYMENTS_DYNAMIC_DOMAIN_SUFFIX", "APP")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Deployments.Dynamic.DomainSuffix != "app" {
+		t.Fatalf("unexpected dynamic domain suffix: %q", cfg.Deployments.Dynamic.DomainSuffix)
+	}
+}
+
+func TestLoadDeploymentDomainSuffixRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"static dot", "deployments:\n  static:\n    domain_suffix: .site\nworkspaces:\n  - id: ws\n", "deployments.static.domain_suffix"},
+		{"dynamic trailing hyphen", "deployments:\n  dynamic:\n    domain_suffix: app-\nworkspaces:\n  - id: ws\n", "deployments.dynamic.domain_suffix"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "localgate.yaml")
+			if err := os.WriteFile(path, []byte(test.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(LoadOptions{Path: path, PathProvided: true})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q validation error, got %v", test.want, err)
+			}
+		})
 	}
 }
 

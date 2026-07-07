@@ -96,6 +96,9 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if !strings.Contains(prompt, "`create_upload_token` 和 `create_download_token` 适用于跨多个 sandbox、跨机器传输文件") {
 		t.Fatalf("prompt should explain upload/download transfer scenarios: %q", prompt)
 	}
+	if !strings.Contains(prompt, "优先调用 `export_file`") || !strings.Contains(prompt, "MCP `resource_link`") {
+		t.Fatalf("prompt should explain Agent file export usage: %q", prompt)
+	}
 	if !strings.Contains(prompt, "读取返回里的 `upload_url`、`auth_header_name`、`auth_value`") {
 		t.Fatalf("prompt should explain upload credential fields: %q", prompt)
 	}

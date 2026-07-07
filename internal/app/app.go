@@ -19,6 +19,7 @@ import (
 	"localgate/internal/deployment"
 	"localgate/internal/download"
 	"localgate/internal/dynamic"
+	"localgate/internal/fileexport"
 	"localgate/internal/invocation"
 	mcptools "localgate/internal/mcp/tools"
 	"localgate/internal/mcprelay"
@@ -44,6 +45,8 @@ type App struct {
 	Admin             config.AdminConfig
 	Downloads         *download.Service
 	Uploads           *upload.Service
+	Exports           *fileexport.Service
+	FileExports       config.FileExports
 	ToolAccess        *toolaccess.Service
 	ToolArguments     config.ToolArguments
 	ToolHTTPMode      config.ToolHTTPMode
@@ -65,6 +68,7 @@ type App struct {
 
 func New(cfg config.Config) (*App, error) {
 	cfg.Deployments = config.NormalizeDeploymentsConfig(cfg.Deployments, cfg.HTTP.BaseURL)
+	cfg.FileExports = config.NormalizeFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL)
 	adminConfig := config.NormalizeAdminConfig(cfg.Admin, cfg.HTTP)
 	approvalConfig := adminConfig.Approval
 	sink := core.NewEventSink()
@@ -112,6 +116,17 @@ func New(cfg config.Config) (*App, error) {
 	})
 	downloadSvc := download.NewService()
 	uploadSvc := upload.NewService()
+	var exportSvc *fileexport.Service
+	if cfg.FileExports.Enabled {
+		exportSvc, err = fileexport.NewService(fileexport.Options{
+			BaseURL:    cfg.FileExports.BaseURL,
+			DefaultTTL: time.Duration(cfg.FileExports.DefaultTTLSeconds) * time.Second,
+			MaxTTL:     time.Duration(cfg.FileExports.MaxTTLSeconds) * time.Second,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init file exports: %w", err)
+		}
+	}
 	toolAccessSvc := toolaccess.NewService()
 	upgradeSvc := upgrade.NewService(filepath.Join(storeBase, "upgrades"), cfg.Upgrade.Token, cfg.Runtime)
 
@@ -163,7 +178,13 @@ func New(cfg config.Config) (*App, error) {
 	})
 	deploymentManager := deployment.NewManager(staticSvc, dynamicSvc, "")
 	dynamicRoutingConfig := dynamicSvc.Config()
-	deploymentManager.ConfigureAppHosting(dynamicRoutingConfig.PublicBaseURL, dynamicRoutingConfig.PrivateBaseURL, dynamicRoutingConfig.DefaultAccess)
+	deploymentManager.ConfigureAppHostingWithSuffixes(
+		dynamicRoutingConfig.PublicBaseURL,
+		dynamicRoutingConfig.PrivateBaseURL,
+		dynamicRoutingConfig.DefaultAccess,
+		cfg.Deployments.Static.DomainSuffix,
+		dynamicRoutingConfig.DomainSuffix,
+	)
 	deploymentManager.ConfigureAppRouting(cfg.HTTP.BaseURL, dynamicRoutingConfig.ReservedNames)
 	regs := make(map[string]*core.Registry, len(cfg.Workspaces))
 	for _, ws := range cfg.Workspaces {
@@ -178,6 +199,9 @@ func New(cfg config.Config) (*App, error) {
 		}
 		reg.Register(filesystem.NewCreateDownloadTokenTool(ws, cfg.HTTP.BaseURL, downloadSvc))
 		reg.Register(filesystem.NewCreateUploadTokenTool(ws, cfg.HTTP.BaseURL, uploadSvc))
+		if exportSvc != nil {
+			reg.Register(filesystem.NewExportFileTool(ws, cfg.FileExports, exportSvc))
+		}
 		reg.Register(shell.NewTool(ws, cfg.DefaultTimeoutMs))
 		reg.Register(shell.NewArgvTool(ws, cfg.DefaultTimeoutMs))
 		reg.Register(shell.NewExecCommandTool(ws, sessions))
@@ -230,6 +254,8 @@ func New(cfg config.Config) (*App, error) {
 		Admin:             adminConfig,
 		Downloads:         downloadSvc,
 		Uploads:           uploadSvc,
+		Exports:           exportSvc,
+		FileExports:       cfg.FileExports,
 		ToolAccess:        toolAccessSvc,
 		ToolArguments:     cfg.ToolArguments,
 		ToolHTTPMode:      cfg.ToolHTTPMode,
@@ -376,6 +402,10 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 					risk = "critical"
 				}
 			}
+		} else if tool == "export_file" && a.FileExports.RequireApproval {
+			needApproval = true
+			reason = "approval.policy.file_export"
+			risk = "high"
 		} else if isDynamicMutation(tool, args) && a.DynamicHosting.RequireApproval {
 			needApproval = true
 			reason = "approval.policy.dynamic_" + tool
@@ -573,6 +603,13 @@ func approvalSummary(tool string, args map[string]any) string {
 		return "Set " + typeName + " deployment " + name + " access to " + fmt.Sprint(args["access"])
 	case "restart_deployment", "start_deployment", "stop_deployment", "rollback_deployment":
 		return strings.TrimSuffix(tool, "_deployment") + " dynamic deployment " + name
+	case "export_file":
+		fileName, _ := args["file_name"].(string)
+		path, _ := args["path"].(string)
+		if strings.TrimSpace(fileName) != "" {
+			return "Export local file " + path + " as " + fileName
+		}
+		return "Export local file " + path
 	default:
 		return "Execute tool " + tool
 	}

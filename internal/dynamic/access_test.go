@@ -21,7 +21,7 @@ func TestDynamicDeploymentAccessControlsDomainRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := NewService(managedRoot, config.DynamicHosting{
-		Enabled: true, PublicBaseURL: "https://public.test", PrivateBaseURL: "https://private.test", DefaultAccess: "private",
+		Enabled: true, DomainSuffix: "app", PublicBaseURL: "https://public.test", PrivateBaseURL: "https://private.test", DefaultAccess: "private",
 	}, nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -34,23 +34,26 @@ func TestDynamicDeploymentAccessControlsDomainRouting(t *testing.T) {
 		service.ServeHTTP(w, req)
 		return w.Code
 	}
-	if got := request("demo.private.test"); got != http.StatusServiceUnavailable {
+	if got := request("demoapp.private.test"); got != http.StatusServiceUnavailable {
 		t.Fatalf("private host should resolve stopped deployment, got %d", got)
 	}
-	if got := request("demo.public.test"); got != http.StatusNotFound {
+	if got := request("demoapp.public.test"); got != http.StatusNotFound {
 		t.Fatalf("public host should not resolve private deployment, got %d", got)
 	}
 	view, err := service.SetAccess(context.Background(), "demo", "public")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Access != "public" || view.URL != "https://demo.public.test/" {
+	if view.Access != "public" || view.URL != "https://demoapp.public.test/" {
 		t.Fatalf("unexpected switched view: %#v", view)
 	}
-	if got := request("demo.private.test"); got != http.StatusNotFound {
+	if got := request("demoapp.private.test"); got != http.StatusNotFound {
 		t.Fatalf("old private host should be invalidated, got %d", got)
 	}
-	if got := request("demo.public.test"); got != http.StatusServiceUnavailable {
+	if got := request("demoapp.public.test"); got != http.StatusServiceUnavailable {
 		t.Fatalf("public host should resolve switched deployment, got %d", got)
+	}
+	if got := request("demo.public.test"); got != http.StatusNotFound {
+		t.Fatalf("unsuffixed host should not resolve deployment, got %d", got)
 	}
 }

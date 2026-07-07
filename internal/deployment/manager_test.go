@@ -212,6 +212,73 @@ func TestManagerRoutesStaticDeploymentByAccessAndCanSwitch(t *testing.T) {
 	assertCode("https://demo.public.test/", http.StatusOK)
 }
 
+func TestManagerRoutesStaticDeploymentWithDomainSuffix(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	source := filepath.Join(workspaceRoot, "site")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("suffix"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), nil, "")
+	manager.ConfigureAppHostingWithSuffixes("https://apps.test", "https://private.apps.test", AccessPrivate, "site", "app")
+	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	result, err := manager.Deploy(context.Background(), DeployRequest{
+		Type: TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Options: DeployOptions{PreserveSource: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hostname != "demosite.private.apps.test" || result.URL != "https://demosite.private.apps.test/" {
+		t.Fatalf("unexpected suffixed deployment result: %#v", result)
+	}
+	for target, want := range map[string]int{
+		"https://demosite.private.apps.test/": http.StatusOK,
+		"https://demo.private.apps.test/":     http.StatusNotFound,
+		"https://demoapp.private.apps.test/":  http.StatusNotFound,
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		manager.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("%s: got %d want %d", target, w.Code, want)
+		}
+	}
+}
+
+func TestManagerRoutesDynamicDeploymentWithSeparateDomainSuffix(t *testing.T) {
+	dynamicRoot := t.TempDir()
+	registry := `{"deployments":{"demo":{"name":"demo","type":"dynamic","workspace_id":"ws","access":"private","active_release":"release-a","desired_state":"stopped","status":"stopped","health":"stopped","argv":["unused"],"working_dir":".","health_path":"/healthz","restart_policy":"never","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","file_count":1,"total_bytes":2}}}`
+	if err := os.WriteFile(filepath.Join(dynamicRoot, "deployments.json"), []byte(registry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dynamicService, err := dynamic.NewService(dynamicRoot, config.DynamicHosting{
+		Enabled: true, DomainSuffix: "app", PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: AccessPrivate,
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dynamicService.Close()
+
+	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), dynamicService, "")
+	manager.ConfigureAppHostingWithSuffixes("https://apps.test", "https://private.apps.test", AccessPrivate, "site", "app")
+
+	for target, want := range map[string]int{
+		"https://demoapp.private.apps.test/":  http.StatusServiceUnavailable,
+		"https://demo.private.apps.test/":     http.StatusNotFound,
+		"https://demosite.private.apps.test/": http.StatusNotFound,
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		manager.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("%s: got %d want %d body=%q", target, w.Code, want, w.Body.String())
+		}
+	}
+}
+
 func TestManagerTreatsLegacyStaticAccessAsPublic(t *testing.T) {
 	service := static.NewServiceAt(filepath.Join(t.TempDir(), "static"))
 	source := t.TempDir()

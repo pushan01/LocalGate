@@ -138,11 +138,17 @@ func (s *Server) handleToolsList(req request) response {
 			if meta := core.ToolMetadata(t); len(meta) > 0 {
 				item["_meta"] = meta
 			}
+			if outputSchema := core.ToolOutputSchema(t); outputSchema != nil {
+				item["outputSchema"] = outputSchema
+			}
+			if annotations := core.ToolAnnotations(t); len(annotations) > 0 {
+				item["annotations"] = annotations
+			}
 			tools = append(tools, item)
 		}
 	}
 	if !s.App.ToolHTTPMode.Enabled {
-		for _, name := range []string{"task_status", "task_logs", "task_cancel", "wait_task_finish"} {
+		for _, name := range []string{"task_status", "task_logs", "task_cancel", "task_result", "wait_task_finish"} {
 			tools = append(tools, map[string]any{
 				"name":        name,
 				"description": "",
@@ -180,6 +186,8 @@ func (s *Server) handleToolsCall(req request) response {
 			return s.callTaskLogs(req.ID, args)
 		case "task_cancel":
 			return s.callTaskCancel(req.ID, args)
+		case "task_result":
+			return s.callTaskResult(req.ID, args)
 		case "wait_task_finish":
 			return s.callWaitTaskFinish(req.ID, args)
 		case "exec_command", "write_stdin", "read_thread_terminal":
@@ -203,6 +211,7 @@ func (s *Server) handleToolsCall(req request) response {
 		"status": "pending_approval",
 	}
 	isErr := false
+	var completedTask *core.Task
 	if submission.Approval != nil {
 		payload["approval_id"] = submission.Approval.ID
 		payload["approval_url"] = submission.Approval.ApprovalURL
@@ -218,6 +227,7 @@ func (s *Server) handleToolsCall(req request) response {
 				status = t.Status
 				if status == core.StatusSucceeded || status == core.StatusFailed || status == core.StatusCanceled || status == core.StatusTimeout {
 					payload["task"] = t
+					completedTask = t
 					break
 				}
 			}
@@ -233,15 +243,49 @@ func (s *Server) handleToolsCall(req request) response {
 		}
 	}
 	b, _ := json.Marshal(payload)
+	content := []map[string]any{{"type": "text", "text": string(b)}}
+	if !isErr && completedTask != nil {
+		content = append(content, s.resourceLinkContent(wsid, params.Name, completedTask.Result)...)
+	}
 	return response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result: map[string]any{
-			"content":           []map[string]any{{"type": "text", "text": string(b)}},
+			"content":           content,
 			"structuredContent": payload,
 			"isError":           isErr,
 		},
 	}
+}
+
+func (s *Server) resourceLinkContent(wsid, toolName string, result map[string]any) []map[string]any {
+	if s == nil || s.App == nil || result == nil {
+		return nil
+	}
+	reg, ok := s.App.Registries[wsid]
+	if !ok {
+		return nil
+	}
+	tool, ok := reg.Get(toolName)
+	if !ok {
+		return nil
+	}
+	links := core.ToolResourceLinks(tool, result)
+	out := make([]map[string]any, 0, len(links))
+	for _, link := range links {
+		item := map[string]any{
+			"type":        "resource_link",
+			"uri":         link.URI,
+			"name":        link.Name,
+			"description": link.Description,
+			"mimeType":    link.MIMEType,
+		}
+		if link.Size >= 0 {
+			item["size"] = link.Size
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func isBootstrapTool(name string) bool {
@@ -336,7 +380,7 @@ func collectStreams(sink *core.EventSink, taskID string, maxLines int) (string, 
 
 func mcpAdminSchema(name string) any {
 	switch name {
-	case "task_status":
+	case "task_status", "task_result":
 		return map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -390,6 +434,48 @@ func (s *Server) callTaskStatus(id json.RawMessage, args map[string]any) respons
 	}
 	b, _ := json.Marshal(t)
 	return response{JSONRPC: "2.0", ID: id, Result: map[string]any{"content": []map[string]any{{"type": "text", "text": string(b)}}, "isError": false}}
+}
+
+func (s *Server) callTaskResult(id json.RawMessage, args map[string]any) response {
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32602, Message: "task_id required"}}
+	}
+	t, err := s.App.Tasks.Get(taskID)
+	if err != nil {
+		return response{JSONRPC: "2.0", ID: id, Result: map[string]any{"content": []map[string]any{{"type": "text", "text": "task not found"}}, "isError": true}}
+	}
+	payload := map[string]any{
+		"task_id": t.ID,
+		"status":  t.Status,
+		"ready":   isTerminalStatus(t.Status),
+	}
+	if t.Result != nil {
+		payload["result"] = t.Result
+	}
+	if t.ExitCode != 0 {
+		payload["exit_code"] = t.ExitCode
+	}
+	if t.ErrorCode != "" {
+		payload["error_code"] = t.ErrorCode
+	}
+	if t.ErrorMsg != "" {
+		payload["error_msg"] = t.ErrorMsg
+	}
+	b, _ := json.Marshal(payload)
+	content := []map[string]any{{"type": "text", "text": string(b)}}
+	if t.Status == core.StatusSucceeded && t.Result != nil {
+		wsid := t.WorkspaceID
+		if wsid == "" {
+			wsid = s.App.DefaultWSID
+		}
+		content = append(content, s.resourceLinkContent(wsid, t.Tool, t.Result)...)
+	}
+	return response{JSONRPC: "2.0", ID: id, Result: map[string]any{
+		"content":           content,
+		"structuredContent": payload,
+		"isError":           isErrorStatus(t.Status),
+	}}
 }
 
 func (s *Server) callTaskLogs(id json.RawMessage, args map[string]any) response {
@@ -461,6 +547,10 @@ func waitTaskSnapshot(tasks *core.Manager, taskID string, timeout time.Duration)
 
 func isTerminalStatus(status core.Status) bool {
 	return status == core.StatusSucceeded || status == core.StatusFailed || status == core.StatusCanceled || status == core.StatusTimeout
+}
+
+func isErrorStatus(status core.Status) bool {
+	return status == core.StatusFailed || status == core.StatusCanceled || status == core.StatusTimeout
 }
 
 func intFromAny(v any) int {

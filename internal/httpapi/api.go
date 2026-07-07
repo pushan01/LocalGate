@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +23,7 @@ import (
 	"localgate/internal/approval"
 	"localgate/internal/core"
 	"localgate/internal/download"
+	"localgate/internal/fileexport"
 	"localgate/internal/invocation"
 	"localgate/internal/security"
 	"localgate/internal/server"
@@ -72,6 +76,7 @@ func (a *API) RegisterControl(mux *http.ServeMux) {
 	mux.HandleFunc("/sessions/", a.handleSessionRoutes)
 	mux.HandleFunc("/audits", a.handleAuditQuery)
 	mux.HandleFunc("/system/downloads", a.handleDownloads)
+	mux.HandleFunc("/system/exports/", a.handleExports)
 	mux.HandleFunc("/system/uploads", a.handleUploads)
 	mux.HandleFunc("/system/upgrades", a.handleUpgrades)
 	mux.HandleFunc("/system/upgrades/", a.handleUpgradeRoutes)
@@ -1018,6 +1023,84 @@ func (a *API) handleDownloads(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(dec.Path)))
 	http.ServeFile(w, r, dec.Path)
+}
+
+func (a *API) handleExports(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+		return
+	}
+	if a.App.Exports == nil || !a.App.FileExports.Enabled {
+		server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/system/exports/")
+	if id == "" || strings.Contains(id, "/") {
+		server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
+		return
+	}
+	grant, err := a.App.Exports.Authorize(id, r.URL.Query().Get("signature"))
+	if err != nil {
+		if errors.Is(err, fileexport.ErrExportExpired) {
+			server.WriteError(w, http.StatusGone, "export_expired", "export expired", nil)
+			return
+		}
+		server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
+		return
+	}
+
+	ws, ok := a.App.Workspaces[grant.WorkspaceID]
+	if !ok {
+		server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
+		return
+	}
+	lexical := security.ValidatePath(grant.Path, ws, security.Options{})
+	if !lexical.Allowed {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+		return
+	}
+	if info, err := os.Lstat(lexical.Path); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+		return
+	}
+	dec := security.ValidatePath(lexical.Path, ws, security.Options{FollowSymlink: true})
+	if !dec.Allowed {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+		return
+	}
+	f, err := os.Open(dec.Path)
+	if err != nil {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != grant.Size || info.ModTime().UnixNano() != grant.ModTimeUnixNano {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source changed after the export was created", nil)
+		return
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		server.WriteError(w, http.StatusInternalServerError, "export_read_failed", "failed to read exported file", nil)
+		return
+	}
+	if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), grant.SHA256) {
+		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source changed after the export was created", nil)
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		server.WriteError(w, http.StatusInternalServerError, "export_read_failed", "failed to read exported file", nil)
+		return
+	}
+
+	w.Header().Set("Content-Type", grant.MIMEType)
+	if disposition := mime.FormatMediaType("attachment", map[string]string{"filename": grant.FileName}); disposition != "" {
+		w.Header().Set("Content-Disposition", disposition)
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.ServeContent(w, r, grant.FileName, info.ModTime(), f)
 }
 
 func (a *API) handleUpgradeRoutes(w http.ResponseWriter, r *http.Request) {

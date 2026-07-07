@@ -121,6 +121,16 @@ http:
   allow_cors: false
   allowed_origins: []
 
+# 将 workspace 文件以短期 MCP resource_link 返回给 ChatGPT / Agent。
+# 首版要求 base_url 与 http.base_url 使用相同的 scheme 和 authority。
+file_exports:
+  enabled: false
+  base_url: "http://127.0.0.1:3737"
+  default_ttl_seconds: 300
+  max_ttl_seconds: 600
+  max_file_bytes: 104857600
+  require_approval: true
+
 deployments:
   # public/private 应用面使用独立 listener。
   public_bind: "127.0.0.1:3738"
@@ -143,6 +153,9 @@ deployments:
     - deploys
 
   static:
+    # 直接拼接到静态 deployment 名称后。
+    # docs + site => docssite.apps.example.com；配置为 "-site" 可得到 docs-site.apps.example.com。
+    domain_suffix: ""
     max_files: 10000
     max_total_bytes: 52428800
     max_file_bytes: 52428800
@@ -151,6 +164,10 @@ deployments:
   dynamic:
     enabled: false
     require_approval: true
+
+    # 直接拼接到动态 deployment 名称后。
+    # api + app => apiapp.apps.example.com。
+    domain_suffix: ""
 
     allowed_executables:
       - "/absolute/path/to/node"

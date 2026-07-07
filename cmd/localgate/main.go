@@ -130,13 +130,18 @@ func main() {
 	}
 
 	api := &httpapi.API{App: application, DefaultWSID: application.DefaultWSID}
+	var publicAuthPrefixes []string
+	if cfg.FileExports.Enabled {
+		publicAuthPrefixes = []string{"/system/exports/"}
+	}
 	controlSrv := server.New(server.Options{
 		Bind:    cfg.Bind,
 		Version: Version,
 		Auth: server.AuthOptions{
-			Enabled:     cfg.HTTPAuth.Enabled,
-			BearerToken: cfg.HTTPAuth.BearerToken,
-			AllowPaths:  cfg.HTTPAuth.AllowPaths,
+			Enabled:           cfg.HTTPAuth.Enabled,
+			BearerToken:       cfg.HTTPAuth.BearerToken,
+			AllowPaths:        cfg.HTTPAuth.AllowPaths,
+			AllowPathPrefixes: publicAuthPrefixes,
 		},
 		ControlBaseURL: cfg.HTTP.BaseURL,
 		CORS: server.CORSOptions{

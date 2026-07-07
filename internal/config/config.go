@@ -40,6 +40,7 @@ type Config struct {
 	SessionCleanup   SessionCleanup    `yaml:"session_cleanup"`
 	HTTP             HTTP              `yaml:"http"`
 	MCPHTTP          MCPHTTP           `yaml:"mcp_http"`
+	FileExports      FileExports       `yaml:"file_exports"`
 	Deployments      DeploymentsConfig `yaml:"deployments"`
 	HTTPAuth         HTTPAuth          `yaml:"http_auth"`
 	ToolArguments    ToolArguments     `yaml:"tool_arguments"`
@@ -102,6 +103,15 @@ type MCPHTTP struct {
 	Stateless bool `yaml:"stateless"`
 }
 
+type FileExports struct {
+	Enabled           bool   `yaml:"enabled"`
+	BaseURL           string `yaml:"base_url"`
+	DefaultTTLSeconds int    `yaml:"default_ttl_seconds"`
+	MaxTTLSeconds     int    `yaml:"max_ttl_seconds"`
+	MaxFileBytes      int64  `yaml:"max_file_bytes"`
+	RequireApproval   bool   `yaml:"require_approval"`
+}
+
 type DeploymentsConfig struct {
 	PublicBind     string         `yaml:"public_bind"`
 	PrivateBind    string         `yaml:"private_bind"`
@@ -114,14 +124,16 @@ type DeploymentsConfig struct {
 }
 
 type StaticHosting struct {
-	MaxFiles        int   `yaml:"max_files"`
-	MaxTotalBytes   int64 `yaml:"max_total_bytes"`
-	MaxFileBytes    int64 `yaml:"max_file_bytes"`
-	RequireApproval bool  `yaml:"require_approval"`
+	DomainSuffix    string `yaml:"domain_suffix"`
+	MaxFiles        int    `yaml:"max_files"`
+	MaxTotalBytes   int64  `yaml:"max_total_bytes"`
+	MaxFileBytes    int64  `yaml:"max_file_bytes"`
+	RequireApproval bool   `yaml:"require_approval"`
 }
 
 type DynamicHosting struct {
 	Enabled                      bool     `yaml:"enabled"`
+	DomainSuffix                 string   `yaml:"domain_suffix"`
 	ControlBaseURL               string   `yaml:"-"`
 	PublicBaseURL                string   `yaml:"-"`
 	PrivateBaseURL               string   `yaml:"-"`
@@ -213,6 +225,12 @@ func Default() Config {
 		},
 		ToolHTTPMode: ToolHTTPMode{
 			AccessTokenTTLSeconds: 10 * 60,
+		},
+		FileExports: FileExports{
+			DefaultTTLSeconds: 5 * 60,
+			MaxTTLSeconds:     10 * 60,
+			MaxFileBytes:      100 << 20,
+			RequireApproval:   true,
 		},
 		Deployments: DeploymentsConfig{
 			PublicBind:    "127.0.0.1:3738",
@@ -435,10 +453,41 @@ func Load(opts LoadOptions) (Config, error) {
 			cfg.MCPHTTP.Stateless = bv
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_ENABLED")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileExports.Enabled = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_BASE_URL")); v != "" {
+		cfg.FileExports.BaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_DEFAULT_TTL_SECONDS")); v != "" {
+		if iv, err := atoi(v); err == nil {
+			cfg.FileExports.DefaultTTLSeconds = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_MAX_TTL_SECONDS")); v != "" {
+		if iv, err := atoi(v); err == nil {
+			cfg.FileExports.MaxTTLSeconds = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_MAX_FILE_BYTES")); v != "" {
+		if iv, err := atoi64(v); err == nil {
+			cfg.FileExports.MaxFileBytes = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_REQUIRE_APPROVAL")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileExports.RequireApproval = bv
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILES")); v != "" {
 		if iv, err := atoi(v); err == nil {
 			cfg.Deployments.Static.MaxFiles = iv
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_DOMAIN_SUFFIX")); v != "" {
+		cfg.Deployments.Static.DomainSuffix = v
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_TOTAL_BYTES")); v != "" {
 		if iv, err := atoi64(v); err == nil {
@@ -459,6 +508,9 @@ func Load(opts LoadOptions) (Config, error) {
 		if bv, ok := atob(v); ok {
 			cfg.Deployments.Dynamic.Enabled = bv
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_DYNAMIC_DOMAIN_SUFFIX")); v != "" {
+		cfg.Deployments.Dynamic.DomainSuffix = v
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_PUBLIC_BASE_URL")); v != "" {
 		cfg.Deployments.PublicBaseURL = v
@@ -633,11 +685,14 @@ func Load(opts LoadOptions) (Config, error) {
 	}
 	cfg.HTTP.BaseURL = normalizeBaseURL(cfg.HTTP.BaseURL)
 	cfg.Admin.BaseURL = normalizeBaseURL(cfg.Admin.BaseURL)
+	cfg.FileExports = NormalizeFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL)
 	if !cfg.Admin.Enabled {
 		cfg.Admin.Approval.Enabled = false
 	}
 	cfg.Deployments.PublicBaseURL = normalizeBaseURL(cfg.Deployments.PublicBaseURL)
 	cfg.Deployments.PrivateBaseURL = normalizeBaseURL(cfg.Deployments.PrivateBaseURL)
+	cfg.Deployments.Static.DomainSuffix = normalizeDeploymentDomainSuffix(cfg.Deployments.Static.DomainSuffix)
+	cfg.Deployments.Dynamic.DomainSuffix = normalizeDeploymentDomainSuffix(cfg.Deployments.Dynamic.DomainSuffix)
 	cfg.Deployments.DefaultAccess = strings.ToLower(strings.TrimSpace(cfg.Deployments.DefaultAccess))
 	if cfg.Deployments.DefaultAccess == "" {
 		cfg.Deployments.DefaultAccess = "private"
@@ -655,6 +710,9 @@ func Load(opts LoadOptions) (Config, error) {
 		return Config{}, errors.New("http_auth.bearer_token is required when http_auth.enabled is true")
 	}
 	if err := validateAdminConfig(cfg.Admin); err != nil {
+		return Config{}, err
+	}
+	if err := validateFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL); err != nil {
 		return Config{}, err
 	}
 	if err := validateListenerBinds(cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
@@ -766,6 +824,14 @@ func (c Config) SafeSummary() map[string]any {
 		"mcp_http": map[string]any{
 			"stateless": c.MCPHTTP.Stateless,
 		},
+		"file_exports": map[string]any{
+			"enabled":             c.FileExports.Enabled,
+			"base_url":            c.FileExports.BaseURL,
+			"default_ttl_seconds": c.FileExports.DefaultTTLSeconds,
+			"max_ttl_seconds":     c.FileExports.MaxTTLSeconds,
+			"max_file_bytes":      c.FileExports.MaxFileBytes,
+			"require_approval":    c.FileExports.RequireApproval,
+		},
 		"deployments": map[string]any{
 			"public_bind":      c.Deployments.PublicBind,
 			"private_bind":     c.Deployments.PrivateBind,
@@ -774,6 +840,7 @@ func (c Config) SafeSummary() map[string]any {
 			"default_access":   c.Deployments.DefaultAccess,
 			"reserved_names":   c.Deployments.ReservedNames,
 			"static": map[string]any{
+				"domain_suffix":    c.Deployments.Static.DomainSuffix,
 				"max_files":        c.Deployments.Static.MaxFiles,
 				"max_total_bytes":  c.Deployments.Static.MaxTotalBytes,
 				"max_file_bytes":   c.Deployments.Static.MaxFileBytes,
@@ -781,6 +848,7 @@ func (c Config) SafeSummary() map[string]any {
 			},
 			"dynamic": map[string]any{
 				"enabled":                         c.Deployments.Dynamic.Enabled,
+				"domain_suffix":                   c.Deployments.Dynamic.DomainSuffix,
 				"require_approval":                c.Deployments.Dynamic.RequireApproval,
 				"allowed_executables":             c.Deployments.Dynamic.AllowedExecutables,
 				"env_allowlist":                   c.Deployments.Dynamic.EnvAllowlist,
@@ -867,6 +935,51 @@ func validateAdminConfig(cfg AdminConfig) error {
 	return validateApprovalConfig(cfg.Approval)
 }
 
+func NormalizeFileExportsConfig(cfg FileExports, controlBaseURL string) FileExports {
+	defaults := Default().FileExports
+	if cfg.DefaultTTLSeconds == 0 {
+		cfg.DefaultTTLSeconds = defaults.DefaultTTLSeconds
+	}
+	if cfg.MaxTTLSeconds == 0 {
+		cfg.MaxTTLSeconds = defaults.MaxTTLSeconds
+	}
+	if cfg.MaxFileBytes == 0 {
+		cfg.MaxFileBytes = defaults.MaxFileBytes
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = strings.TrimSpace(controlBaseURL)
+	}
+	cfg.BaseURL = normalizeBaseURL(cfg.BaseURL)
+	return cfg
+}
+
+func validateFileExportsConfig(cfg FileExports, controlBaseURL string) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("file_exports.base_url must be a valid http or https URL when file exports are enabled")
+	}
+	control, err := url.Parse(strings.TrimSpace(controlBaseURL))
+	if err != nil || control.Host == "" {
+		return errors.New("http.base_url must be valid when file exports are enabled")
+	}
+	if !strings.EqualFold(parsed.Scheme, control.Scheme) || !strings.EqualFold(parsed.Host, control.Host) {
+		return errors.New("file_exports.base_url must use the same scheme and authority as http.base_url in this version")
+	}
+	if cfg.DefaultTTLSeconds < 60 {
+		return errors.New("file_exports.default_ttl_seconds must be at least 60")
+	}
+	if cfg.MaxTTLSeconds < cfg.DefaultTTLSeconds {
+		return errors.New("file_exports.max_ttl_seconds must be at least default_ttl_seconds")
+	}
+	if cfg.MaxFileBytes <= 0 {
+		return errors.New("file_exports.max_file_bytes must be positive")
+	}
+	return nil
+}
+
 func NormalizeDeploymentsConfig(cfg DeploymentsConfig, controlBaseURL string) DeploymentsConfig {
 	applyDeploymentShared(&cfg, controlBaseURL)
 	return cfg
@@ -944,7 +1057,33 @@ func bindPort(raw string) (string, error) {
 	return port, nil
 }
 
+func normalizeDeploymentDomainSuffix(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateDeploymentDomainSuffix(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 62 {
+		return fmt.Errorf("%s must contain at most 62 characters", field)
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+			continue
+		}
+		return fmt.Errorf("%s may contain only lowercase letters, numbers, and hyphens", field)
+	}
+	if value[len(value)-1] == '-' {
+		return fmt.Errorf("%s must not end with a hyphen", field)
+	}
+	return nil
+}
+
 func validateStaticHosting(cfg StaticHosting) error {
+	if err := validateDeploymentDomainSuffix("deployments.static.domain_suffix", cfg.DomainSuffix); err != nil {
+		return err
+	}
 	if cfg.MaxFiles <= 0 {
 		return errors.New("deployments.static.max_files must be positive")
 	}
@@ -961,6 +1100,9 @@ func validateStaticHosting(cfg StaticHosting) error {
 }
 
 func validateDynamicHosting(cfg DynamicHosting) error {
+	if err := validateDeploymentDomainSuffix("deployments.dynamic.domain_suffix", cfg.DomainSuffix); err != nil {
+		return err
+	}
 	if cfg.MaxApps <= 0 {
 		return errors.New("deployments.dynamic.max_apps must be positive")
 	}

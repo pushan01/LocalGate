@@ -66,6 +66,7 @@ func (s *Server) registerCoreTools() {
 				mcpExposedSchema(t.Schema(), s.App.ToolArguments.EnableBase64 && t.Name() != "upload_file" && t.Name() != "get_startup_instructions" && t.Name() != "get_tool_schema", t.Name() != "get_startup_instructions"),
 				core.ToolMetadata(t),
 			)
+			applyCoreToolExtensions(&mcpTool, t)
 			s.impl.AddTool(mcpTool, s.makeInvokeHandler(name))
 		}
 	}
@@ -189,7 +190,7 @@ func (s *Server) makeInvokeHandler(toolName string) func(ctx context.Context, re
 		t := waitTaskSnapshot(s.App.Tasks, task.ID, 5*time.Second)
 		payload := buildTaskPayload(t)
 		appendTaskStreams(payload, s.App.Sink, task.ID, isTerminalStatus(t.Status))
-		return newStructuredToolResult(payload, isErrorStatus(t.Status)), nil
+		return s.newTaskToolResult(payload, t, isErrorStatus(t.Status)), nil
 	}
 }
 
@@ -309,7 +310,7 @@ func (s *Server) handleTaskResult(ctx context.Context, req mcp.CallToolRequest) 
 	payload := buildTaskPayload(t)
 	payload["ready"] = isTerminalStatus(t.Status)
 	appendTaskStreams(payload, s.App.Sink, id, true)
-	return newStructuredToolResult(payload, isErrorStatus(t.Status)), nil
+	return s.newTaskToolResult(payload, t, isErrorStatus(t.Status)), nil
 }
 
 func (s *Server) handleWaitTaskFinish(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -485,6 +486,35 @@ func newStructuredToolResult(payload map[string]any, isError bool) *mcp.CallTool
 	r.StructuredContent = payload
 	r.IsError = isError
 	return r
+}
+
+func (s *Server) newTaskToolResult(payload map[string]any, task *core.Task, isError bool) *mcp.CallToolResult {
+	result := newStructuredToolResult(payload, isError)
+	if s == nil || s.App == nil || task == nil || task.Result == nil || isError {
+		return result
+	}
+	wsid := strings.TrimSpace(task.WorkspaceID)
+	if wsid == "" {
+		wsid = s.App.DefaultWSID
+	}
+	reg, ok := s.App.Registries[wsid]
+	if !ok {
+		return result
+	}
+	tool, ok := reg.Get(task.Tool)
+	if !ok {
+		return result
+	}
+	for _, link := range core.ToolResourceLinks(tool, task.Result) {
+		result.Content = append(result.Content, mcp.ResourceLink{
+			Type:        "resource_link",
+			URI:         link.URI,
+			Name:        link.Name,
+			Description: link.Description,
+			MIMEType:    link.MIMEType,
+		})
+	}
+	return result
 }
 
 func exitCodeFromResult(res map[string]any) int {
