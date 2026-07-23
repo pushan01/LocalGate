@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 type registry struct {
@@ -81,7 +82,7 @@ func (s *registryStore) save(value *registry) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := tmp.Sync(); err != nil && !errors.Is(err, syscall.ENOTTY) {
 		_ = tmp.Close()
 		return err
 	}
@@ -96,5 +97,8 @@ func (s *registryStore) save(value *registry) error {
 		return err
 	}
 	defer directory.Close()
-	return directory.Sync()
+	if err := directory.Sync(); err != nil && !errors.Is(err, syscall.ENOTTY) {
+		return err
+	}
+	return nil
 }

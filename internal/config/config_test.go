@@ -384,6 +384,81 @@ func TestLoadToolArgumentsFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadFileBrowserConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "localgate.yaml")
+	err := os.WriteFile(cfgPath, []byte(`
+file_browser:
+  enabled: true
+  read_only: true
+  max_file_bytes: 1234
+  max_upload_bytes: 5678
+  show_hidden_files: true
+  exclude: [".git", "tmp"]
+  require_approval_for_write: false
+  require_approval_for_delete: false
+workspaces:
+  - id: ws
+`), 0o644)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.FileBrowser.Enabled || !cfg.FileBrowser.ReadOnly || cfg.FileBrowser.MaxFileBytes != 1234 || cfg.FileBrowser.MaxUploadBytes != 5678 || !cfg.FileBrowser.ShowHiddenFiles {
+		t.Fatalf("unexpected file browser config: %#v", cfg.FileBrowser)
+	}
+	if len(cfg.FileBrowser.Exclude) != 2 || cfg.FileBrowser.Exclude[1] != "tmp" {
+		t.Fatalf("unexpected file browser exclude: %#v", cfg.FileBrowser.Exclude)
+	}
+	if cfg.FileBrowser.RequireApprovalForWrite || cfg.FileBrowser.RequireApprovalForDelete {
+		t.Fatalf("unexpected approval flags: %#v", cfg.FileBrowser)
+	}
+	summary := cfg.SafeSummary()
+	fileBrowserSummary, _ := summary["file_browser"].(map[string]any)
+	if fileBrowserSummary["max_file_bytes"] != int64(1234) || fileBrowserSummary["read_only"] != true {
+		t.Fatalf("unexpected safe summary: %#v", summary)
+	}
+}
+
+func TestLoadFileBrowserFromEnv(t *testing.T) {
+	withEnv(t, "LOCALGATE_FILE_BROWSER_ENABLED", "false")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_READ_ONLY", "true")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_MAX_FILE_BYTES", "222")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_MAX_UPLOAD_BYTES", "333")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_SHOW_HIDDEN_FILES", "true")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_EXCLUDE", ".git,tmp")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_WRITE", "false")
+	withEnv(t, "LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_DELETE", "false")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.FileBrowser.Enabled || !cfg.FileBrowser.ReadOnly || cfg.FileBrowser.MaxFileBytes != 222 || cfg.FileBrowser.MaxUploadBytes != 333 || !cfg.FileBrowser.ShowHiddenFiles {
+		t.Fatalf("unexpected file browser config from env: %#v", cfg.FileBrowser)
+	}
+	if len(cfg.FileBrowser.Exclude) != 2 || cfg.FileBrowser.Exclude[1] != "tmp" {
+		t.Fatalf("unexpected exclude from env: %#v", cfg.FileBrowser.Exclude)
+	}
+	if cfg.FileBrowser.RequireApprovalForWrite || cfg.FileBrowser.RequireApprovalForDelete {
+		t.Fatalf("unexpected approval flags from env: %#v", cfg.FileBrowser)
+	}
+}
+
+func TestLoadFileBrowserRejectsInvalidLimits(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "localgate.yaml")
+	if err := os.WriteFile(cfgPath, []byte("file_browser:\n  enabled: true\n  max_file_bytes: 0\nworkspaces:\n  - id: ws\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "file_browser.max_file_bytes") {
+		t.Fatalf("expected file browser max file validation error, got %v", err)
+	}
+}
+
 func TestLoadWorkspaceHiddenTools(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")

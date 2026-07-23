@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +23,7 @@ import (
 	"localgate/internal/deployment"
 	"localgate/internal/download"
 	"localgate/internal/dynamic"
+	"localgate/internal/filebrowser"
 	"localgate/internal/fileexport"
 	"localgate/internal/invocation"
 	mcptools "localgate/internal/mcp/tools"
@@ -35,35 +40,37 @@ const downstreamMCPStartupTimeout = 5 * time.Second
 var ErrApprovalPolicyDenied = errors.New("tool execution denied by approval policy")
 
 type App struct {
-	Sink              *core.EventSink
-	Tasks             *core.Manager
-	Sessions          *core.SessionManager
-	Workspaces        map[string]config.Workspace
-	Registries        map[string]*core.Registry
-	Approvals         *approval.Service
-	Approval          config.ApprovalConfig
-	Admin             config.AdminConfig
-	Downloads         *download.Service
-	Uploads           *upload.Service
-	Exports           *fileexport.Service
-	FileExports       config.FileExports
-	ToolAccess        *toolaccess.Service
-	ToolArguments     config.ToolArguments
-	ToolHTTPMode      config.ToolHTTPMode
-	StaticHosting     config.StaticHosting
-	StaticService     *static.Service
-	DynamicHosting    config.DynamicHosting
-	DynamicService    *dynamic.Service
-	DeploymentManager *deployment.Manager
-	HTTPBaseURL       string
-	StoreBase         string
-	Upgrades          *upgrade.Service
-	Relays            map[string]*mcprelay.Client
-	RelayErrors       map[string]string
-	DefaultWSID       string
-	stopJanitor       context.CancelFunc
-	approvalMu        sync.Mutex
-	approvalGates     map[string]func()
+	Sink               *core.EventSink
+	Tasks              *core.Manager
+	Sessions           *core.SessionManager
+	Workspaces         map[string]config.Workspace
+	Registries         map[string]*core.Registry
+	Approvals          *approval.Service
+	Approval           config.ApprovalConfig
+	Admin              config.AdminConfig
+	Downloads          *download.Service
+	Uploads            *upload.Service
+	Exports            *fileexport.Service
+	FileExports        config.FileExports
+	FileBrowser        config.FileBrowserConfig
+	FileBrowserService *filebrowser.Service
+	ToolAccess         *toolaccess.Service
+	ToolArguments      config.ToolArguments
+	ToolHTTPMode       config.ToolHTTPMode
+	StaticHosting      config.StaticHosting
+	StaticService      *static.Service
+	DynamicHosting     config.DynamicHosting
+	DynamicService     *dynamic.Service
+	DeploymentManager  *deployment.Manager
+	HTTPBaseURL        string
+	StoreBase          string
+	Upgrades           *upgrade.Service
+	Relays             map[string]*mcprelay.Client
+	RelayErrors        map[string]string
+	DefaultWSID        string
+	stopJanitor        context.CancelFunc
+	approvalMu         sync.Mutex
+	approvalGates      map[string]func()
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -140,6 +147,10 @@ func New(cfg config.Config) (*App, error) {
 			defaultWS = ws.ID
 		}
 		wss[ws.ID] = ws
+	}
+	var fileBrowserSvc *filebrowser.Service
+	if cfg.FileBrowser.Enabled {
+		fileBrowserSvc = filebrowser.NewService(cfg.FileBrowser, wss)
 	}
 	ownsDynamicRuntime := cfg.Runtime.Mode != "mcp_stdio"
 	dynamicSvc, err := dynamic.NewService(filepath.Join(storeBase, "dynamic"), cfg.Deployments.Dynamic, wss, ownsDynamicRuntime)
@@ -244,33 +255,35 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		Sink:              sink,
-		Tasks:             tm,
-		Sessions:          sessions,
-		Workspaces:        wss,
-		Registries:        regs,
-		Approvals:         approvalSvc,
-		Approval:          approvalConfig,
-		Admin:             adminConfig,
-		Downloads:         downloadSvc,
-		Uploads:           uploadSvc,
-		Exports:           exportSvc,
-		FileExports:       cfg.FileExports,
-		ToolAccess:        toolAccessSvc,
-		ToolArguments:     cfg.ToolArguments,
-		ToolHTTPMode:      cfg.ToolHTTPMode,
-		StaticHosting:     cfg.Deployments.Static,
-		StaticService:     staticSvc,
-		DynamicHosting:    cfg.Deployments.Dynamic,
-		DynamicService:    dynamicSvc,
-		DeploymentManager: deploymentManager,
-		HTTPBaseURL:       cfg.HTTP.BaseURL,
-		StoreBase:         storeBase,
-		Upgrades:          upgradeSvc,
-		Relays:            relays,
-		RelayErrors:       relayErrors,
-		DefaultWSID:       defaultWS,
-		approvalGates:     map[string]func(){},
+		Sink:               sink,
+		Tasks:              tm,
+		Sessions:           sessions,
+		Workspaces:         wss,
+		Registries:         regs,
+		Approvals:          approvalSvc,
+		Approval:           approvalConfig,
+		Admin:              adminConfig,
+		Downloads:          downloadSvc,
+		Uploads:            uploadSvc,
+		Exports:            exportSvc,
+		FileExports:        cfg.FileExports,
+		FileBrowser:        cfg.FileBrowser,
+		FileBrowserService: fileBrowserSvc,
+		ToolAccess:         toolAccessSvc,
+		ToolArguments:      cfg.ToolArguments,
+		ToolHTTPMode:       cfg.ToolHTTPMode,
+		StaticHosting:      cfg.Deployments.Static,
+		StaticService:      staticSvc,
+		DynamicHosting:     cfg.Deployments.Dynamic,
+		DynamicService:     dynamicSvc,
+		DeploymentManager:  deploymentManager,
+		HTTPBaseURL:        cfg.HTTP.BaseURL,
+		StoreBase:          storeBase,
+		Upgrades:           upgradeSvc,
+		Relays:             relays,
+		RelayErrors:        relayErrors,
+		DefaultWSID:        defaultWS,
+		approvalGates:      map[string]func(){},
 	}
 	if cfg.SessionCleanup.SweepIntervalMs > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -283,6 +296,528 @@ func New(cfg config.Config) (*App, error) {
 type Submission struct {
 	Task     *core.Task
 	Approval *approval.Request
+}
+
+type fileBrowserPayloadStage struct {
+	ID   string
+	Path string
+}
+
+func (a *App) stageFileBrowserPayload(content []byte) (fileBrowserPayloadStage, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fileBrowserPayloadStage{}, err
+	}
+	stageID := hex.EncodeToString(raw[:])
+	dir := filepath.Join(a.StoreBase, "filebrowser", "staging")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fileBrowserPayloadStage{}, err
+	}
+	tmp, err := os.CreateTemp(dir, ".payload-*")
+	if err != nil {
+		return fileBrowserPayloadStage{}, err
+	}
+	tmpPath := tmp.Name()
+	finalPath := filepath.Join(dir, stageID+".bin")
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fileBrowserPayloadStage{}, err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fileBrowserPayloadStage{}, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fileBrowserPayloadStage{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fileBrowserPayloadStage{}, err
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fileBrowserPayloadStage{}, err
+	}
+	return fileBrowserPayloadStage{ID: stageID, Path: finalPath}, nil
+}
+
+func (s fileBrowserPayloadStage) Read() ([]byte, error) {
+	return os.ReadFile(s.Path)
+}
+
+func (s fileBrowserPayloadStage) Cleanup() error {
+	if s.Path == "" {
+		return nil
+	}
+	if err := os.Remove(s.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (a *App) SubmitFileBrowserSave(requester string, req filebrowser.SaveContentRequest) (Submission, error) {
+	if a == nil || a.FileBrowserService == nil {
+		return Submission{}, filebrowser.ErrDisabled
+	}
+	wsid := strings.TrimSpace(req.WorkspaceID)
+	if wsid == "" {
+		wsid = a.DefaultWSID
+		req.WorkspaceID = wsid
+	}
+	requester = strings.TrimSpace(requester)
+	if requester == "" {
+		requester = "admin"
+	}
+	args := fileBrowserSaveApprovalArgs(req)
+	if a.FileBrowser.RequireApprovalForWrite {
+		if a.Approvals == nil || !a.Approval.Enabled {
+			return Submission{}, filebrowser.ErrApprovalRequired
+		}
+		stage, err := a.stageFileBrowserPayload([]byte(req.Content))
+		if err != nil {
+			return Submission{}, err
+		}
+		args["content_stage_id"] = stage.ID
+		req.Content = ""
+		reqApproval, err := a.Approvals.Create(approval.Request{
+			Tool:        "file_browser.write",
+			WorkspaceID: wsid,
+			Requester:   requester,
+			Transport:   invocation.TransportAdmin,
+			Execution:   approval.ExecutionAppTool,
+			Reason:      "approval.policy.file_browser_write",
+			Summary:     "Save file " + req.Path,
+			RiskLevel:   "high",
+			Args:        args,
+		})
+		if err != nil {
+			_ = stage.Cleanup()
+			return Submission{}, err
+		}
+		run := func(ctx context.Context, taskID string) (int, error) {
+			content, stageErr := stage.Read()
+			if stageErr != nil {
+				_ = stage.Cleanup()
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_write_failed", Tool: "file_browser.write", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: stageErr.Error(), Details: args})
+				return -1, stageErr
+			}
+			defer func() { _ = stage.Cleanup() }()
+			runReq := req
+			runReq.Content = string(content)
+			res, saveErr := a.FileBrowserService.SaveContentApproved(ctx, runReq)
+			if saveErr != nil {
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{
+					ApprovalID:  reqApproval.ID,
+					TaskID:      taskID,
+					Action:      "file_browser_write_failed",
+					Tool:        "file_browser.write",
+					WorkspaceID: wsid,
+					Requester:   requester,
+					Transport:   invocation.TransportAdmin,
+					Error:       saveErr.Error(),
+					Details:     args,
+				})
+				return -1, saveErr
+			}
+			result := fileBrowserSaveResultMap(res)
+			_ = a.Tasks.SetResult(taskID, result)
+			_, _ = a.Approvals.RecordAudit(approval.AuditRecord{
+				ApprovalID:  reqApproval.ID,
+				TaskID:      taskID,
+				Action:      "file_browser_write_succeeded",
+				Tool:        "file_browser.write",
+				WorkspaceID: wsid,
+				Requester:   requester,
+				Transport:   invocation.TransportAdmin,
+				Details:     result,
+			})
+			return 0, nil
+		}
+		task, release := a.Tasks.CreateGatedTask(core.Task{
+			Transport:   invocation.TransportAdmin,
+			Requester:   requester,
+			WorkspaceID: wsid,
+			Tool:        "file_browser.write",
+			ArgsDigest:  reqApproval.ArgsDigest,
+			ApprovalID:  reqApproval.ID,
+			ApprovalURL: reqApproval.ApprovalURL,
+			ExpiresAt:   reqApproval.ExpiresAt,
+		}, run)
+		bound, err := a.Approvals.BindTask(reqApproval.ID, task.ID)
+		if err != nil {
+			_ = a.Tasks.Cancel(task.ID)
+			_ = stage.Cleanup()
+			return Submission{}, err
+		}
+		a.approvalMu.Lock()
+		a.approvalGates[reqApproval.ID] = release
+		a.approvalMu.Unlock()
+		go a.expireApproval(bound)
+		return Submission{Task: task, Approval: &bound}, nil
+	}
+	res, err := a.FileBrowserService.SaveContent(context.Background(), req)
+	if err != nil {
+		return Submission{}, err
+	}
+	task := a.Tasks.CreateTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.write"}, func(ctx context.Context, taskID string) (int, error) {
+		_ = a.Tasks.SetResult(taskID, fileBrowserSaveResultMap(res))
+		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{
+			TaskID:      taskID,
+			Action:      "file_browser_write_succeeded",
+			Tool:        "file_browser.write",
+			WorkspaceID: wsid,
+			Requester:   requester,
+			Transport:   invocation.TransportAdmin,
+			Details:     fileBrowserSaveResultMap(res),
+		})
+		return 0, nil
+	})
+	return Submission{Task: task}, nil
+}
+
+func (a *App) SubmitFileBrowserMkdir(requester string, req filebrowser.MkdirRequest) (Submission, error) {
+	if a == nil || a.FileBrowserService == nil {
+		return Submission{}, filebrowser.ErrDisabled
+	}
+	wsid := strings.TrimSpace(req.WorkspaceID)
+	if wsid == "" {
+		wsid = a.DefaultWSID
+		req.WorkspaceID = wsid
+	}
+	requester = strings.TrimSpace(requester)
+	if requester == "" {
+		requester = "admin"
+	}
+	args := fileBrowserMkdirApprovalArgs(req)
+	if a.FileBrowser.RequireApprovalForWrite {
+		if a.Approvals == nil || !a.Approval.Enabled {
+			return Submission{}, filebrowser.ErrApprovalRequired
+		}
+		reqApproval, err := a.Approvals.Create(approval.Request{
+			Tool:        "file_browser.mkdir",
+			WorkspaceID: wsid,
+			Requester:   requester,
+			Transport:   invocation.TransportAdmin,
+			Execution:   approval.ExecutionAppTool,
+			Reason:      "approval.policy.file_browser_write",
+			Summary:     "Create directory " + req.Path,
+			RiskLevel:   "high",
+			Args:        args,
+		})
+		if err != nil {
+			return Submission{}, err
+		}
+		run := func(ctx context.Context, taskID string) (int, error) {
+			res, mkdirErr := a.FileBrowserService.MkdirApproved(ctx, req)
+			if mkdirErr != nil {
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_mkdir_failed", Tool: "file_browser.mkdir", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: mkdirErr.Error(), Details: args})
+				return -1, mkdirErr
+			}
+			result := fileBrowserMkdirResultMap(res)
+			_ = a.Tasks.SetResult(taskID, result)
+			_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_mkdir_succeeded", Tool: "file_browser.mkdir", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+			return 0, nil
+		}
+		task, release := a.Tasks.CreateGatedTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.mkdir", ArgsDigest: reqApproval.ArgsDigest, ApprovalID: reqApproval.ID, ApprovalURL: reqApproval.ApprovalURL, ExpiresAt: reqApproval.ExpiresAt}, run)
+		bound, err := a.Approvals.BindTask(reqApproval.ID, task.ID)
+		if err != nil {
+			_ = a.Tasks.Cancel(task.ID)
+			return Submission{}, err
+		}
+		a.approvalMu.Lock()
+		a.approvalGates[reqApproval.ID] = release
+		a.approvalMu.Unlock()
+		go a.expireApproval(bound)
+		return Submission{Task: task, Approval: &bound}, nil
+	}
+	res, err := a.FileBrowserService.Mkdir(context.Background(), req)
+	if err != nil {
+		return Submission{}, err
+	}
+	task := a.Tasks.CreateTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.mkdir"}, func(ctx context.Context, taskID string) (int, error) {
+		result := fileBrowserMkdirResultMap(res)
+		_ = a.Tasks.SetResult(taskID, result)
+		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{TaskID: taskID, Action: "file_browser_mkdir_succeeded", Tool: "file_browser.mkdir", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+		return 0, nil
+	})
+	return Submission{Task: task}, nil
+}
+
+func (a *App) SubmitFileBrowserUpload(requester string, req filebrowser.UploadRequest) (Submission, error) {
+	if a == nil || a.FileBrowserService == nil {
+		return Submission{}, filebrowser.ErrDisabled
+	}
+	wsid := strings.TrimSpace(req.WorkspaceID)
+	if wsid == "" {
+		wsid = a.DefaultWSID
+		req.WorkspaceID = wsid
+	}
+	requester = strings.TrimSpace(requester)
+	if requester == "" {
+		requester = "admin"
+	}
+	args := fileBrowserUploadApprovalArgs(req)
+	if a.FileBrowser.RequireApprovalForWrite {
+		if a.Approvals == nil || !a.Approval.Enabled {
+			return Submission{}, filebrowser.ErrApprovalRequired
+		}
+		stage, err := a.stageFileBrowserPayload(req.Content)
+		if err != nil {
+			return Submission{}, err
+		}
+		args["content_stage_id"] = stage.ID
+		req.Content = nil
+		reqApproval, err := a.Approvals.Create(approval.Request{Tool: "file_browser.upload", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Execution: approval.ExecutionAppTool, Reason: "approval.policy.file_browser_write", Summary: "Upload file " + req.Path, RiskLevel: "high", Args: args})
+		if err != nil {
+			_ = stage.Cleanup()
+			return Submission{}, err
+		}
+		run := func(ctx context.Context, taskID string) (int, error) {
+			content, stageErr := stage.Read()
+			if stageErr != nil {
+				_ = stage.Cleanup()
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_upload_failed", Tool: "file_browser.upload", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: stageErr.Error(), Details: args})
+				return -1, stageErr
+			}
+			defer func() { _ = stage.Cleanup() }()
+			runReq := req
+			runReq.Content = content
+			res, uploadErr := a.FileBrowserService.UploadApproved(ctx, runReq)
+			if uploadErr != nil {
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_upload_failed", Tool: "file_browser.upload", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: uploadErr.Error(), Details: args})
+				return -1, uploadErr
+			}
+			result := fileBrowserSaveResultMap(res)
+			_ = a.Tasks.SetResult(taskID, result)
+			_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_upload_succeeded", Tool: "file_browser.upload", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+			return 0, nil
+		}
+		task, release := a.Tasks.CreateGatedTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.upload", ArgsDigest: reqApproval.ArgsDigest, ApprovalID: reqApproval.ID, ApprovalURL: reqApproval.ApprovalURL, ExpiresAt: reqApproval.ExpiresAt}, run)
+		bound, err := a.Approvals.BindTask(reqApproval.ID, task.ID)
+		if err != nil {
+			_ = a.Tasks.Cancel(task.ID)
+			_ = stage.Cleanup()
+			return Submission{}, err
+		}
+		a.approvalMu.Lock()
+		a.approvalGates[reqApproval.ID] = release
+		a.approvalMu.Unlock()
+		go a.expireApproval(bound)
+		return Submission{Task: task, Approval: &bound}, nil
+	}
+	res, err := a.FileBrowserService.Upload(context.Background(), req)
+	if err != nil {
+		return Submission{}, err
+	}
+	task := a.Tasks.CreateTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.upload"}, func(ctx context.Context, taskID string) (int, error) {
+		result := fileBrowserSaveResultMap(res)
+		_ = a.Tasks.SetResult(taskID, result)
+		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{TaskID: taskID, Action: "file_browser_upload_succeeded", Tool: "file_browser.upload", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+		return 0, nil
+	})
+	return Submission{Task: task}, nil
+}
+
+func (a *App) SubmitFileBrowserDelete(requester string, req filebrowser.DeleteRequest) (Submission, error) {
+	if a == nil || a.FileBrowserService == nil {
+		return Submission{}, filebrowser.ErrDisabled
+	}
+	wsid := strings.TrimSpace(req.WorkspaceID)
+	if wsid == "" {
+		wsid = a.DefaultWSID
+		req.WorkspaceID = wsid
+	}
+	requester = strings.TrimSpace(requester)
+	if requester == "" {
+		requester = "admin"
+	}
+	args := fileBrowserDeleteApprovalArgs(req)
+	if a.FileBrowser.RequireApprovalForDelete {
+		if a.Approvals == nil || !a.Approval.Enabled {
+			return Submission{}, filebrowser.ErrApprovalRequired
+		}
+		risk := "high"
+		if req.Recursive {
+			risk = "critical"
+		}
+		reqApproval, err := a.Approvals.Create(approval.Request{
+			Tool:        "file_browser.delete",
+			WorkspaceID: wsid,
+			Requester:   requester,
+			Transport:   invocation.TransportAdmin,
+			Execution:   approval.ExecutionAppTool,
+			Reason:      "approval.policy.file_browser_delete",
+			Summary:     "Delete " + req.Path,
+			RiskLevel:   risk,
+			Args:        args,
+		})
+		if err != nil {
+			return Submission{}, err
+		}
+		run := func(ctx context.Context, taskID string) (int, error) {
+			res, deleteErr := a.FileBrowserService.DeleteApproved(ctx, req)
+			if deleteErr != nil {
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_delete_failed", Tool: "file_browser.delete", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: deleteErr.Error(), Details: args})
+				return -1, deleteErr
+			}
+			result := fileBrowserDeleteResultMap(res)
+			_ = a.Tasks.SetResult(taskID, result)
+			_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_delete_succeeded", Tool: "file_browser.delete", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+			return 0, nil
+		}
+		task, release := a.Tasks.CreateGatedTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.delete", ArgsDigest: reqApproval.ArgsDigest, ApprovalID: reqApproval.ID, ApprovalURL: reqApproval.ApprovalURL, ExpiresAt: reqApproval.ExpiresAt}, run)
+		bound, err := a.Approvals.BindTask(reqApproval.ID, task.ID)
+		if err != nil {
+			_ = a.Tasks.Cancel(task.ID)
+			return Submission{}, err
+		}
+		a.approvalMu.Lock()
+		a.approvalGates[reqApproval.ID] = release
+		a.approvalMu.Unlock()
+		go a.expireApproval(bound)
+		return Submission{Task: task, Approval: &bound}, nil
+	}
+	res, err := a.FileBrowserService.Delete(context.Background(), req)
+	if err != nil {
+		return Submission{}, err
+	}
+	task := a.Tasks.CreateTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.delete"}, func(ctx context.Context, taskID string) (int, error) {
+		result := fileBrowserDeleteResultMap(res)
+		_ = a.Tasks.SetResult(taskID, result)
+		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{TaskID: taskID, Action: "file_browser_delete_succeeded", Tool: "file_browser.delete", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+		return 0, nil
+	})
+	return Submission{Task: task}, nil
+}
+
+func (a *App) SubmitFileBrowserRename(requester string, req filebrowser.RenameRequest) (Submission, error) {
+	if a == nil || a.FileBrowserService == nil {
+		return Submission{}, filebrowser.ErrDisabled
+	}
+	wsid := strings.TrimSpace(req.WorkspaceID)
+	if wsid == "" {
+		wsid = a.DefaultWSID
+		req.WorkspaceID = wsid
+	}
+	requester = strings.TrimSpace(requester)
+	if requester == "" {
+		requester = "admin"
+	}
+	args := fileBrowserRenameApprovalArgs(req)
+	if a.FileBrowser.RequireApprovalForWrite {
+		if a.Approvals == nil || !a.Approval.Enabled {
+			return Submission{}, filebrowser.ErrApprovalRequired
+		}
+		reqApproval, err := a.Approvals.Create(approval.Request{
+			Tool:        "file_browser.rename",
+			WorkspaceID: wsid,
+			Requester:   requester,
+			Transport:   invocation.TransportAdmin,
+			Execution:   approval.ExecutionAppTool,
+			Reason:      "approval.policy.file_browser_write",
+			Summary:     "Rename " + req.FromPath + " to " + req.ToPath,
+			RiskLevel:   "high",
+			Args:        args,
+		})
+		if err != nil {
+			return Submission{}, err
+		}
+		run := func(ctx context.Context, taskID string) (int, error) {
+			res, renameErr := a.FileBrowserService.RenameApproved(ctx, req)
+			if renameErr != nil {
+				_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_rename_failed", Tool: "file_browser.rename", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Error: renameErr.Error(), Details: args})
+				return -1, renameErr
+			}
+			result := fileBrowserRenameResultMap(res)
+			_ = a.Tasks.SetResult(taskID, result)
+			_, _ = a.Approvals.RecordAudit(approval.AuditRecord{ApprovalID: reqApproval.ID, TaskID: taskID, Action: "file_browser_rename_succeeded", Tool: "file_browser.rename", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+			return 0, nil
+		}
+		task, release := a.Tasks.CreateGatedTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.rename", ArgsDigest: reqApproval.ArgsDigest, ApprovalID: reqApproval.ID, ApprovalURL: reqApproval.ApprovalURL, ExpiresAt: reqApproval.ExpiresAt}, run)
+		bound, err := a.Approvals.BindTask(reqApproval.ID, task.ID)
+		if err != nil {
+			_ = a.Tasks.Cancel(task.ID)
+			return Submission{}, err
+		}
+		a.approvalMu.Lock()
+		a.approvalGates[reqApproval.ID] = release
+		a.approvalMu.Unlock()
+		go a.expireApproval(bound)
+		return Submission{Task: task, Approval: &bound}, nil
+	}
+	res, err := a.FileBrowserService.Rename(context.Background(), req)
+	if err != nil {
+		return Submission{}, err
+	}
+	task := a.Tasks.CreateTask(core.Task{Transport: invocation.TransportAdmin, Requester: requester, WorkspaceID: wsid, Tool: "file_browser.rename"}, func(ctx context.Context, taskID string) (int, error) {
+		result := fileBrowserRenameResultMap(res)
+		_ = a.Tasks.SetResult(taskID, result)
+		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{TaskID: taskID, Action: "file_browser_rename_succeeded", Tool: "file_browser.rename", WorkspaceID: wsid, Requester: requester, Transport: invocation.TransportAdmin, Details: result})
+		return 0, nil
+	})
+	return Submission{Task: task}, nil
+}
+
+func fileBrowserSaveApprovalArgs(req filebrowser.SaveContentRequest) map[string]any {
+	sum := sha256.Sum256([]byte(req.Content))
+	return map[string]any{
+		"workspace_id":   req.WorkspaceID,
+		"root_id":        req.RootID,
+		"path":           req.Path,
+		"etag":           req.ETag,
+		"create":         req.Create,
+		"overwrite":      req.Overwrite,
+		"content_bytes":  len([]byte(req.Content)),
+		"content_sha256": hex.EncodeToString(sum[:]),
+	}
+}
+
+func fileBrowserUploadApprovalArgs(req filebrowser.UploadRequest) map[string]any {
+	sum := sha256.Sum256(req.Content)
+	return map[string]any{"workspace_id": req.WorkspaceID, "root_id": req.RootID, "path": req.Path, "etag": req.ETag, "create": req.Create, "overwrite": req.Overwrite, "content_bytes": len(req.Content), "content_sha256": hex.EncodeToString(sum[:])}
+}
+
+func fileBrowserMkdirApprovalArgs(req filebrowser.MkdirRequest) map[string]any {
+	return map[string]any{"workspace_id": req.WorkspaceID, "root_id": req.RootID, "path": req.Path}
+}
+
+func fileBrowserMkdirResultMap(res filebrowser.MkdirResult) map[string]any {
+	return map[string]any{"workspace_id": res.WorkspaceID, "root_id": res.RootID, "path": res.Path, "status": res.Status, "mod_time": res.ModTime}
+}
+
+func fileBrowserDeleteApprovalArgs(req filebrowser.DeleteRequest) map[string]any {
+	return map[string]any{"workspace_id": req.WorkspaceID, "root_id": req.RootID, "path": req.Path, "recursive": req.Recursive}
+}
+
+func fileBrowserDeleteResultMap(res filebrowser.DeleteResult) map[string]any {
+	return map[string]any{"workspace_id": res.WorkspaceID, "root_id": res.RootID, "path": res.Path, "type": res.Type, "status": res.Status, "recursive": res.Recursive, "deleted_at": res.DeletedAt}
+}
+
+func fileBrowserRenameApprovalArgs(req filebrowser.RenameRequest) map[string]any {
+	return map[string]any{"workspace_id": req.WorkspaceID, "root_id": req.RootID, "from_path": req.FromPath, "to_path": req.ToPath}
+}
+
+func fileBrowserRenameResultMap(res filebrowser.RenameResult) map[string]any {
+	return map[string]any{"workspace_id": res.WorkspaceID, "root_id": res.RootID, "from_path": res.FromPath, "to_path": res.ToPath, "type": res.Type, "status": res.Status, "mod_time": res.ModTime}
+}
+
+func fileBrowserSaveResultMap(res filebrowser.SaveContentResult) map[string]any {
+	return map[string]any{
+		"workspace_id": res.WorkspaceID,
+		"root_id":      res.RootID,
+		"path":         res.Path,
+		"status":       res.Status,
+		"bytes":        res.Bytes,
+		"etag":         res.ETag,
+		"size":         res.Size,
+		"mod_time":     res.ModTime,
+		"created":      res.Created,
+		"overwritten":  res.Overwritten,
+	}
 }
 
 func (a *App) CreateToolTask(wsid, requester, tool string, args map[string]any) (*core.Task, error) {

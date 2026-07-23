@@ -19,6 +19,18 @@
 - Define and document the session event cursor contract.
 - Add optional session persistence and streaming lifecycle events.
 
+## File browser / online IDE
+
+- [x] **File browser planning.** Keep the design in `docs/file_browser_plan.md` aligned with implementation decisions.
+- [x] **Read-only browser backend MVP.** Add `file_browser` config, `internal/filebrowser` service, `/api/admin/v1/file-browser/*` APIs for workspace/root listing, directory listing, and text file reads.
+- [x] **Admin Console Files page.** Add `/admin/files` with workspace selector, file tree, and read-only text preview.
+- [ ] **Path and file safety.** Use `workspace_id + root_id + relative_path`, validate every resolved path through the workspace sandbox, reject symlink escapes, filter hidden/excluded directories, and enforce max file size / binary detection.
+- [ ] **Safe write support.** Add save, create file, mkdir, rename/move, upload, download, and delete APIs with ETag conflict detection and atomic writes. Save/create-file, mkdir, rename/move, delete, download, upload, approval-backed execution, and basic editing UI are implemented.
+- [ ] **Approval and audit integration.** Route write/delete/move/upload operations through LocalGate approval policy when configured and record file-browser-specific audit actions.
+- [ ] **Editor UX.** Integrate Monaco Editor, tabs, dirty-state tracking, language detection, Markdown/image preview, upload/download UI, and conflict/diff presentation.
+- [ ] **Terminal integration.** Let users open a Session terminal from the current directory and later add a real-time stream for terminal output.
+- [ ] **Optional code-server template.** Provide a private dynamic deployment template for code-server with explicit warnings that code-server internals bypass LocalGate's fine-grained file approvals.
+
 ## Approval backlog
 
 - [ ] **Crash-consistent approval consumption (item 2).** Replace the current `approved -> in-memory gate release` two-step window with a recoverable `pending -> consuming -> consumed` state machine or execution coordinator. Define compensation when persistence succeeds but gate release fails.

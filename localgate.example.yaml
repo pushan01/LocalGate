@@ -131,6 +131,20 @@ file_exports:
   max_file_bytes: 104857600
   require_approval: true
 
+# Admin Console 文件浏览器。首版只读浏览 API 已可用；写入能力后续接入审批和审计。
+file_browser:
+  enabled: true
+  read_only: false
+  max_file_bytes: 1048576
+  max_upload_bytes: 104857600
+  show_hidden_files: false
+  exclude:
+    - ".git"
+    - "node_modules"
+    - ".localgate"
+  require_approval_for_write: true
+  require_approval_for_delete: true
+
 deployments:
   # public/private 应用面使用独立 listener。
   public_bind: "127.0.0.1:3738"

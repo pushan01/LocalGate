@@ -27,6 +27,14 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc(Prefix+"/approvals/", a.wrap(a.handleApprovalRoutes))
 	mux.HandleFunc(Prefix+"/deployments", a.wrap(a.handleDeployments))
 	mux.HandleFunc(Prefix+"/deployments/", a.wrap(a.handleDeploymentRoutes))
+	mux.HandleFunc(Prefix+"/file-browser/workspaces", a.wrap(a.handleFileBrowserWorkspaces))
+	mux.HandleFunc(Prefix+"/file-browser/files/list", a.wrap(a.handleFileList))
+	mux.HandleFunc(Prefix+"/file-browser/files/content", a.wrap(a.handleFileContent))
+	mux.HandleFunc(Prefix+"/file-browser/files/mkdir", a.wrap(a.handleFileMkdir))
+	mux.HandleFunc(Prefix+"/file-browser/files/rename", a.wrap(a.handleFileRename))
+	mux.HandleFunc(Prefix+"/file-browser/files/delete", a.wrap(a.handleFileDelete))
+	mux.HandleFunc(Prefix+"/file-browser/files/download", a.wrap(a.handleFileDownload))
+	mux.HandleFunc(Prefix+"/file-browser/files/upload", a.wrap(a.handleFileUpload))
 }
 
 func (a *API) wrap(next http.HandlerFunc) http.HandlerFunc {

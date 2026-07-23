@@ -41,6 +41,7 @@ type Config struct {
 	HTTP             HTTP              `yaml:"http"`
 	MCPHTTP          MCPHTTP           `yaml:"mcp_http"`
 	FileExports      FileExports       `yaml:"file_exports"`
+	FileBrowser      FileBrowserConfig `yaml:"file_browser"`
 	Deployments      DeploymentsConfig `yaml:"deployments"`
 	HTTPAuth         HTTPAuth          `yaml:"http_auth"`
 	ToolArguments    ToolArguments     `yaml:"tool_arguments"`
@@ -110,6 +111,17 @@ type FileExports struct {
 	MaxTTLSeconds     int    `yaml:"max_ttl_seconds"`
 	MaxFileBytes      int64  `yaml:"max_file_bytes"`
 	RequireApproval   bool   `yaml:"require_approval"`
+}
+
+type FileBrowserConfig struct {
+	Enabled                  bool     `yaml:"enabled"`
+	ReadOnly                 bool     `yaml:"read_only"`
+	MaxFileBytes             int64    `yaml:"max_file_bytes"`
+	MaxUploadBytes           int64    `yaml:"max_upload_bytes"`
+	ShowHiddenFiles          bool     `yaml:"show_hidden_files"`
+	Exclude                  []string `yaml:"exclude"`
+	RequireApprovalForWrite  bool     `yaml:"require_approval_for_write"`
+	RequireApprovalForDelete bool     `yaml:"require_approval_for_delete"`
 }
 
 type DeploymentsConfig struct {
@@ -231,6 +243,14 @@ func Default() Config {
 			MaxTTLSeconds:     10 * 60,
 			MaxFileBytes:      100 << 20,
 			RequireApproval:   true,
+		},
+		FileBrowser: FileBrowserConfig{
+			Enabled:                  true,
+			MaxFileBytes:             1 << 20,
+			MaxUploadBytes:           100 << 20,
+			Exclude:                  []string{".git", "node_modules", ".localgate"},
+			RequireApprovalForWrite:  true,
+			RequireApprovalForDelete: true,
 		},
 		Deployments: DeploymentsConfig{
 			PublicBind:    "127.0.0.1:3738",
@@ -481,6 +501,44 @@ func Load(opts LoadOptions) (Config, error) {
 			cfg.FileExports.RequireApproval = bv
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_ENABLED")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileBrowser.Enabled = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_READ_ONLY")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileBrowser.ReadOnly = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_MAX_FILE_BYTES")); v != "" {
+		if iv, err := atoi64(v); err == nil {
+			cfg.FileBrowser.MaxFileBytes = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_MAX_UPLOAD_BYTES")); v != "" {
+		if iv, err := atoi64(v); err == nil {
+			cfg.FileBrowser.MaxUploadBytes = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_SHOW_HIDDEN_FILES")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileBrowser.ShowHiddenFiles = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_EXCLUDE")); v != "" {
+		cfg.FileBrowser.Exclude = splitCommaSeparated(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_WRITE")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileBrowser.RequireApprovalForWrite = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_DELETE")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.FileBrowser.RequireApprovalForDelete = bv
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILES")); v != "" {
 		if iv, err := atoi(v); err == nil {
 			cfg.Deployments.Static.MaxFiles = iv
@@ -715,6 +773,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL); err != nil {
 		return Config{}, err
 	}
+	if err := validateFileBrowserConfig(cfg.FileBrowser); err != nil {
+		return Config{}, err
+	}
 	if err := validateListenerBinds(cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
 		return Config{}, err
 	}
@@ -831,6 +892,16 @@ func (c Config) SafeSummary() map[string]any {
 			"max_ttl_seconds":     c.FileExports.MaxTTLSeconds,
 			"max_file_bytes":      c.FileExports.MaxFileBytes,
 			"require_approval":    c.FileExports.RequireApproval,
+		},
+		"file_browser": map[string]any{
+			"enabled":                     c.FileBrowser.Enabled,
+			"read_only":                   c.FileBrowser.ReadOnly,
+			"max_file_bytes":              c.FileBrowser.MaxFileBytes,
+			"max_upload_bytes":            c.FileBrowser.MaxUploadBytes,
+			"show_hidden_files":           c.FileBrowser.ShowHiddenFiles,
+			"exclude":                     c.FileBrowser.Exclude,
+			"require_approval_for_write":  c.FileBrowser.RequireApprovalForWrite,
+			"require_approval_for_delete": c.FileBrowser.RequireApprovalForDelete,
 		},
 		"deployments": map[string]any{
 			"public_bind":      c.Deployments.PublicBind,
@@ -976,6 +1047,19 @@ func validateFileExportsConfig(cfg FileExports, controlBaseURL string) error {
 	}
 	if cfg.MaxFileBytes <= 0 {
 		return errors.New("file_exports.max_file_bytes must be positive")
+	}
+	return nil
+}
+
+func validateFileBrowserConfig(cfg FileBrowserConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.MaxFileBytes <= 0 {
+		return errors.New("file_browser.max_file_bytes must be positive when file browser is enabled")
+	}
+	if cfg.MaxUploadBytes <= 0 {
+		return errors.New("file_browser.max_upload_bytes must be positive when file browser is enabled")
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -145,7 +146,7 @@ func (s *Store) saveRequestLocked(req Request) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := tmp.Sync(); err != nil && !errors.Is(err, syscall.ENOTTY) {
 		_ = tmp.Close()
 		return err
 	}

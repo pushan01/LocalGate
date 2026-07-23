@@ -843,6 +843,7 @@ web/admin/                管理后台前端
 - [`skills/localgate-mcp-tools/SKILL.md`](./skills/localgate-mcp-tools/SKILL.md)：MCP 工具选择指南
 - 标准 Skills：安装到 `~/.agents/skills/` 或 `<workspace>/.agents/skills/`，由 `get_startup_instructions` 动态发现并渐进式披露
 - [`docs/`](./docs/)：部署、管理后台和执行系统设计文档
+- [`docs/file_browser_plan.md`](./docs/file_browser_plan.md)：文件浏览器 / 在线 IDE 能力规划
 - [`todo.md`](./todo.md)：当前待办与已知的工程改进项
 
 ## 当前限制
