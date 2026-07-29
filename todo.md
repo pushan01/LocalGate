@@ -27,7 +27,7 @@
 - [x] **Path and file safety.** Uses `workspace_id + root_id + relative_path`, workspace sandbox validation, symlink escape rejection, hidden/excluded directory filtering, and file size / binary detection.
 - [x] **Safe write support.** Save, create file, mkdir, rename/move, upload, download, and delete APIs use ETag conflict detection and atomic writes where applicable.
 - [x] **Approval and audit integration.** Write/delete/move/upload operations enter LocalGate approval tasks when configured and emit file-browser-specific audit actions.
-- [ ] **Editor UX.** `CH-FB-001` completed dirty navigation protection and list-level rename/delete actions; the sidebar is also collapsible. Next is `CH-FB-002` filename search/quick open, followed by preview/conflict UX, a deliberate frontend build-chain decision for Monaco, and multi-tab editing.
+- [ ] **Editor UX.** `CH-FB-001` completed dirty navigation protection and list-level rename/delete actions; the sidebar is also collapsible. Search is intentionally out of scope. Next is `CH-FB-002` Markdown/image preview and ETag conflict UX, followed by a deliberate frontend build-chain decision for Monaco and multi-tab editing.
 - [ ] **Terminal integration.** Let users open a Session terminal from the current directory and later add a real-time stream for terminal output.
 - [ ] **Optional code-server template.** Provide a private dynamic deployment template for code-server with explicit warnings that code-server internals bypass LocalGate's fine-grained file approvals.
 
