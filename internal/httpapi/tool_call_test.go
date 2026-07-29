@@ -64,17 +64,15 @@ func TestToolCallSucceedsWithAccess(t *testing.T) {
 	}
 }
 
-func TestToolCallRejectsHiddenTool(t *testing.T) {
-	application, handler, _ := newToolHTTPModeTestServer(t, &toolHTTPModeTestOptions{
-		hiddenTools: []string{"read_file"},
-	})
+func TestToolCallRejectsDefaultHiddenTool(t *testing.T) {
+	application, handler, _ := newToolHTTPModeTestServer(t, nil)
 	res, err := application.InvokeTool(context.Background(), "ws", "get_temporary_access_token", nil)
 	if err != nil {
 		t.Fatalf("get_temporary_access_token: %v", err)
 	}
 	authValue, _ := res["auth_value"].(string)
 
-	req := httptest.NewRequest(http.MethodPost, "/tools/read_file/call", bytes.NewBufferString(`{"path":"/tmp/x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/tools/run_argv/call", bytes.NewBufferString(`{"argv":["echo","x"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(toolaccess.HeaderName, authValue)
 	w := httptest.NewRecorder()
@@ -189,19 +187,16 @@ func TestToolCallRejectsBase64BodyWhenDisabled(t *testing.T) {
 
 type toolHTTPModeTestOptions struct {
 	root         string
-	hiddenTools  []string
 	enableBase64 bool
 }
 
 func newToolHTTPModeTestServer(t *testing.T, opts *toolHTTPModeTestOptions) (*app.App, http.Handler, string) {
 	t.Helper()
 	root := t.TempDir()
-	hiddenTools := []string(nil)
 	if opts != nil {
 		if opts.root != "" {
 			root = opts.root
 		}
-		hiddenTools = append(hiddenTools, opts.hiddenTools...)
 	}
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
@@ -217,7 +212,6 @@ func newToolHTTPModeTestServer(t *testing.T, opts *toolHTTPModeTestOptions) (*ap
 				ID:               "ws",
 				Roots:            []string{root},
 				CWD:              root,
-				HiddenTools:      hiddenTools,
 				CommandAllowlist: []string{"echo", "sh"},
 			},
 		},

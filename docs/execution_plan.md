@@ -534,7 +534,7 @@ workspaces:
 【进度备注】已完成（Go 实现，写入路径）：
 - EventSink：新增 writer hook（EventWriter），在 Append 时写 Store.AppendEvent
 - TaskManager：新增 task writer（TaskWriter），在 finishTask 时写 Store.SaveTask
-- App：默认以 `log_store` 为 base 初始化 Store，并挂载到 Sink/Manager
+- App：默认以 `log_store` 为 base 初始化 Store，并挂载到 Sink/Manager；终态任务及事件日志保留 48 小时，启动时和每小时执行清理
 - 测试：全量测试通过
 
 【延期/后续项】已记录在 write_todo.md：
@@ -917,7 +917,7 @@ approval:
         command_categories: [filesystem_delete, network_upload, privilege_change]
       risk: high
 
-    - id: allow-read-tools
+    - id: allow-agent-tools
       effect: allow
       tools: [read_file, list_directory, search_files]
 ```

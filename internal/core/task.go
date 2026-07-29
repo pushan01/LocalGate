@@ -332,6 +332,42 @@ func (m *Manager) Get(id string) (*Task, error) {
 	return &c, nil
 }
 
+// RemoveTerminalTasks removes retained history for the supplied task IDs.
+// Active and approval-gated tasks are never removed by this method.
+func (m *Manager) RemoveTerminalTasks(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id := range wanted {
+		task, ok := m.tasks[id]
+		if !ok || !isTerminalTaskStatus(task.Status) {
+			continue
+		}
+		delete(m.tasks, id)
+		delete(m.cancel, id)
+		delete(m.cancelFn, id)
+		delete(m.cancelReason, id)
+		delete(m.running, id)
+	}
+}
+
+func isTerminalTaskStatus(status Status) bool {
+	switch status {
+	case StatusSucceeded, StatusFailed, StatusCanceled, StatusTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) Cancel(id string) error {
 	return m.CancelWithReason(id, "", "")
 }

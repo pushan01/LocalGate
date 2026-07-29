@@ -32,6 +32,7 @@ func (t dummyTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 
 func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("TZ", "Asia/Singapore")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -72,8 +73,11 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if !strings.Contains(prompt, "/bin/zsh") {
 		t.Fatalf("missing shell in rendered prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, time.Now().Location().String()) {
+	if !strings.Contains(prompt, "Asia/Singapore") {
 		t.Fatalf("missing timezone in rendered prompt: %q", prompt)
+	}
+	if strings.Contains(prompt, "GPT-5") || !strings.Contains(prompt, "受控工作区") {
+		t.Fatalf("prompt should be model-neutral: %q", prompt)
 	}
 	if !strings.Contains(prompt, "`alpha`") || !strings.Contains(prompt, "Alpha skill") {
 		t.Fatalf("missing injected skill metadata in prompt: %q", prompt)
@@ -87,26 +91,8 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if strings.Contains(prompt, "{{") || strings.Contains(prompt, "{%") {
 		t.Fatalf("template syntax should be rendered: %q", prompt)
 	}
-	if !strings.Contains(prompt, "`apply_patch` 必须传一个完整的 patch 字符串") {
-		t.Fatalf("prompt should explain apply_patch patch envelope: %q", prompt)
-	}
-	if !strings.Contains(prompt, "*** Update File: /abs/path/to/file.txt") {
-		t.Fatalf("prompt should include apply_patch example: %q", prompt)
-	}
-	if !strings.Contains(prompt, "`create_upload_token` 和 `create_download_token` 适用于跨多个 sandbox、跨机器传输文件") {
-		t.Fatalf("prompt should explain upload/download transfer scenarios: %q", prompt)
-	}
-	if !strings.Contains(prompt, "优先调用 `export_file`") || !strings.Contains(prompt, "MCP `resource_link`") {
-		t.Fatalf("prompt should explain Agent file export usage: %q", prompt)
-	}
-	if !strings.Contains(prompt, "读取返回里的 `upload_url`、`auth_header_name`、`auth_value`") {
-		t.Fatalf("prompt should explain upload credential fields: %q", prompt)
-	}
-	if !strings.Contains(prompt, "调用 `create_download_token` 获取 `download_url`") {
-		t.Fatalf("prompt should explain create_download_token usage: %q", prompt)
-	}
-	if !strings.Contains(prompt, "输出字段刻意不用 `token` 命名") {
-		t.Fatalf("prompt should explain non-token field naming: %q", prompt)
+	if strings.Contains(prompt, "`run_argv`") {
+		t.Fatalf("hidden tool guidance should be omitted from prompt: %q", prompt)
 	}
 	if !strings.Contains(prompt, "`server__tool` 形式出现在 `tools/list`") {
 		t.Fatalf("prompt should explain relay tool naming: %q", prompt)
@@ -145,6 +131,93 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	}
 }
 
+func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
+	workspace := t.TempDir()
+	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	reg := core.NewRegistry(nil)
+	for _, tool := range []dummyTool{
+		{name: "apply_patch", desc: "Apply a patch"},
+		{name: "upload_file", desc: "Upload a file"},
+		{name: "export_file", desc: "Export a file"},
+		{name: "run_argv", desc: "Run argv"},
+		{name: "create_upload_token", desc: "Create upload token"},
+		{name: "create_download_token", desc: "Create download token"},
+		{name: "deploy_tool", desc: "Deploy an application"},
+		{name: "restart_deployment", desc: "Restart a deployment"},
+		{name: "rollback_deployment", desc: "Rollback a deployment"},
+	} {
+		reg.Register(tool)
+	}
+	for _, name := range []string{"run_argv", "create_upload_token", "create_download_token", "rollback_deployment"} {
+		reg.Hide(name)
+	}
+	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
+	reg.Register(tool)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	prompt, _ := res["prompt"].(string)
+	for _, hidden := range []string{"`run_argv`", "`create_upload_token`", "`create_download_token`", "`rollback_deployment`"} {
+		if strings.Contains(prompt, hidden) {
+			t.Fatalf("hidden tool %s should not be mentioned in prompt: %q", hidden, prompt)
+		}
+	}
+	for _, visible := range []string{
+		"`apply_patch` 必须传一个完整的 patch 字符串",
+		"*** Update File: /abs/path/to/file.txt",
+		"使用 `upload_file`",
+		"优先调用 `export_file`",
+		"`deploy_tool` 使用说明",
+		"使用 `restart_deployment`",
+	} {
+		if !strings.Contains(prompt, visible) {
+			t.Fatalf("visible tool guidance %q is missing: %q", visible, prompt)
+		}
+	}
+}
+
+func TestStartupInstructionsToolRedactsMCPEnvironmentValues(t *testing.T) {
+	workspace := t.TempDir()
+	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	reg := core.NewRegistry(nil)
+	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
+	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{
+		MCPServers: []config.MCPServer{{
+			Name: "example",
+			Env: map[string]string{
+				"API_TOKEN": "super-secret-token",
+				"APP_ENV":   "production",
+			},
+		}},
+	})
+	reg.Register(tool)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	prompt, _ := res["prompt"].(string)
+	for _, expected := range []string{"`example`", "`API_TOKEN`", "`APP_ENV`", "变量值不会写入启动说明"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("missing sanitized MCP metadata %q in prompt: %q", expected, prompt)
+		}
+	}
+	for _, secret := range []string{"super-secret-token", "production"} {
+		if strings.Contains(prompt, secret) {
+			t.Fatalf("MCP environment value leaked into prompt: %q", prompt)
+		}
+	}
+}
+
+func TestFormatUTCOffset(t *testing.T) {
+	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.FixedZone("Local", 8*60*60))
+	if got := formatUTCOffset(now); got != "UTC+08:00" {
+		t.Fatalf("unexpected timezone fallback: %q", got)
+	}
+}
+
 func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -158,7 +231,9 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	reg.Register(dummyTool{name: "run_command", desc: "Run a shell command"})
-	reg.Register(dummyTool{name: "deploy_tool", desc: "Deploy a static site"})
+	reg.Register(dummyTool{name: "deploy_tool", desc: "Deploy a static site or dynamic application"})
+	reg.Register(dummyTool{name: "restart_deployment", desc: "Restart a dynamic deployment"})
+	reg.Register(dummyTool{name: "rollback_deployment", desc: "Rollback a dynamic deployment"})
 
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
@@ -176,6 +251,11 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "options.preserve_source") {
 		t.Fatalf("missing deploy source preservation guidance in rendered prompt: %q", prompt)
+	}
+	for _, want := range []string{"`static` 和 `dynamic`", "runtime.argv", "options.health_path", "restart_deployment", "rollback_deployment"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("missing unified deployment guidance %q in rendered prompt: %q", want, prompt)
+		}
 	}
 	if !strings.Contains(prompt, "status=pending_approval") {
 		t.Fatalf("missing deploy approval guidance in rendered prompt: %q", prompt)
@@ -226,6 +306,9 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	}
 	if strings.Contains(prompt, "/platforms/") {
 		t.Fatalf("legacy platform routing should not appear: %q", prompt)
+	}
+	if strings.Contains(prompt, "`upload_file`") {
+		t.Fatalf("hidden HTTP tool guidance should be omitted: %q", prompt)
 	}
 	tools, ok := res["tools"].([]map[string]any)
 	if !ok {

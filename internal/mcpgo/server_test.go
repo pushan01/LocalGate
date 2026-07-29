@@ -120,34 +120,6 @@ func TestDefaultHiddenToolNotRegisteredInMCPGo(t *testing.T) {
 	}
 }
 
-func TestHiddenToolNotRegisteredInMCPGo(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.Config{
-		LogStore:         t.TempDir(),
-		DefaultTimeoutMs: 10_000,
-		Workspaces: []config.Workspace{
-			{
-				ID:               "ws",
-				Roots:            []string{root},
-				CWD:              root,
-				CommandAllowlist: []string{"echo", "sh"},
-				HiddenTools:      []string{"run_command"},
-			},
-		},
-	}
-	application, err := app.New(cfg)
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
-	s, err := New(application, "localgate", "test", "ws")
-	if err != nil {
-		t.Fatalf("mcpgo.New: %v", err)
-	}
-	if tool := s.impl.ListTools()["run_command"]; tool != nil {
-		t.Fatalf("hidden tool should not be registered in mcpgo")
-	}
-}
-
 func TestApplyPatchRegisteredAndWorksInMCPGo(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "a.txt")

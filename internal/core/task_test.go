@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -48,5 +49,20 @@ func TestCancelTask(t *testing.T) {
 	got, _ = m.Get(tk.ID)
 	if got.Status != StatusCanceled {
 		t.Fatalf("expected canceled settled, got %s", got.Status)
+	}
+}
+
+func TestRemoveTerminalTasksKeepsActiveTasks(t *testing.T) {
+	m := NewManager()
+	m.LoadHistory([]Task{
+		{ID: "finished", Status: StatusSucceeded},
+		{ID: "running", Status: StatusRunning},
+	})
+	m.RemoveTerminalTasks([]string{"finished", "running"})
+	if _, err := m.Get("finished"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected finished task to be removed, got %v", err)
+	}
+	if _, err := m.Get("running"); err != nil {
+		t.Fatalf("expected running task to remain: %v", err)
 	}
 }

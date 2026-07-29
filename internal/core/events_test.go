@@ -43,3 +43,16 @@ func TestEventSinkLimit(t *testing.T) {
 		t.Fatalf("expected 3 limited events, got len=%d next=%d", len(evs), next)
 	}
 }
+
+func TestEventSinkRemoveTasks(t *testing.T) {
+	sink := NewEventSink()
+	sink.Append(Event{TaskID: "remove", Type: EventTaskCreated, Time: time.Now()})
+	sink.Append(Event{TaskID: "keep", Type: EventTaskCreated, Time: time.Now()})
+	sink.RemoveTasks([]string{"remove"})
+	if events, next := sink.List("remove", 0); len(events) != 0 || next != 0 {
+		t.Fatalf("expected removed events, got len=%d next=%d", len(events), next)
+	}
+	if events, _ := sink.List("keep", 0); len(events) != 1 {
+		t.Fatalf("expected unrelated events to remain, got %d", len(events))
+	}
+}

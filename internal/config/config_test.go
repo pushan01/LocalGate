@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -459,7 +460,7 @@ func TestLoadFileBrowserRejectsInvalidLimits(t *testing.T) {
 	}
 }
 
-func TestLoadWorkspaceHiddenTools(t *testing.T) {
+func TestRejectWorkspaceHiddenTools(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
 	err := os.WriteFile(cfgPath, []byte(`
@@ -467,24 +468,15 @@ workspaces:
   - id: ws
     hidden_tools:
       - run_command
-      - exec_command
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-
-	cfg, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if len(cfg.Workspaces) != 1 {
-		t.Fatalf("unexpected workspaces: %#v", cfg.Workspaces)
-	}
-	if got := cfg.Workspaces[0].HiddenTools; len(got) != 2 || got[0] != "run_command" || got[1] != "exec_command" {
-		t.Fatalf("unexpected hidden tools: %#v", got)
+	_, err = Load(LoadOptions{Path: cfgPath, PathProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "hidden_tools was removed") {
+		t.Fatalf("expected removed hidden_tools error, got %v", err)
 	}
 }
-
 func TestLoadMCPServersConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
@@ -641,24 +633,12 @@ workspaces:
 	}
 }
 
-func TestMergeHiddenToolsIncludesDefaults(t *testing.T) {
-	got := MergeHiddenTools([]string{"run_command", "search_files"})
-	want := []string{"run_argv", "search_files", "list_directory", "create_upload_token", "create_download_token", "run_command"}
-	if len(got) != len(want) {
-		t.Fatalf("unexpected merged hidden tools: %#v", got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("unexpected merged hidden tools: %#v", got)
-		}
-	}
-	for _, name := range got {
-		if name == "get_tool_schema" {
-			t.Fatalf("get_tool_schema must not be hidden by default: %#v", got)
-		}
+func TestDefaultHiddenTools(t *testing.T) {
+	want := []string{"run_argv", "search_files", "list_directory", "create_upload_token", "create_download_token"}
+	if !reflect.DeepEqual(DefaultHiddenTools, want) {
+		t.Fatalf("unexpected default hidden tools: %#v", DefaultHiddenTools)
 	}
 }
-
 func toString(v any) string {
 	return fmt.Sprintf("%v", v)
 }

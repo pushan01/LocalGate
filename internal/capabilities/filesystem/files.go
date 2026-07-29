@@ -104,7 +104,7 @@ type uploadFileTool struct{ fsToolBase }
 
 func (t uploadFileTool) Name() string { return "upload_file" }
 func (t uploadFileTool) Description() string {
-	return "Download a file from a provided download_url and save it to an absolute path inside the workspace. Use this when a host provides a temporary file URL, for example ChatGPT file input objects with file_id and download_url."
+	return "Upload a conversation or host-provided file to an absolute path inside the LocalGate workspace. The file input is delivered as a downloadable file reference; compatible runtimes may also accept a local mounted path such as /mnt/data/file.png and convert it before invocation. The destination path must include the filename. Parent directories are created automatically, and the source file is not modified."
 }
 func (t uploadFileTool) ToolMetadata() map[string]any {
 	return map[string]any{
@@ -118,17 +118,17 @@ func (t uploadFileTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute target path inside the workspace.",
+				"description": "Absolute destination path inside the workspace, including the filename. Parent directories are created automatically.",
 			},
 			"file": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"description":          "File reference object. download_url is required. file_id, mime_type, and file_name are optional metadata.",
+				"description":          "Downloadable file reference supplied by the host. LocalGate requires file.download_url; compatible runtimes may accept a local mounted path and convert it to this object before invocation. The source file is not modified.",
 				"properties": map[string]any{
-					"download_url": map[string]any{"type": "string"},
-					"file_id":      map[string]any{"type": "string"},
-					"mime_type":    map[string]any{"type": "string"},
-					"file_name":    map[string]any{"type": "string"},
+					"download_url": map[string]any{"type": "string", "description": "Temporary HTTP(S) URL used by LocalGate to read the source file."},
+					"file_id":      map[string]any{"type": "string", "description": "Optional host-provided file identifier."},
+					"mime_type":    map[string]any{"type": "string", "description": "Optional MIME type of the source file."},
+					"file_name":    map[string]any{"type": "string", "description": "Optional original source filename."},
 				},
 				"required": []string{"download_url"},
 			},

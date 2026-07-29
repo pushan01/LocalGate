@@ -91,6 +91,18 @@ func (s *EventSink) List(taskID string, from int) ([]Event, int) {
 	return out, len(arr)
 }
 
+// RemoveTasks drops retained in-memory events for completed task history.
+func (s *EventSink) RemoveTasks(taskIDs []string) {
+	if len(taskIDs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, taskID := range taskIDs {
+		delete(s.events, taskID)
+	}
+}
+
 func (s *EventSink) Subscribe(taskID string, buffer int) (chan Event, func()) {
 	if buffer <= 0 {
 		buffer = 64

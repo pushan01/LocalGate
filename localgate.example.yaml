@@ -13,6 +13,7 @@ default_timeout_ms: 600000
 max_output_bytes: 10485760
 
 # 任务、事件、审批、部署记录等运行数据的存储目录。
+# 已结束任务及其事件日志固定保留 48 小时，并每小时清理一次。
 log_store: "./.localgate"
 
 admin:
@@ -80,9 +81,6 @@ workspaces:
     roots:
       - "."
     cwd: "."
-
-    # LocalGate 还会叠加内置隐藏工具列表。
-    hidden_tools: []
 
     # 仅允许实际需要的命令。生产环境不要使用 "*"。
     command_allowlist:

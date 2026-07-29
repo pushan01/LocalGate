@@ -19,6 +19,7 @@ import (
 
 func TestStdioToolsCallAndLogs(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -60,6 +61,29 @@ func TestStdioToolsCallAndLogs(t *testing.T) {
 	r2 := readResp()
 	if bytes.Contains(mustJSON(r2), []byte("list_directory")) || bytes.Contains(mustJSON(r2), []byte("search_files")) || bytes.Contains(mustJSON(r2), []byte("run_argv")) || bytes.Contains(mustJSON(r2), []byte("create_upload_token")) || bytes.Contains(mustJSON(r2), []byte("create_download_token")) {
 		t.Fatalf("default hidden tools should not appear in tools/list: %v", r2)
+	}
+	result2, _ := r2["result"].(map[string]any)
+	tools2, _ := result2["tools"].([]any)
+	wantDescriptions := map[string]bool{
+		"task_status": false, "task_logs": false, "task_cancel": false,
+		"task_result": false, "wait_task_finish": false,
+	}
+	for _, raw := range tools2 {
+		tool, _ := raw.(map[string]any)
+		name, _ := tool["name"].(string)
+		if _, ok := wantDescriptions[name]; !ok {
+			continue
+		}
+		description, _ := tool["description"].(string)
+		if strings.TrimSpace(description) == "" {
+			t.Fatalf("task tool %s has empty description: %v", name, tool)
+		}
+		wantDescriptions[name] = true
+	}
+	for name, found := range wantDescriptions {
+		if !found {
+			t.Fatalf("missing task tool %s in tools/list", name)
+		}
 	}
 
 	writeLine(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "run_command", "arguments": map[string]any{"command": "echo hi"}}})
@@ -109,6 +133,7 @@ func TestStdioApplyPatchTool(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -181,6 +206,7 @@ func TestStdioApplyPatchTool(t *testing.T) {
 
 func TestStdioGetStartupInstructionsTool(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -250,6 +276,7 @@ func TestStdioGetStartupInstructionsTool(t *testing.T) {
 
 func TestStdioUploadFileMetadata(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{t.TempDir()}, CWD: t.TempDir(), CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -321,6 +348,7 @@ func TestStdioToolsCallAcceptsBase64ArgumentsWhenEnabled(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	cfg := config.Config{
+		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
@@ -376,6 +404,7 @@ func TestStdioToolsCallAcceptsBase64ArgumentsWhenEnabled(t *testing.T) {
 func TestStdioUploadFileKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
+		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
@@ -450,6 +479,7 @@ func TestStdioUploadFileKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 func TestStdioStartupInstructionsKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
+		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
@@ -521,6 +551,7 @@ func TestStdioStartupInstructionsKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 func TestStdioGetToolSchemaKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
+		LogStore:      t.TempDir(),
 		HTTP:          config.HTTP{BaseURL: "http://127.0.0.1:8000"},
 		ToolHTTPMode:  config.ToolHTTPMode{Enabled: true, AccessTokenTTLSeconds: 600},
 		ToolArguments: config.ToolArguments{EnableBase64: true},
@@ -598,6 +629,7 @@ func TestStdioToolsCallRejectsBase64ArgumentsWhenDisabled(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -652,7 +684,8 @@ func TestStdioToolsCallRejectsBase64ArgumentsWhenDisabled(t *testing.T) {
 func TestStdioToolHTTPModeOnlyListsThreeTools(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
-		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		LogStore: t.TempDir(),
+		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
 		ToolHTTPMode: config.ToolHTTPMode{
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
@@ -715,6 +748,7 @@ func TestStdioToolHTTPModeOnlyListsThreeTools(t *testing.T) {
 
 func TestStdioDefaultHiddenToolsNotListed(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},
@@ -766,6 +800,7 @@ func TestStdioDefaultHiddenToolsNotListed(t *testing.T) {
 
 func TestStdioSessionTools(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", CommandAllowlist: []string{"echo", "cat", "sh"}},
 		},
@@ -873,65 +908,9 @@ func TestStdioSessionTools(t *testing.T) {
 	_ = <-done
 }
 
-func TestStdioHiddenToolNotListedOrCallable(t *testing.T) {
-	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}, HiddenTools: []string{"run_command"}},
-		},
-	}
-	application, err := app.New(cfg)
-	if err != nil {
-		t.Fatalf("app: %v", err)
-	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
-
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		done <- s.Serve(inR, outW)
-	}()
-
-	br := bufio.NewReader(outR)
-	writeLine := func(v any) {
-		b, _ := json.Marshal(v)
-		_, _ = inW.Write(append(b, '\n'))
-	}
-	readResp := func() map[string]any {
-		line, err := br.ReadBytes('\n')
-		if err != nil {
-			t.Fatalf("read resp: %v", err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal(bytes.TrimSpace(line), &m); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		return m
-	}
-
-	writeLine(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25"}})
-	_ = readResp()
-	writeLine(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-	r2 := readResp()
-	if bytes.Contains(mustJSON(r2), []byte("run_command")) {
-		t.Fatalf("hidden tool should not appear in tools/list: %v", r2)
-	}
-
-	writeLine(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "run_command", "arguments": map[string]any{"command": "echo hi"}}})
-	r3 := readResp()
-	if _, ok := r3["error"].(map[string]any); !ok {
-		t.Fatalf("expected hidden tool call to fail: %v", r3)
-	}
-
-	_ = inW.Close()
-	_ = outW.Close()
-	_ = outR.Close()
-	_ = inR.Close()
-	_ = <-done
-}
-
 func TestStdioWaitTaskFinish(t *testing.T) {
 	cfg := config.Config{
+		LogStore: t.TempDir(),
 		Workspaces: []config.Workspace{
 			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},

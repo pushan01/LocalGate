@@ -432,6 +432,96 @@ func waitForAppTaskTerminal(t *testing.T, a *App, taskID string) *core.Task {
 	return nil
 }
 
+func TestStartupPrunesExpiredTerminalTasks(t *testing.T) {
+	base := t.TempDir()
+	store := persist.NewStore(base)
+	now := time.Now().UTC()
+	if err := store.SaveTask(core.Task{
+		ID:        "expired",
+		Status:    core.StatusSucceeded,
+		CreatedAt: now.Add(-96 * time.Hour),
+		EndedAt:   now.Add(-72 * time.Hour),
+	}); err != nil {
+		t.Fatalf("save expired task: %v", err)
+	}
+	if err := store.AppendEvent(core.Event{TaskID: "expired", Type: core.EventTaskCreated, Time: now.Add(-96 * time.Hour)}); err != nil {
+		t.Fatalf("save expired event: %v", err)
+	}
+	if err := store.SaveTask(core.Task{
+		ID:        "running",
+		Status:    core.StatusRunning,
+		CreatedAt: now.Add(-96 * time.Hour),
+	}); err != nil {
+		t.Fatalf("save running task: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.LogStore = base
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app: %v", err)
+	}
+	defer a.Close()
+
+	if _, err := a.Tasks.Get("expired"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("expected expired task to be pruned, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "tasks", "expired.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected expired task file removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "events", "expired.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected expired event log removed, got %v", err)
+	}
+	running, err := a.Tasks.Get("running")
+	if err != nil {
+		t.Fatalf("expected active task retained: %v", err)
+	}
+	if running.Status != core.StatusCanceled || running.ErrorCode != "service_restart" {
+		t.Fatalf("expected retained active task to be recovered, got %#v", running)
+	}
+}
+
+func TestPruneLogStoreRemovesDiskAndMemoryHistory(t *testing.T) {
+	base := t.TempDir()
+	cfg := config.Default()
+	cfg.LogStore = base
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app: %v", err)
+	}
+	defer a.Close()
+
+	now := time.Now().UTC()
+	task := core.Task{
+		ID:        "expired-live-history",
+		Status:    core.StatusSucceeded,
+		CreatedAt: now.Add(-96 * time.Hour),
+		EndedAt:   now.Add(-72 * time.Hour),
+	}
+	if err := a.taskStore.SaveTask(task); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+	a.Tasks.LoadHistory([]core.Task{task})
+	a.Sink.Append(core.Event{TaskID: task.ID, Type: core.EventTaskCreated, Time: task.CreatedAt})
+
+	a.pruneLogStore(now.Add(-48 * time.Hour))
+
+	if _, err := a.Tasks.Get(task.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("expected task removed from manager, got %v", err)
+	}
+	if events, next := a.Sink.List(task.ID, 0); len(events) != 0 || next != 0 {
+		t.Fatalf("expected events removed from memory, got len=%d next=%d", len(events), next)
+	}
+	if _, err := os.Stat(filepath.Join(base, "tasks", task.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("expected task file removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "events", task.ID+".log")); !os.IsNotExist(err) {
+		t.Fatalf("expected event file removed, got %v", err)
+	}
+}
+
 func TestLoadHistoryTasksOnStartup(t *testing.T) {
 	base := t.TempDir()
 	store := persist.NewStore(base)

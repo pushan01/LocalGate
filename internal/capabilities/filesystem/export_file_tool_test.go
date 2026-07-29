@@ -15,6 +15,49 @@ import (
 	"localgate/internal/fileexport"
 )
 
+func TestExportFileToolDescriptionAndSchema(t *testing.T) {
+	cfg := config.FileExports{MaxTTLSeconds: 600}
+	tool := NewExportFileTool(config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}, cfg, nil)
+
+	description := tool.Description()
+	for _, want := range []string{
+		"current conversation",
+		"short-lived downloadable MCP resource",
+		"regular file at an absolute workspace path",
+		"may require approval",
+		"does not modify the source file",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("export_file description missing %q: %q", want, description)
+		}
+	}
+	if strings.Contains(description, "current Agent host") {
+		t.Fatalf("export_file description should use conversation-oriented wording: %q", description)
+	}
+
+	schema, ok := tool.Schema().(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected schema type: %#v", tool.Schema())
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	pathSchema, _ := properties["path"].(map[string]any)
+	fileNameSchema, _ := properties["file_name"].(map[string]any)
+	ttlSchema, _ := properties["ttl_seconds"].(map[string]any)
+
+	pathDescription, _ := pathSchema["description"].(string)
+	if !strings.Contains(pathDescription, "existing regular file") || !strings.Contains(pathDescription, "Directories and symlinks are not allowed") {
+		t.Fatalf("unexpected path description: %q", pathDescription)
+	}
+	fileNameDescription, _ := fileNameSchema["description"].(string)
+	if !strings.Contains(fileNameDescription, "shown in the current conversation") || !strings.Contains(fileNameDescription, "without directory components") {
+		t.Fatalf("unexpected file_name description: %q", fileNameDescription)
+	}
+	ttlDescription, _ := ttlSchema["description"].(string)
+	if !strings.Contains(ttlDescription, "downloadable MCP resource") || !strings.Contains(ttlDescription, "between 60 and 600") {
+		t.Fatalf("unexpected ttl_seconds description: %q", ttlDescription)
+	}
+}
+
 func TestExportFileToolCreatesResourceLink(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "report.txt")

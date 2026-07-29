@@ -211,10 +211,10 @@ func TestUploadFileDetailIncludesOpenAIFileParamMetadata(t *testing.T) {
 	}
 }
 
-func TestHiddenToolNotListedOrAccessible(t *testing.T) {
+func TestDefaultHiddenToolNotListedOrAccessible(t *testing.T) {
 	cfg := config.Config{
 		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}, HiddenTools: []string{"run_command"}},
+			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},
 	}
 	application, err := app.New(cfg)
@@ -231,11 +231,11 @@ func TestHiddenToolNotListedOrAccessible(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	if bytes.Contains(w.Body.Bytes(), []byte(`"name":"run_command"`)) {
+	if bytes.Contains(w.Body.Bytes(), []byte(`"name":"run_argv"`)) {
 		t.Fatalf("hidden tool should not be listed: %s", w.Body.String())
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/tools/run_command?workspace_id=ws", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/tools/run_argv?workspace_id=ws", nil)
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusNotFound {
@@ -396,10 +396,10 @@ func TestCreateTaskRunCommandAndFetchLogs(t *testing.T) {
 	}
 }
 
-func TestCreateTaskRejectsHiddenTool(t *testing.T) {
+func TestCreateTaskRejectsDefaultHiddenTool(t *testing.T) {
 	cfg := config.Config{
 		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}, HiddenTools: []string{"run_command"}},
+			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
 		},
 	}
 	application, err := app.New(cfg)
@@ -411,7 +411,7 @@ func TestCreateTaskRejectsHiddenTool(t *testing.T) {
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
+		"tool":         "run_argv",
 		"workspace_id": "ws",
 		"args":         map[string]any{"command": "echo hello"},
 	})

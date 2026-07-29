@@ -35,7 +35,11 @@ import (
 	"localgate/internal/upload"
 )
 
-const downstreamMCPStartupTimeout = 5 * time.Second
+const (
+	downstreamMCPStartupTimeout = 5 * time.Second
+	logStoreRetention           = 48 * time.Hour
+	logStoreSweepInterval       = time.Hour
+)
 
 var ErrApprovalPolicyDenied = errors.New("tool execution denied by approval policy")
 
@@ -64,6 +68,7 @@ type App struct {
 	DeploymentManager  *deployment.Manager
 	HTTPBaseURL        string
 	StoreBase          string
+	taskStore          *persist.Store
 	Upgrades           *upgrade.Service
 	Relays             map[string]*mcprelay.Client
 	RelayErrors        map[string]string
@@ -91,6 +96,7 @@ func New(cfg config.Config) (*App, error) {
 		storeBase = ".localgate"
 	}
 	mainStore := persist.NewStore(storeBase)
+	_, _ = mainStore.PruneTasksBefore(time.Now().UTC().Add(-logStoreRetention))
 	sink.SetWriter(mainStore)
 	tm.SetTaskWriter(mainStore)
 	if tasks, err := mainStore.LoadTasks(); err == nil && len(tasks) > 0 {
@@ -204,6 +210,7 @@ func New(cfg config.Config) (*App, error) {
 			BaseURL:      cfg.HTTP.BaseURL,
 			ToolHTTPMode: cfg.ToolHTTPMode.Enabled,
 			EnableBase64: cfg.ToolArguments.EnableBase64,
+			MCPServers:   cfg.MCPServers,
 		}))
 		for _, t := range filesystem.NewTools(ws) {
 			reg.Register(t)
@@ -233,7 +240,7 @@ func New(cfg config.Config) (*App, error) {
 			ttl := time.Duration(cfg.ToolHTTPMode.AccessTokenTTLSeconds) * time.Second
 			reg.Register(toolcap.NewGetTemporaryAccessTokenTool(cfg.HTTP.BaseURL, ttl, toolAccessSvc))
 		}
-		for _, name := range config.MergeHiddenTools(ws.HiddenTools) {
+		for _, name := range config.DefaultHiddenTools {
 			reg.Hide(name)
 		}
 		regs[ws.ID] = reg
@@ -279,16 +286,20 @@ func New(cfg config.Config) (*App, error) {
 		DeploymentManager:  deploymentManager,
 		HTTPBaseURL:        cfg.HTTP.BaseURL,
 		StoreBase:          storeBase,
+		taskStore:          mainStore,
 		Upgrades:           upgradeSvc,
 		Relays:             relays,
 		RelayErrors:        relayErrors,
 		DefaultWSID:        defaultWS,
 		approvalGates:      map[string]func(){},
 	}
-	if cfg.SessionCleanup.SweepIntervalMs > 0 {
+	if cfg.SessionCleanup.SweepIntervalMs > 0 || logStoreSweepInterval > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
 		app.stopJanitor = cancel
-		go app.runSessionJanitor(ctx, time.Duration(cfg.SessionCleanup.SweepIntervalMs)*time.Millisecond)
+		if cfg.SessionCleanup.SweepIntervalMs > 0 {
+			go app.runSessionJanitor(ctx, time.Duration(cfg.SessionCleanup.SweepIntervalMs)*time.Millisecond)
+		}
+		go app.runLogStoreJanitor(ctx, logStoreSweepInterval, logStoreRetention)
 	}
 	return app, nil
 }
@@ -1229,4 +1240,32 @@ func (a *App) runSessionJanitor(ctx context.Context, interval time.Duration) {
 			a.Sessions.Sweep(time.Now().UTC())
 		}
 	}
+}
+
+func (a *App) runLogStoreJanitor(ctx context.Context, interval, retention time.Duration) {
+	if a == nil || a.taskStore == nil || interval <= 0 || retention <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			a.pruneLogStore(now.UTC().Add(-retention))
+		}
+	}
+}
+
+func (a *App) pruneLogStore(cutoff time.Time) {
+	if a == nil || a.taskStore == nil || cutoff.IsZero() {
+		return
+	}
+	removed, _ := a.taskStore.PruneTasksBefore(cutoff)
+	if len(removed) == 0 {
+		return
+	}
+	a.Tasks.RemoveTerminalTasks(removed)
+	a.Sink.RemoveTasks(removed)
 }

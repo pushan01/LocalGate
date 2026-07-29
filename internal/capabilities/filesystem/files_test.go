@@ -92,6 +92,51 @@ func TestUploadFile(t *testing.T) {
 	}
 }
 
+func TestUploadFileDescriptionAndSchema(t *testing.T) {
+	ws := config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}
+	var tool core.Tool
+	for _, candidate := range NewTools(ws) {
+		if candidate.Name() == "upload_file" {
+			tool = candidate
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatal("upload_file tool not found")
+	}
+
+	description := tool.Description()
+	for _, want := range []string{
+		"Upload a conversation or host-provided file",
+		"/mnt/data/file.png",
+		"Parent directories are created automatically",
+		"source file is not modified",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("upload_file description missing %q: %q", want, description)
+		}
+	}
+	if strings.HasPrefix(description, "Download a file") {
+		t.Fatalf("upload_file description should be framed as an upload: %q", description)
+	}
+
+	schema, ok := tool.Schema().(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected schema type: %#v", tool.Schema())
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	pathSchema, _ := properties["path"].(map[string]any)
+	fileSchema, _ := properties["file"].(map[string]any)
+	pathDescription, _ := pathSchema["description"].(string)
+	fileDescription, _ := fileSchema["description"].(string)
+	if !strings.Contains(pathDescription, "including the filename") || !strings.Contains(pathDescription, "Parent directories") {
+		t.Fatalf("unexpected path description: %q", pathDescription)
+	}
+	if !strings.Contains(fileDescription, "file.download_url") || !strings.Contains(fileDescription, "local mounted path") {
+		t.Fatalf("unexpected file description: %q", fileDescription)
+	}
+}
+
 func TestUploadFileRejectsOutsideRoots(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

@@ -49,3 +49,58 @@ func TestStoreTaskAndEvents(t *testing.T) {
 		t.Fatalf("task file missing: %v", err)
 	}
 }
+
+func TestPruneTasksBefore(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	now := time.Now().UTC()
+	cutoff := now.Add(-48 * time.Hour)
+	tasks := []core.Task{
+		{ID: "expired", Status: core.StatusSucceeded, CreatedAt: now.Add(-96 * time.Hour), EndedAt: now.Add(-72 * time.Hour)},
+		{ID: "recent", Status: core.StatusFailed, CreatedAt: now.Add(-36 * time.Hour), EndedAt: now.Add(-24 * time.Hour)},
+		{ID: "running", Status: core.StatusRunning, CreatedAt: now.Add(-96 * time.Hour)},
+	}
+	for _, task := range tasks {
+		if err := store.SaveTask(task); err != nil {
+			t.Fatalf("save task %s: %v", task.ID, err)
+		}
+		if err := store.AppendEvent(core.Event{TaskID: task.ID, Type: core.EventTaskCreated, Time: task.CreatedAt}); err != nil {
+			t.Fatalf("append event %s: %v", task.ID, err)
+		}
+	}
+	if err := store.AppendEvent(core.Event{TaskID: "orphan", Type: core.EventTaskCreated, Time: now.Add(-72 * time.Hour)}); err != nil {
+		t.Fatalf("append orphan event: %v", err)
+	}
+	orphanPath := filepath.Join(dir, "events", "orphan.log")
+	old := now.Add(-72 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatalf("age orphan event: %v", err)
+	}
+
+	removed, err := store.PruneTasksBefore(cutoff)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "expired" {
+		t.Fatalf("unexpected removed tasks: %#v", removed)
+	}
+	for _, path := range []string{
+		filepath.Join(dir, "tasks", "expired.json"),
+		filepath.Join(dir, "events", "expired.log"),
+		orphanPath,
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, err=%v", path, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(dir, "tasks", "recent.json"),
+		filepath.Join(dir, "events", "recent.log"),
+		filepath.Join(dir, "tasks", "running.json"),
+		filepath.Join(dir, "events", "running.log"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to remain: %v", path, err)
+		}
+	}
+}

@@ -151,7 +151,7 @@ func (s *Server) handleToolsList(req request) response {
 		for _, name := range []string{"task_status", "task_logs", "task_cancel", "task_result", "wait_task_finish"} {
 			tools = append(tools, map[string]any{
 				"name":        name,
-				"description": "",
+				"description": mcpAdminDescription(name),
 				"inputSchema": toolargs.MCPInputSchema(mcpAdminSchema(name), s.App.ToolArguments.EnableBase64),
 			})
 		}
@@ -376,6 +376,23 @@ func collectStreams(sink *core.EventSink, taskID string, maxLines int) (string, 
 		}
 	}
 	return strings.Join(stdout, "\n"), strings.Join(stderr, "\n")
+}
+
+func mcpAdminDescription(name string) string {
+	switch name {
+	case "task_status":
+		return "Get the current status and metadata of a submitted task by task_id"
+	case "task_logs":
+		return "Read task events and streamed output from a cursor position"
+	case "task_cancel":
+		return "Request cancellation of a running task by task_id"
+	case "task_result":
+		return "Get the final structured result and captured output of a task by task_id"
+	case "wait_task_finish":
+		return "Block until a task reaches a terminal state without returning the task result"
+	default:
+		return ""
+	}
 }
 
 func mcpAdminSchema(name string) any {

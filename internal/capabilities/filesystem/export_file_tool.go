@@ -33,7 +33,7 @@ func NewExportFileTool(ws config.Workspace, cfg config.FileExports, exports *fil
 func (t exportFileTool) Name() string { return "export_file" }
 
 func (t exportFileTool) Description() string {
-	return "Export one existing workspace file to the current Agent host as a short-lived downloadable MCP resource. This sends local data outside LocalGate and may require approval."
+	return "Export an existing workspace file to the current conversation as a short-lived downloadable MCP resource. The source must be a regular file at an absolute workspace path. This transfers data outside LocalGate, may require approval, and does not modify the source file."
 }
 
 func (t exportFileTool) Schema() any {
@@ -43,17 +43,17 @@ func (t exportFileTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute path of an existing regular file inside the workspace.",
+				"description": "Absolute path of an existing regular file inside the workspace. Directories and symlinks are not allowed.",
 			},
 			"file_name": map[string]any{
 				"type":        "string",
-				"description": "Optional display and download file name. It must be a plain file name without directory components.",
+				"description": "Optional filename shown in the current conversation and used when downloading. It must be a plain filename without directory components.",
 			},
 			"ttl_seconds": map[string]any{
 				"type":        "integer",
 				"minimum":     60,
 				"maximum":     t.config.MaxTTLSeconds,
-				"description": "Optional lifetime of the download resource in seconds.",
+				"description": fmt.Sprintf("Optional lifetime of the downloadable MCP resource in seconds. It must be between 60 and %d.", t.config.MaxTTLSeconds),
 			},
 		},
 		"required": []string{"path"},

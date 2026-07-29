@@ -448,6 +448,8 @@ curl -X POST "http://127.0.0.1:8000/tasks" \
 
 ### 4. 查询任务状态
 
+已结束任务及其事件日志固定保留 48 小时。LocalGate 启动时会先清理一次，运行期间每小时清理一次；排队中、运行中和等待审批的任务不会按该策略删除。
+
 **接口**
 
 - `GET /tasks/{task_id}`
@@ -882,36 +884,15 @@ DAEMON=1 LOG_FILE=./.localgate/run/http.log PID_FILE=./.localgate/run/http.pid .
 - `PID_FILE`：默认 `$RUN_DIR/localgate-http.pid`
 - `LOG_FILE`：默认 `$RUN_DIR/localgate-http.log`
 
-workspace 还支持一个工具可见性配置：
-
-- `hidden_tools`：字符串数组
-
-示例：
-
-```yaml
-workspaces:
-  - id: default
-    roots: ["."]
-    cwd: "."
-    hidden_tools:
-      - run_command
-      - exec_command
-```
-
-效果：
-
-- 隐藏的工具不会出现在 `GET /tools`
-- 隐藏的工具不会出现在 MCP `tools/list`
-- 隐藏的工具不能通过通用任务入口 `POST /tasks` 调用
-- 专门的内部 HTTP 入口如 `/sessions/exec` 不受影响
-
-另外，服务现在默认隐藏这 3 个工具：
+LocalGate 使用固定的内置隐藏工具列表。这些工具不会出现在 `GET /tools` 或 MCP `tools/list` 中，也不能通过通用任务入口 `POST /tasks` 调用：
 
 - `run_argv`
 - `search_files`
 - `list_directory`
+- `create_upload_token`
+- `create_download_token`
 
-原因：这些能力可以由模型通过 `run_command` 组合实现，默认不再直接暴露给工具发现接口。
+这些隐藏项不可通过 workspace 配置动态增删。其中前三项可由模型通过 `run_command` 组合实现；上传和下载令牌工具保留给内部或专用传输流程。
 
 脚本会在启动成功后输出 pid、pid 文件和日志文件路径；若 pid 文件已存在且进程仍存活，脚本会直接失败，避免重复启动。
 

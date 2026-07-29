@@ -16,7 +16,6 @@ import (
 type Workspace struct {
 	ID                     string         `yaml:"id"`
 	Roots                  []string       `yaml:"roots"`
-	HiddenTools            []string       `yaml:"hidden_tools"`
 	PathDenylist           []string       `yaml:"path_denylist"`
 	CommandAllowlist       []string       `yaml:"command_allowlist"`
 	CommandDenylist        []string       `yaml:"command_denylist"`
@@ -824,6 +823,13 @@ func rejectLegacyConfig(data []byte) error {
 	if _, exists := dynamic["control_hosts"]; exists {
 		return errors.New("deployments.dynamic.control_hosts was removed; control host is derived from http.base_url")
 	}
+	workspaces, _ := root["workspaces"].([]any)
+	for i, raw := range workspaces {
+		workspace, _ := raw.(map[string]any)
+		if _, exists := workspace["hidden_tools"]; exists {
+			return fmt.Errorf("workspaces[%d].hidden_tools was removed; LocalGate now uses a fixed built-in hidden tool list", i)
+		}
+	}
 	admin, _ := root["admin"].(map[string]any)
 	approval, _ := admin["approval"].(map[string]any)
 	if _, exists := approval["base_url"]; exists {
@@ -1313,37 +1319,6 @@ func validateMCPServers(servers []MCPServer) error {
 		}
 	}
 	return nil
-}
-
-func MergeHiddenTools(hidden []string) []string {
-	if len(DefaultHiddenTools) == 0 && len(hidden) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(DefaultHiddenTools)+len(hidden))
-	out := make([]string, 0, len(DefaultHiddenTools)+len(hidden))
-	for _, name := range DefaultHiddenTools {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	for _, name := range hidden {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	return out
 }
 
 func absPath(p string) string {
