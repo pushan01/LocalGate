@@ -24,10 +24,10 @@
 - [x] **File browser planning.** Keep the design in `docs/file_browser_plan.md` aligned with implementation decisions.
 - [x] **Read-only browser backend MVP.** Add `file_browser` config, `internal/filebrowser` service, `/api/admin/v1/file-browser/*` APIs for workspace/root listing, directory listing, and text file reads.
 - [x] **Admin Console Files page.** Add `/admin/files` with workspace selector, file tree, and read-only text preview.
-- [ ] **Path and file safety.** Use `workspace_id + root_id + relative_path`, validate every resolved path through the workspace sandbox, reject symlink escapes, filter hidden/excluded directories, and enforce max file size / binary detection.
-- [ ] **Safe write support.** Add save, create file, mkdir, rename/move, upload, download, and delete APIs with ETag conflict detection and atomic writes. Save/create-file, mkdir, rename/move, delete, download, upload, approval-backed execution, and basic editing UI are implemented.
-- [ ] **Approval and audit integration.** Route write/delete/move/upload operations through LocalGate approval policy when configured and record file-browser-specific audit actions.
-- [ ] **Editor UX.** Integrate Monaco Editor, tabs, dirty-state tracking, language detection, Markdown/image preview, upload/download UI, and conflict/diff presentation.
+- [x] **Path and file safety.** Uses `workspace_id + root_id + relative_path`, workspace sandbox validation, symlink escape rejection, hidden/excluded directory filtering, and file size / binary detection.
+- [x] **Safe write support.** Save, create file, mkdir, rename/move, upload, download, and delete APIs use ETag conflict detection and atomic writes where applicable.
+- [x] **Approval and audit integration.** Write/delete/move/upload operations enter LocalGate approval tasks when configured and emit file-browser-specific audit actions.
+- [ ] **Editor UX.** `CH-FB-001` completed dirty navigation protection and list-level rename/delete actions. Monaco, tabs, Markdown/image preview, and conflict/diff presentation remain later work.
 - [ ] **Terminal integration.** Let users open a Session terminal from the current directory and later add a real-time stream for terminal output.
 - [ ] **Optional code-server template.** Provide a private dynamic deployment template for code-server with explicit warnings that code-server internals bypass LocalGate's fine-grained file approvals.
 

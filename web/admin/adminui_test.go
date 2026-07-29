@@ -32,7 +32,7 @@ func TestFileBrowserUIIsBundled(t *testing.T) {
 		t.Fatalf("read app.js: %v", err)
 	}
 	text := string(data)
-	for _, expected := range []string{"/admin/files", "Files", "/file-browser/workspaces", "/file-browser/files/list", "/file-browser/files/content", "/file-browser/files/mkdir", "/file-browser/files/rename", "/file-browser/files/delete", "/file-browser/files/download", "/file-browser/files/upload", "data-file-open", "data-file-editor", "data-file-save", "data-file-rename", "data-file-delete", "data-file-download", "data-file-new-file", "data-file-new-folder", "data-file-upload", "data-file-upload-input", "file_changed"} {
+	for _, expected := range []string{"/admin/files", "Files", "/file-browser/workspaces", "/file-browser/files/list", "/file-browser/files/content", "/file-browser/files/mkdir", "/file-browser/files/rename", "/file-browser/files/delete", "/file-browser/files/download", "/file-browser/files/upload", "data-file-open", "data-file-editor", "data-file-save", "data-file-rename", "data-file-delete", "data-file-download", "data-file-new-file", "data-file-new-folder", "data-file-upload", "data-file-upload-input", "data-file-entry-rename", "data-file-entry-delete", "confirmDiscardFileChanges", "beforeunload", "file_changed"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("admin file browser UI missing %q", expected)
 		}

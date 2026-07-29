@@ -1,5 +1,33 @@
 # Plan
 
+## CH-FB-001：文件编辑安全导航与目录操作
+
+- **状态**：已完成
+- **开始日期**：2026-07-29
+- **完成日期**：2026-07-29
+- **目标**：让 `/admin/files` 在存在未保存内容时阻止意外导航，并为目录和未打开文件提供重命名、删除入口。
+- **非目标**：本轮不引入 Monaco、Node 构建链、多标签页、Diff 合并、文件搜索或终端面板。
+- **涉及范围**：`web/admin/dist/app.js`、`web/admin/dist/styles.css`、`web/admin/adminui_test.go`、`todo.md`。
+- **依赖与风险**：前端为无构建步骤的原生 JavaScript；浏览器前进/后退需要在 URL 已变化后恢复原文件页面。
+- **预计规模**：约 150–300 行有效 diff。
+- **验收条件**：
+  - 修改文件后，侧栏导航、文件切换、目录切换、workspace/root 切换、Reload/Refresh 和浏览器关闭均有未保存保护。
+  - 文件列表可直接重命名和删除文件或目录；目录删除使用递归确认参数。
+  - 保存、审批跳转及已确认的丢弃操作不会重复弹出确认框。
+  - 管理前端资源测试和 JavaScript 语法检查通过。
+- **验证方式**：`node --check web/admin/dist/app.js`、`go test ./web/admin ./internal/adminapi ./internal/filebrowser`、`go test ./...`。
+- **实际实现**：
+  - 使用统一 dirty state 拦截侧栏、文件树、workspace/root、Reload/Refresh、浏览器后退和关闭。
+  - 保存成功、进入审批或用户已确认丢弃时通过显式强制导航，避免重复确认。
+  - 文件列表增加文件和目录的重命名、删除操作；目录删除带递归确认字段，目录改名后同步修正已选子文件路径。
+  - 小屏幕始终展示列表操作，桌面端在 hover/focus 时展示。
+- **验证结果**：
+  - `node --check web/admin/dist/app.js`：通过。
+  - `go test ./web/admin ./internal/adminapi ./internal/filebrowser`：通过。
+  - `git diff --check`：通过。
+  - `go test ./...`：通过。
+- **实际规模**：169 行有效 diff。
+
 ## 本轮目标
 
 将已经在 `LocalGate` 中实现的后台会话工具迁移到 `LocalGate.mcp`，包括：

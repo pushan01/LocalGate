@@ -1,6 +1,6 @@
 const API = "/api/admin/v1";
 const app = document.querySelector("#app");
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "" };
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "" };
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
@@ -28,9 +28,24 @@ async function request(path, options={}) {
   return data;
 }
 
-function navigate(path) {
+function currentURL() {
+  return `${location.pathname}${location.search}${location.hash}`;
+}
+
+function hasUnsavedFileChanges() {
+  return Boolean(state.fileDirty && document.querySelector("[data-file-editor]"));
+}
+
+function confirmDiscardFileChanges(message="当前文件有未保存修改。离开后这些修改会丢失，确定继续？") {
+  return !hasUnsavedFileChanges() || confirm(message);
+}
+
+function navigate(path, options={}) {
+  if (!options.force && !confirmDiscardFileChanges()) return false;
+  setFileDirty(false);
   history.pushState({}, "", path);
   render();
+  return true;
 }
 
 function layout(title, body, actions="") {
@@ -144,8 +159,8 @@ async function renderFiles() {
   const rows = fileRows(list.entries || [], {workspaceID, rootID, dirPath, filePath});
   const preview = filePreview(filePath, fileContent, fileError);
   app.innerHTML = layout("Files", `<section class="file-toolbar card">
-    <label>Workspace <select data-file-select="workspace_id">${workspaceOptions}</select></label>
-    <label>Root <select data-file-select="root_id">${rootOptions}</select></label>
+    <label>Workspace <select data-file-select="workspace_id" data-current-value="${esc(workspaceID)}">${workspaceOptions}</select></label>
+    <label>Root <select data-file-select="root_id" data-current-value="${esc(rootID)}">${rootOptions}</select></label>
     <div class="file-path mono">${esc(currentLabel)}</div>
     <button class="button" data-file-new-file="1">New file</button><button class="button" data-file-new-folder="1">New folder</button><button class="button" data-file-upload="1">Upload</button><input class="hidden" type="file" data-file-upload-input><button class="button" data-file-refresh="1">Refresh</button>
   </section>
@@ -158,6 +173,8 @@ async function renderFiles() {
       ${preview}
     </div>
   </section>`);
+  state.fileDirty = false;
+  state.fileURL = currentURL();
 }
 
 function fileRows(entries, context) {
@@ -166,7 +183,10 @@ function fileRows(entries, context) {
     const active = !isDir && context.filePath === entry.path ? " active" : "";
     const targetAttr = isDir ? `data-file-dir="${esc(entry.path)}"` : `data-file-open="${esc(entry.path)}"`;
     const icon = isDir ? "📁" : "📄";
-    return `<button class="file-row${active}" ${targetAttr}><span>${icon}</span><span class="file-name">${esc(entry.name)}</span><span class="muted">${isDir?"directory":formatBytes(entry.size)}</span></button>`;
+    const actions = entry.type === "file" || entry.type === "directory"
+      ? `<div class="file-row-actions"><button class="file-row-action" data-file-entry-rename data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Rename</button><button class="file-row-action danger" data-file-entry-delete data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Delete</button></div>`
+      : "";
+    return `<div class="file-row-wrap"><button class="file-row${active}" ${targetAttr}><span>${icon}</span><span class="file-name">${esc(entry.name)}</span><span class="muted">${isDir?"directory":formatBytes(entry.size)}</span></button>${actions}</div>`;
   }).join("");
 }
 
@@ -234,13 +254,22 @@ function setFileStatus(kind, message) {
 }
 
 function setFileDirty(dirty) {
+  state.fileDirty = Boolean(dirty);
   const badge = document.querySelector("[data-file-dirty]");
   if (!badge) return;
   badge.classList.toggle("hidden", !dirty);
 }
 
+function reloadFiles(message="当前文件有未保存修改。重新加载会丢弃这些修改，确定继续？") {
+  if (!confirmDiscardFileChanges(message)) return false;
+  setFileDirty(false);
+  render();
+  return true;
+}
+
 async function uploadFileToCurrentDirectory(file) {
   if (!file) return;
+  if (!confirmDiscardFileChanges("当前文件有未保存修改。上传完成后页面会重新加载，确定丢弃这些修改？")) return;
   const ctx = currentFileContext();
   const target = joinFilePath(ctx.path, file.name);
   const form = new FormData();
@@ -253,16 +282,17 @@ async function uploadFileToCurrentDirectory(file) {
     const result = await request("/file-browser/files/upload", {method:"POST", body: form});
     if (result.approval?.id) {
       state.notice = `上传等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
     state.notice = "文件已上传";
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:target}));
+    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:target}), {force:true});
   } catch (error) {
     alert(error.message || "上传失败");
   }
 }
 
 async function createFileInCurrentDirectory() {
+  if (!confirmDiscardFileChanges("当前文件有未保存修改。新建文件后会离开当前编辑内容，确定继续？")) return;
   const name = prompt("New file name");
   if (name === null) return;
   const clean = name.trim();
@@ -273,16 +303,17 @@ async function createFileInCurrentDirectory() {
     const result = await request("/file-browser/files/content", {method:"PUT", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path:newPath, content:"", create:true})});
     if (result.approval?.id) {
       state.notice = `新建文件等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
     state.notice = "文件已创建";
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:newPath}));
+    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:newPath}), {force:true});
   } catch (error) {
     alert(error.message || "新建文件失败");
   }
 }
 
 async function createFolderInCurrentDirectory() {
+  if (!confirmDiscardFileChanges("当前文件有未保存修改。创建目录后页面会重新加载，确定丢弃这些修改？")) return;
   const name = prompt("New folder name");
   if (name === null) return;
   const clean = name.trim();
@@ -293,55 +324,72 @@ async function createFolderInCurrentDirectory() {
     const result = await request("/file-browser/files/mkdir", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path:newPath})});
     if (result.approval?.id) {
       state.notice = `新建目录等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
     state.notice = "目录已创建";
+    setFileDirty(false);
     return render();
   } catch (error) {
     alert(error.message || "新建目录失败");
   }
 }
 
-async function deleteCurrentFile() {
-  const editor = document.querySelector("[data-file-editor]");
-  if (!editor) return;
-  const dirty = !document.querySelector("[data-file-dirty]")?.classList.contains("hidden");
-  if (dirty && !confirm("当前文件有未保存修改。删除会丢弃这些未保存修改，确定继续？")) return;
-  if (!confirm(`确认删除 ${editor.dataset.path}？`)) return;
+async function deleteFileEntry(path, type="file") {
+  if (!path) return;
+  if (!confirmDiscardFileChanges("当前文件有未保存修改。删除操作完成后页面会重新加载，确定丢弃这些修改？")) return;
+  const recursive = type === "directory";
+  if (!confirm(recursive ? `确认递归删除目录 ${path} 及其中全部内容？` : `确认删除 ${path}？`)) return;
+  const ctx = currentFileContext();
   try {
-    const result = await request("/file-browser/files/delete", {method:"POST", body: JSON.stringify({workspace_id:editor.dataset.workspaceId, root_id:editor.dataset.rootId, path:editor.dataset.path, recursive:false})});
+    const result = await request("/file-browser/files/delete", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path, recursive, confirmation:recursive?`delete ${path}`:""})});
     if (result.approval?.id) {
       state.notice = `删除等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
-    state.notice = "文件已删除";
-    const ctx = currentFileContext();
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:""}));
+    state.notice = recursive ? "目录已删除" : "文件已删除";
+    const selectedFile = ctx.file === path || ctx.file.startsWith(`${path}/`) ? "" : ctx.file;
+    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:selectedFile}), {force:true});
   } catch (error) {
     setFileStatus("error", error.message || "删除失败");
   }
 }
 
-async function renameCurrentFile() {
+async function deleteCurrentFile() {
   const editor = document.querySelector("[data-file-editor]");
-  if (!editor) return;
-  const dirty = !document.querySelector("[data-file-dirty]")?.classList.contains("hidden");
-  if (dirty && !confirm("当前文件有未保存修改。继续重命名会丢弃这些未保存修改，确定继续？")) return;
-  const next = prompt("New path", editor.dataset.path || "");
+  if (editor) return deleteFileEntry(editor.dataset.path, "file");
+}
+
+async function renameFileEntry(path, type="file") {
+  if (!path) return;
+  if (!confirmDiscardFileChanges("当前文件有未保存修改。重命名完成后页面会重新加载，确定丢弃这些修改？")) return;
+  const next = prompt("New path", path);
   if (next === null) return;
   const clean = next.trim().replace(/^\/+|\/+$/g, "");
   if (!clean) return alert("请输入目标路径");
+  if (clean === path) return;
+  const ctx = currentFileContext();
   try {
-    const result = await request("/file-browser/files/rename", {method:"POST", body: JSON.stringify({workspace_id:editor.dataset.workspaceId, root_id:editor.dataset.rootId, from_path:editor.dataset.path, to_path:clean})});
+    const result = await request("/file-browser/files/rename", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, from_path:path, to_path:clean})});
     if (result.approval?.id) {
       state.notice = `重命名等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
-    state.notice = "文件已重命名";
-    return navigate(fileBrowserURL({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:parentPath(clean), file:clean}));
+    state.notice = type === "directory" ? "目录已重命名" : "文件已重命名";
+    let selectedFile = ctx.file;
+    if (ctx.file === path) {
+      selectedFile = clean;
+    } else if (type === "directory" && ctx.file.startsWith(`${path}/`)) {
+      selectedFile = `${clean}${ctx.file.slice(path.length)}`;
+    }
+    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:selectedFile}), {force:true});
   } catch (error) {
     setFileStatus("error", error.message || "重命名失败");
   }
+}
+
+async function renameCurrentFile() {
+  const editor = document.querySelector("[data-file-editor]");
+  if (editor) return renameFileEntry(editor.dataset.path, "file");
 }
 
 async function saveCurrentFile() {
@@ -363,12 +411,11 @@ async function saveCurrentFile() {
     });
     if (result.approval?.id) {
       state.notice = `保存等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`);
+      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
     state.notice = "文件已保存";
-    setFileDirty(false);
     const ctx = currentFileContext();
-    return navigate(fileBrowserURL(ctx));
+    return navigate(fileBrowserURL(ctx), {force:true});
   } catch (error) {
     if (error.code === "file_changed") {
       setFileStatus("error", "文件已被外部修改。请复制当前改动后点击 Reload，再重新合并保存。");
@@ -404,12 +451,14 @@ async function mutate(path, options={}) {state.error="";const result=await reque
 document.addEventListener("click", async event => {
   const nav=event.target.closest("[data-nav]");if(nav){event.preventDefault();return navigate(nav.dataset.nav)}
   const action=event.target.closest("[data-action]")?.dataset.action;
-  if(action==="token") return loginView();
+  if(action==="token"){if(!confirmDiscardFileChanges())return;setFileDirty(false);return loginView()}
   if(action==="save-token"){state.token=document.querySelector("#token-input")?.value.trim()||"";sessionStorage.setItem("localgate_admin_token",state.token);return navigate(location.pathname)}
   if(action==="clear-history"){history.replaceState({},"","/admin/history");return render()}
   if(action==="next-history"){const q=new URLSearchParams(location.search);q.set("cursor",event.target.dataset.cursor);history.replaceState({},"",`${location.pathname}?${q}`);return render()}
   const fileDir=event.target.closest("[data-file-dir]");if(fileDir){const ctx=currentFileContext();return navigate(fileBrowserURL({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:fileDir.dataset.fileDir,file:""}))}
   const fileOpen=event.target.closest("[data-file-open]");if(fileOpen){const ctx=currentFileContext();return navigate(fileBrowserURL({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:ctx.path,file:fileOpen.dataset.fileOpen}))}
+  const fileEntryRename=event.target.closest("[data-file-entry-rename]");if(fileEntryRename)return renameFileEntry(fileEntryRename.dataset.entryPath,fileEntryRename.dataset.entryType);
+  const fileEntryDelete=event.target.closest("[data-file-entry-delete]");if(fileEntryDelete)return deleteFileEntry(fileEntryDelete.dataset.entryPath,fileEntryDelete.dataset.entryType);
   if(event.target.closest("[data-file-new-file]")) return createFileInCurrentDirectory();
   if(event.target.closest("[data-file-new-folder]")) return createFolderInCurrentDirectory();
   if(event.target.closest("[data-file-upload]")){document.querySelector("[data-file-upload-input]")?.click(); return;}
@@ -417,8 +466,8 @@ document.addEventListener("click", async event => {
   if(event.target.closest("[data-file-rename]")) return renameCurrentFile();
   if(event.target.closest("[data-file-download]")){const editor=document.querySelector("[data-file-editor]"); if(editor) window.location.href=fileDownloadURL({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path}); return;}
   if(event.target.closest("[data-file-delete]")) return deleteCurrentFile();
-  if(event.target.closest("[data-file-reload]")) return render();
-  if(event.target.closest("[data-file-refresh]")) return render();
+  if(event.target.closest("[data-file-reload]")) return reloadFiles();
+  if(event.target.closest("[data-file-refresh]")) return reloadFiles("当前文件有未保存修改。刷新目录会丢弃这些修改，确定继续？");
   if(action==="cancel-task"&&confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`,{method:"POST"});
   const approval=event.target.closest("[data-approval-action]");if(approval&&confirm(`确认 ${approval.dataset.approvalAction}？`))return mutate(`/approvals/${approval.dataset.id}/${approval.dataset.approvalAction}`,{method:"POST"});
   const deploy=event.target.closest("[data-deploy-action]");if(deploy){const act=deploy.dataset.deployAction;if(!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`))return;const encoded=`/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;return mutate(act==="delete"?encoded:`${encoded}/${act}`,{method:act==="delete"?"DELETE":"POST",body:act==="delete"?JSON.stringify({confirmation:"delete"}):undefined})}
@@ -437,12 +486,26 @@ document.addEventListener("change", event => {
   if (!selector) return;
   const ctx = currentFileContext();
   if (selector.dataset.fileSelect === "workspace_id") {
-    return navigate(fileBrowserURL({workspaceID: selector.value, rootID: "", path: "", file: ""}));
+    if (!navigate(fileBrowserURL({workspaceID: selector.value, rootID: "", path: "", file: ""}))) selector.value = selector.dataset.currentValue || "";
+    return;
   }
   if (selector.dataset.fileSelect === "root_id") {
-    return navigate(fileBrowserURL({workspaceID: ctx.workspaceID, rootID: selector.value, path: "", file: ""}));
+    if (!navigate(fileBrowserURL({workspaceID: ctx.workspaceID, rootID: selector.value, path: "", file: ""}))) selector.value = selector.dataset.currentValue || "";
+    return;
   }
 });
 document.addEventListener("submit",event=>{event.preventDefault();const form=new FormData(event.target),q=new URLSearchParams();for(const [k,v] of form)if(v)q.set(k,v);history.replaceState({},"",`${location.pathname}?${q}`);render()});
-window.addEventListener("popstate",render);
+window.addEventListener("beforeunload", event => {
+  if (!hasUnsavedFileChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+window.addEventListener("popstate", () => {
+  if (!confirmDiscardFileChanges()) {
+    history.pushState({}, "", state.fileURL || "/admin/files");
+    return;
+  }
+  setFileDirty(false);
+  render();
+});
 render();
