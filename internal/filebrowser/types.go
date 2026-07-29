@@ -136,6 +136,11 @@ type DownloadFile struct {
 	ModTime     time.Time
 }
 
+type PreviewFile struct {
+	DownloadFile
+	ContentType string
+}
+
 type PathRequest struct {
 	WorkspaceID string
 	RootID      string

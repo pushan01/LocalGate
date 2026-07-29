@@ -32,9 +32,18 @@ func TestFileBrowserUIIsBundled(t *testing.T) {
 		t.Fatalf("read app.js: %v", err)
 	}
 	text := string(data)
-	for _, expected := range []string{"/admin/files", "Files", "/file-browser/workspaces", "/file-browser/files/list", "/file-browser/files/content", "/file-browser/files/mkdir", "/file-browser/files/rename", "/file-browser/files/delete", "/file-browser/files/download", "/file-browser/files/upload", "data-file-open", "data-file-editor", "data-file-save", "data-file-rename", "data-file-delete", "data-file-download", "data-file-new-file", "data-file-new-folder", "data-file-upload", "data-file-upload-input", "data-file-entry-rename", "data-file-entry-delete", "confirmDiscardFileChanges", "beforeunload", "file_changed"} {
+	for _, expected := range []string{"/admin/files", "Files", "/file-browser/workspaces", "/file-browser/files/list", "/file-browser/files/content", "/file-browser/files/mkdir", "/file-browser/files/rename", "/file-browser/files/delete", "/file-browser/files/download", "/file-browser/files/preview", "/file-browser/files/upload", "data-file-open", "data-file-editor", "data-file-save", "data-file-rename", "data-file-delete", "data-file-download", "data-file-new-file", "data-file-new-folder", "data-file-upload", "data-file-upload-input", "data-file-entry-rename", "data-file-entry-delete", "data-file-markdown-preview", "data-file-image-preview", "data-file-conflict-reload", "data-file-conflict-overwrite", "data-file-conflict-diff", "renderMarkdown", "requestBlob", "confirmDiscardFileChanges", "beforeunload", "file_changed"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("admin file browser UI missing %q", expected)
+		}
+	}
+	styles, err := fs.ReadFile(assets, "dist/styles.css")
+	if err != nil {
+		t.Fatalf("read styles.css: %v", err)
+	}
+	for _, expected := range []string{".markdown-preview", ".file-preview-image", ".diff-grid", ".diff-line-changed"} {
+		if !strings.Contains(string(styles), expected) {
+			t.Fatalf("admin file browser styles missing %q", expected)
 		}
 	}
 }

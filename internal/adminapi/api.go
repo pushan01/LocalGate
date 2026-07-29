@@ -34,6 +34,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc(Prefix+"/file-browser/files/rename", a.wrap(a.handleFileRename))
 	mux.HandleFunc(Prefix+"/file-browser/files/delete", a.wrap(a.handleFileDelete))
 	mux.HandleFunc(Prefix+"/file-browser/files/download", a.wrap(a.handleFileDownload))
+	mux.HandleFunc(Prefix+"/file-browser/files/preview", a.wrap(a.handleFilePreview))
 	mux.HandleFunc(Prefix+"/file-browser/files/upload", a.wrap(a.handleFileUpload))
 }
 

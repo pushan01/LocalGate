@@ -8,7 +8,7 @@ function loadSidebarCollapsed() {
     return false;
   }
 }
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", sidebarCollapsed: loadSidebarCollapsed() };
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
@@ -34,6 +34,27 @@ async function request(path, options={}) {
     throw error;
   }
   return data;
+}
+
+async function requestBlob(path, options={}) {
+  const headers = new Headers(options.headers || {});
+  if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+  const response = await fetch(`${API}${path}`, {...options, headers});
+  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), {unauthorized:true});
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data.message || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.code = data.code;
+    throw error;
+  }
+  return {blob: await response.blob(), headers: response.headers};
+}
+
+function releaseImageObjectURL() {
+  if (!state.imageObjectURL) return;
+  URL.revokeObjectURL(state.imageObjectURL);
+  state.imageObjectURL = "";
 }
 
 function currentURL() {
@@ -97,6 +118,7 @@ function loginView(message="") {
 async function render() {
   state.error = "";
   const path = location.pathname.replace(/\/$/, "") || "/admin";
+  if (path !== "/admin/files") releaseImageObjectURL();
   try {
     if (path === "/admin") return renderOverview();
     if (path === "/admin/history") return renderHistory();
@@ -151,6 +173,8 @@ async function renderTask(id) {
 const kv=(label,value)=>`<div class="kv"><strong>${esc(label)}</strong><div>${value&&String(value).startsWith("<span")?value:esc(value)}</div></div>`;
 
 async function renderFiles() {
+  releaseImageObjectURL();
+  state.fileConflict = null;
   const workspacesData = await request("/file-browser/workspaces");
   const workspaces = workspacesData.items || [];
   if (!workspaces.length) {
@@ -174,7 +198,8 @@ async function renderFiles() {
   const list = await request(`/file-browser/files/list?${listQuery}`);
   let fileContent = null;
   let fileError = "";
-  if (filePath) {
+  const imageFile = isPreviewableImage(filePath);
+  if (filePath && !imageFile) {
     try {
       fileContent = await request(`/file-browser/files/content?${fileBrowserQuery({workspaceID, rootID, path: filePath})}`);
     } catch (error) {
@@ -184,8 +209,10 @@ async function renderFiles() {
   const workspaceOptions = workspaces.map(item => `<option value="${esc(item.id)}" ${item.id===workspaceID?"selected":""}>${esc(item.id)}</option>`).join("");
   const rootOptions = roots.map(root => `<option value="${esc(root.id)}" ${root.id===rootID?"selected":""}>${esc(root.name || root.id)}</option>`).join("");
   const currentLabel = dirPath || "/";
-  const rows = fileRows(list.entries || [], {workspaceID, rootID, dirPath, filePath});
-  const preview = filePreview(filePath, fileContent, fileError);
+  const entries = list.entries || [];
+  const rows = fileRows(entries, {workspaceID, rootID, dirPath, filePath});
+  const selectedEntry = entries.find(entry => entry.path === filePath) || null;
+  const preview = filePreview(filePath, fileContent, fileError, {workspaceID, rootID, entry:selectedEntry, imageFile});
   app.innerHTML = layout("Files", `<section class="file-toolbar card">
     <label>Workspace <select data-file-select="workspace_id" data-current-value="${esc(workspaceID)}">${workspaceOptions}</select></label>
     <label>Root <select data-file-select="root_id" data-current-value="${esc(rootID)}">${rootOptions}</select></label>
@@ -203,6 +230,7 @@ async function renderFiles() {
   </section>`);
   state.fileDirty = false;
   state.fileURL = currentURL();
+  if (imageFile) loadImagePreview({workspaceID, rootID, path:filePath});
 }
 
 function fileRows(entries, context) {
@@ -218,14 +246,34 @@ function fileRows(entries, context) {
   }).join("");
 }
 
-function filePreview(filePath, content, error) {
+function filePreview(filePath, content, error, context={}) {
   if (!filePath) return `<div class="empty">选择一个文本文件预览</div>`;
-  if (error) return `<div class="error">${esc(error)}</div><p class="muted">二进制文件或超过大小限制的文件暂不在浏览器中打开。</p>`;
+  if (context.imageFile) return imageFilePreview(filePath, context);
+  if (error) return unavailableFilePreview(filePath, error, context);
   if (!content) return `<div class="empty">正在加载文件内容…</div>`;
-  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">${esc(content.language || "text")}</span><span class="badge pending hidden" data-file-dirty>Unsaved</span><button class="button primary" data-file-save="1">Save</button><button class="button" data-file-rename="1">Rename</button><button class="button" data-file-download="1">Download</button><button class="button danger" data-file-delete="1">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
+  const markdown = content.language === "markdown";
+  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">${esc(content.language || "text")}</span><span class="badge pending hidden" data-file-dirty>Unsaved</span>${markdown?`<button class="button" data-file-markdown-preview="1">Preview</button>`:""}<button class="button primary" data-file-save="1">Save</button><button class="button" data-file-rename="1">Rename</button><button class="button" data-file-download="1">Download</button><button class="button danger" data-file-delete="1">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
     <div data-file-status></div>
     <div class="detail-grid file-meta">${kv("Path", content.path)}${kv("Size", formatBytes(content.size))}${kv("Modified", fmtTime(content.mod_time))}${kv("ETag", content.etag)}</div>
-    <textarea class="file-editor" data-file-editor data-workspace-id="${esc(content.workspace_id)}" data-root-id="${esc(content.root_id)}" data-path="${esc(content.path)}" data-etag="${esc(content.etag)}" spellcheck="false">${esc(content.content)}</textarea>`;
+    <textarea class="file-editor" data-file-editor data-workspace-id="${esc(content.workspace_id)}" data-root-id="${esc(content.root_id)}" data-path="${esc(content.path)}" data-etag="${esc(content.etag)}" data-language="${esc(content.language || "text")}" spellcheck="false">${esc(content.content)}</textarea>
+    ${markdown?`<article class="markdown-preview hidden" data-markdown-preview></article>`:""}`;
+}
+
+function imageFilePreview(filePath, context) {
+  const entry = context.entry || {};
+  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">image</span><button class="button" data-file-download-path="${esc(filePath)}">Download</button><button class="button" data-file-entry-rename data-entry-path="${esc(filePath)}" data-entry-type="file">Rename</button><button class="button danger" data-file-entry-delete data-entry-path="${esc(filePath)}" data-entry-type="file">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
+    <div data-file-status><div class="notice">正在加载图片预览…</div></div>
+    <div class="detail-grid file-meta">${kv("Path", filePath)}${kv("Size", formatBytes(entry.size))}${kv("Modified", fmtTime(entry.mod_time))}</div>
+    <div class="image-preview-stage"><img class="file-preview-image hidden" data-file-image-preview alt="${esc(filePath.split("/").pop())}"></div>`;
+}
+
+function unavailableFilePreview(filePath, error, context) {
+  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><button class="button" data-file-download-path="${esc(filePath)}">Download</button><button class="button" data-file-entry-rename data-entry-path="${esc(filePath)}" data-entry-type="file">Rename</button><button class="button danger" data-file-entry-delete data-entry-path="${esc(filePath)}" data-entry-type="file">Delete</button></div></div>
+    <div class="error">${esc(error)}</div><p class="muted">该文件不能作为文本或受支持图片预览，可以直接下载。</p>`;
+}
+
+function isPreviewableImage(path) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(String(path || ""));
 }
 
 function fileBrowserQuery({workspaceID, rootID, path}) {
@@ -242,8 +290,8 @@ function joinFilePath(base, name) {
   return base ? `${base}/${name}` : name;
 }
 
-function fileDownloadURL({workspaceID, rootID, path}) {
-  return `${API}/file-browser/files/download?${fileBrowserQuery({workspaceID, rootID, path})}`;
+function filePreviewPath({workspaceID, rootID, path}) {
+  return `/file-browser/files/preview?${fileBrowserQuery({workspaceID, rootID, path})}`;
 }
 
 function fileBrowserURL({workspaceID, rootID, path, file}) {
@@ -272,6 +320,166 @@ function formatBytes(value) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KiB`;
   return `${(n/1024/1024).toFixed(1)} MiB`;
+}
+
+async function loadImagePreview(context) {
+  const image = document.querySelector("[data-file-image-preview]");
+  if (!image) return;
+  try {
+    const result = await requestBlob(filePreviewPath(context));
+    releaseImageObjectURL();
+    state.imageObjectURL = URL.createObjectURL(result.blob);
+    image.src = state.imageObjectURL;
+    image.classList.remove("hidden");
+    setFileStatus("notice", "图片预览已加载");
+  } catch (error) {
+    setFileStatus("error", `${error.message || "图片预览失败"}。可以尝试下载文件。`);
+  }
+}
+
+async function downloadFile(context) {
+  try {
+    const result = await requestBlob(`/file-browser/files/download?${fileBrowserQuery(context)}`);
+    const objectURL = URL.createObjectURL(result.blob);
+    const link = document.createElement("a");
+    link.href = objectURL;
+    link.download = String(context.path || "download").split("/").pop() || "download";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectURL), 0);
+  } catch (error) {
+    setFileStatus("error", error.message || "下载失败");
+  }
+}
+
+function markdownInline(value) {
+  let text = esc(value);
+  text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(/_([^_]+)_/g, "<em>$1</em>");
+  return text;
+}
+
+function renderMarkdown(value) {
+  const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let inCode = false;
+  let code = [];
+  let inList = false;
+  const closeList = () => {
+    if (!inList) return;
+    out.push("</ul>");
+    inList = false;
+  };
+  for (const line of lines) {
+    if (/^```/.test(line)) {
+      closeList();
+      if (inCode) {
+        out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+        code = [];
+      }
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const item = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (item) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${markdownInline(item[1])}</li>`);
+      continue;
+    }
+    closeList();
+    if (!line.trim()) {
+      out.push("");
+    } else if (/^>\s?/.test(line)) {
+      out.push(`<blockquote>${markdownInline(line.replace(/^>\s?/, ""))}</blockquote>`);
+    } else {
+      out.push(`<p>${markdownInline(line)}</p>`);
+    }
+  }
+  closeList();
+  if (inCode) out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+  return out.join("\n");
+}
+
+function toggleMarkdownPreview() {
+  const editor = document.querySelector("[data-file-editor]");
+  const preview = document.querySelector("[data-markdown-preview]");
+  const button = document.querySelector("[data-file-markdown-preview]");
+  if (!editor || !preview || !button) return;
+  const opening = preview.classList.contains("hidden");
+  if (opening) {
+    preview.innerHTML = renderMarkdown(editor.value);
+    preview.classList.remove("hidden");
+    editor.classList.add("hidden");
+    button.textContent = "Edit";
+  } else {
+    preview.classList.add("hidden");
+    editor.classList.remove("hidden");
+    button.textContent = "Preview";
+  }
+}
+
+function lineDiff(serverText, localText) {
+  const server = String(serverText || "").split("\n");
+  const local = String(localText || "").split("\n");
+  const max = Math.max(server.length, local.length);
+  const serverLines = [];
+  const localLines = [];
+  for (let i = 0; i < max; i++) {
+    const changed = server[i] !== local[i];
+    const cls = changed ? " diff-line-changed" : "";
+    serverLines.push(`<span class="diff-line${cls}">${esc(server[i] ?? "")}</span>`);
+    localLines.push(`<span class="diff-line${cls}">${esc(local[i] ?? "")}</span>`);
+  }
+  return `<div class="diff-grid"><section class="diff-pane"><h3>Server</h3><pre>${serverLines.join("\n")}</pre></section><section class="diff-pane"><h3>Your changes</h3><pre>${localLines.join("\n")}</pre></section></div>`;
+}
+
+function showFileConflict(serverContent) {
+  const editor = document.querySelector("[data-file-editor]");
+  const target = document.querySelector("[data-file-status]");
+  if (!editor || !target) return;
+  state.fileConflict = serverContent;
+  target.innerHTML = `<div class="conflict-panel"><div class="error">文件已被外部修改。请选择重新加载、覆盖服务器版本或查看差异。</div><div class="actions"><button class="button" data-file-conflict-reload>Reload server</button><button class="button danger" data-file-conflict-overwrite>Overwrite</button><button class="button" data-file-conflict-diff>Show diff</button></div><div class="hidden" data-file-conflict-diff-view></div></div>`;
+}
+
+function reloadConflictFile() {
+  const editor = document.querySelector("[data-file-editor]");
+  const server = state.fileConflict;
+  if (!editor || !server) return;
+  if (!confirm("重新加载会丢弃当前未保存修改，确定继续？")) return;
+  editor.value = server.content;
+  editor.dataset.etag = server.etag;
+  setFileDirty(false);
+  state.fileConflict = null;
+  setFileStatus("notice", "已加载服务器最新版本");
+  const preview = document.querySelector("[data-markdown-preview]");
+  if (preview && !preview.classList.contains("hidden")) preview.innerHTML = renderMarkdown(editor.value);
+}
+
+function showConflictDiff() {
+  const editor = document.querySelector("[data-file-editor]");
+  const server = state.fileConflict;
+  const target = document.querySelector("[data-file-conflict-diff-view]");
+  if (!editor || !server || !target) return;
+  target.innerHTML = lineDiff(server.content, editor.value);
+  target.classList.remove("hidden");
 }
 
 function setFileStatus(kind, message) {
@@ -420,10 +628,11 @@ async function renameCurrentFile() {
   if (editor) return renameFileEntry(editor.dataset.path, "file");
 }
 
-async function saveCurrentFile() {
+async function saveCurrentFile(options={}) {
   const editor = document.querySelector("[data-file-editor]");
   if (!editor) return;
-  setFileStatus("notice", "正在保存…");
+  const overwrite = Boolean(options.overwrite);
+  setFileStatus("notice", overwrite ? "正在覆盖服务器版本…" : "正在保存…");
   try {
     const result = await request("/file-browser/files/content", {
       method: "PUT",
@@ -434,23 +643,35 @@ async function saveCurrentFile() {
         content: editor.value,
         etag: editor.dataset.etag,
         create: false,
-        overwrite: false
+        overwrite
       })
     });
     if (result.approval?.id) {
-      state.notice = `保存等待审批：${result.approval.summary || result.approval.id}`;
+      state.notice = `${overwrite ? "覆盖保存" : "保存"}等待审批：${result.approval.summary || result.approval.id}`;
       return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
     }
-    state.notice = "文件已保存";
+    state.notice = overwrite ? "文件已覆盖保存" : "文件已保存";
+    state.fileConflict = null;
     const ctx = currentFileContext();
     return navigate(fileBrowserURL(ctx), {force:true});
   } catch (error) {
-    if (error.code === "file_changed") {
-      setFileStatus("error", "文件已被外部修改。请复制当前改动后点击 Reload，再重新合并保存。");
+    if (error.code === "file_changed" && !overwrite) {
+      try {
+        const serverContent = await request(`/file-browser/files/content?${fileBrowserQuery({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path})}`);
+        showFileConflict(serverContent);
+      } catch (reloadError) {
+        setFileStatus("error", `文件已被外部修改，且无法读取服务器最新版本：${reloadError.message || "读取失败"}`);
+      }
       return;
     }
     setFileStatus("error", error.message || "保存失败");
   }
+}
+
+function overwriteCurrentFile() {
+  if (!state.fileConflict) return;
+  if (!confirm("覆盖会用当前编辑内容替换服务器最新版本，并可能触发审批。确定继续？")) return;
+  return saveCurrentFile({overwrite:true});
 }
 
 async function renderDeployments() {
@@ -491,10 +712,15 @@ document.addEventListener("click", async event => {
   if(event.target.closest("[data-file-new-file]")) return createFileInCurrentDirectory();
   if(event.target.closest("[data-file-new-folder]")) return createFolderInCurrentDirectory();
   if(event.target.closest("[data-file-upload]")){document.querySelector("[data-file-upload-input]")?.click(); return;}
+  if(event.target.closest("[data-file-markdown-preview]")) return toggleMarkdownPreview();
   if(event.target.closest("[data-file-save]")) return saveCurrentFile();
   if(event.target.closest("[data-file-rename]")) return renameCurrentFile();
-  if(event.target.closest("[data-file-download]")){const editor=document.querySelector("[data-file-editor]"); if(editor) window.location.href=fileDownloadURL({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path}); return;}
+  if(event.target.closest("[data-file-download]")){const editor=document.querySelector("[data-file-editor]"); if(editor) return downloadFile({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path}); return;}
+  const fileDownload=event.target.closest("[data-file-download-path]");if(fileDownload){const ctx=currentFileContext();return downloadFile({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:fileDownload.dataset.fileDownloadPath})}
   if(event.target.closest("[data-file-delete]")) return deleteCurrentFile();
+  if(event.target.closest("[data-file-conflict-reload]")) return reloadConflictFile();
+  if(event.target.closest("[data-file-conflict-overwrite]")) return overwriteCurrentFile();
+  if(event.target.closest("[data-file-conflict-diff]")) return showConflictDiff();
   if(event.target.closest("[data-file-reload]")) return reloadFiles();
   if(event.target.closest("[data-file-refresh]")) return reloadFiles("当前文件有未保存修改。刷新目录会丢弃这些修改，确定继续？");
   if(action==="cancel-task"&&confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`,{method:"POST"});
@@ -502,7 +728,11 @@ document.addEventListener("click", async event => {
   const deploy=event.target.closest("[data-deploy-action]");if(deploy){const act=deploy.dataset.deployAction;if(!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`))return;const encoded=`/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;return mutate(act==="delete"?encoded:`${encoded}/${act}`,{method:act==="delete"?"DELETE":"POST",body:act==="delete"?JSON.stringify({confirmation:"delete"}):undefined})}
 });
 document.addEventListener("input", event => {
-  if (event.target.closest("[data-file-editor]")) setFileDirty(true);
+  if (event.target.closest("[data-file-editor]")) {
+    setFileDirty(true);
+    const preview = document.querySelector("[data-markdown-preview]");
+    if (preview && !preview.classList.contains("hidden")) preview.innerHTML = renderMarkdown(event.target.value);
+  }
 });
 document.addEventListener("change", event => {
   const uploadInput = event.target.closest("[data-file-upload-input]");

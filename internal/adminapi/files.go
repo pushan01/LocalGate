@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 
@@ -235,6 +236,33 @@ func (a *API) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, file.AbsPath)
 }
 
+func (a *API) handleFilePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+		return
+	}
+	svc, ok := a.fileBrowserService(w)
+	if !ok {
+		return
+	}
+	file, err := svc.PreviewImage(r.Context(), a.fileBrowserPathRequest(r))
+	if err != nil {
+		a.writeFileBrowserError(w, err)
+		return
+	}
+	f, err := os.Open(file.AbsPath)
+	if err != nil {
+		a.writeFileBrowserError(w, err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", file.ContentType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": file.Name}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, file.Name, file.ModTime, f)
+}
+
 func (a *API) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
@@ -389,6 +417,8 @@ func (a *API) writeFileBrowserError(w http.ResponseWriter, err error) {
 		server.WriteError(w, http.StatusRequestEntityTooLarge, "file_too_large", err.Error(), nil)
 	case errors.Is(err, filebrowser.ErrBinaryFile):
 		server.WriteError(w, http.StatusUnsupportedMediaType, "binary_file", "binary files cannot be opened as text", nil)
+	case errors.Is(err, filebrowser.ErrUnsupportedPreview):
+		server.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_preview", "file type cannot be previewed", nil)
 	case errors.Is(err, filebrowser.ErrReadOnly):
 		server.WriteError(w, http.StatusForbidden, "file_browser_read_only", "file browser is read-only", nil)
 	case errors.Is(err, filebrowser.ErrApprovalRequired):

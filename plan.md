@@ -1,8 +1,10 @@
 # Plan
 
-## 下一项：CH-FB-002 预览与冲突处理
+## CH-FB-002：预览与冲突处理
 
-- **状态**：待开始
+- **状态**：已完成
+- **开始日期**：2026-07-29
+- **完成日期**：2026-07-29
 - **目标**：让 Files 页面可以安全预览 Markdown 和图片，并在 ETag 冲突时提供明确的 Reload、Overwrite 和 Diff 处理路径。
 - **非目标**：本轮不做搜索、Monaco、多标签页、Git 集成或终端集成。
 - **涉及范围**：`internal/filebrowser`、`internal/adminapi/files.go`、`web/admin/dist/app.js`、`web/admin/dist/styles.css`、相关测试和文件浏览器文档。
@@ -15,6 +17,18 @@
   - Overwrite 请求继续进入配置要求的审批任务，并保留审计记录。
   - 预览切换和冲突操作遵守现有未保存内容保护。
 - **验证方式**：`node --check web/admin/dist/app.js`、文件浏览器与 Admin API 定向测试、`git diff --check`、`go test ./...`。
+- **实际实现**：
+  - 新增受限图片预览 API，只允许内容嗅探确认的 PNG、JPEG、GIF 和 WebP，并继续执行文件大小、workspace sandbox、exclude 和 symlink 校验。
+  - Admin 前端使用带 Bearer Token 的 Blob 请求加载图片和下载文件，不依赖无法附加鉴权头的直接 `<img src>` 或地址跳转。
+  - Markdown 预览使用内置受控渲染器，支持标题、列表、引用、代码块和基础强调；原始 HTML 全部转义。
+  - ETag 冲突时读取服务器最新内容，保留本地编辑值并提供 Reload、显式 Overwrite 和并排逐行 Diff。
+  - Overwrite 继续使用原有 `file_browser.write` 审批任务和成功审计，并增加对应审批流测试。
+- **验证结果**：
+  - `node --check web/admin/dist/app.js`：通过。
+  - `go test ./internal/filebrowser ./internal/adminapi ./web/admin`：通过。
+  - `git diff --check`：通过。
+  - `go test ./...`：通过。
+- **实际规模**：532 行有效 diff（490 行新增、42 行删除，包含计划与专项文档）。
 
 后续顺序：`CH-ADMIN-003` 前端构建链与 Monaco 决策 → `CH-FB-003` 多标签状态 → `CH-FB-004` 终端与任务联动 → `CH-FB-005` 高级工作区能力。
 

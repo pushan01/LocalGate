@@ -378,6 +378,36 @@ func TestDownloadFileRejectsDirectoryEscapeAndSymlink(t *testing.T) {
 	}
 }
 
+func TestPreviewImageAllowsSupportedImagesAndEnforcesLimits(t *testing.T) {
+	svc, root := testService(t)
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if err := os.WriteFile(filepath.Join(root, "image.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "image.png"})
+	if err != nil {
+		t.Fatalf("preview image: %v", err)
+	}
+	if preview.ContentType != "image/png" || preview.Name != "image.png" || preview.Size != int64(len(png)) {
+		t.Fatalf("unexpected preview: %#v", preview)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt"}); !errors.Is(err, ErrUnsupportedPreview) {
+		t.Fatalf("expected unsupported preview, got %v", err)
+	}
+
+	large := append(append([]byte{}, png...), bytes.Repeat([]byte{0}, 64)...)
+	if err := os.WriteFile(filepath.Join(root, "large.png"), large, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "large.png"}); !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("expected file too large, got %v", err)
+	}
+}
+
 func TestUploadCreatesBinaryFileAndRejectsExistingOrLarge(t *testing.T) {
 	svc, root := testService(t)
 	res, err := svc.Upload(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "image.bin", Content: []byte{0, 1, 2}, Create: true})

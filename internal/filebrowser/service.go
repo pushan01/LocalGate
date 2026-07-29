@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,20 +22,21 @@ import (
 )
 
 var (
-	ErrDisabled          = errors.New("file browser is disabled")
-	ErrWorkspaceNotFound = errors.New("workspace not found")
-	ErrRootNotFound      = errors.New("workspace root not found")
-	ErrPathNotAllowed    = errors.New("path not allowed")
-	ErrPathExcluded      = errors.New("path excluded")
-	ErrPathIsDirectory   = errors.New("path is directory")
-	ErrNotDirectory      = errors.New("path is not a directory")
-	ErrFileTooLarge      = errors.New("file too large")
-	ErrBinaryFile        = errors.New("binary file")
-	ErrFileNotFound      = errors.New("file not found")
-	ErrReadOnly          = errors.New("file browser is read-only")
-	ErrFileChanged       = errors.New("file changed")
-	ErrFileExists        = errors.New("file already exists")
-	ErrApprovalRequired  = errors.New("approval required")
+	ErrDisabled           = errors.New("file browser is disabled")
+	ErrWorkspaceNotFound  = errors.New("workspace not found")
+	ErrRootNotFound       = errors.New("workspace root not found")
+	ErrPathNotAllowed     = errors.New("path not allowed")
+	ErrPathExcluded       = errors.New("path excluded")
+	ErrPathIsDirectory    = errors.New("path is directory")
+	ErrNotDirectory       = errors.New("path is not a directory")
+	ErrFileTooLarge       = errors.New("file too large")
+	ErrBinaryFile         = errors.New("binary file")
+	ErrFileNotFound       = errors.New("file not found")
+	ErrReadOnly           = errors.New("file browser is read-only")
+	ErrFileChanged        = errors.New("file changed")
+	ErrFileExists         = errors.New("file already exists")
+	ErrApprovalRequired   = errors.New("approval required")
+	ErrUnsupportedPreview = errors.New("unsupported preview")
 )
 
 type Service struct {
@@ -210,6 +212,36 @@ func (s *Service) DownloadFile(ctx context.Context, req PathRequest) (DownloadFi
 	default:
 	}
 	return DownloadFile{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), AbsPath: logical, Name: filepath.Base(logical), Size: info.Size(), ModTime: info.ModTime().UTC()}, nil
+}
+
+func (s *Service) PreviewImage(ctx context.Context, req PathRequest) (PreviewFile, error) {
+	file, err := s.DownloadFile(ctx, req)
+	if err != nil {
+		return PreviewFile{}, err
+	}
+	if file.Size > s.cfg.MaxFileBytes {
+		return PreviewFile{}, fmt.Errorf("%w: %d > %d", ErrFileTooLarge, file.Size, s.cfg.MaxFileBytes)
+	}
+	f, err := os.Open(file.AbsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return PreviewFile{}, fmt.Errorf("%w: permission denied", ErrPathNotAllowed)
+		}
+		return PreviewFile{}, err
+	}
+	defer f.Close()
+	header := make([]byte, 512)
+	n, err := f.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return PreviewFile{}, err
+	}
+	contentType := http.DetectContentType(header[:n])
+	switch contentType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return PreviewFile{DownloadFile: file, ContentType: contentType}, nil
+	default:
+		return PreviewFile{}, fmt.Errorf("%w: %s", ErrUnsupportedPreview, contentType)
+	}
 }
 
 func (s *Service) SaveContent(ctx context.Context, req SaveContentRequest) (SaveContentResult, error) {

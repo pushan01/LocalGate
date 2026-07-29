@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,6 +329,52 @@ func TestFileBrowserDownload(t *testing.T) {
 	}
 }
 
+func TestFileBrowserImagePreview(t *testing.T) {
+	root := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if err := os.WriteFile(filepath.Join(root, "image.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = t.TempDir()
+	cfg.Admin.BaseURL = "https://admin.test"
+	cfg.Admin.Approval.Enabled = false
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	application, err := app.New(cfg)
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	mux := http.NewServeMux()
+	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?workspace_id=ws&root_id=0&path=image.png", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("unexpected content type %q", got)
+	}
+	if !strings.HasPrefix(w.Header().Get("Content-Disposition"), "inline") {
+		t.Fatalf("unexpected content disposition %q", w.Header().Get("Content-Disposition"))
+	}
+	if !bytes.Equal(w.Body.Bytes(), png) {
+		t.Fatalf("unexpected preview body %v", w.Body.Bytes())
+	}
+
+	unsupportedReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?workspace_id=ws&root_id=0&path=note.txt", nil)
+	unsupportedW := httptest.NewRecorder()
+	mux.ServeHTTP(unsupportedW, unsupportedReq)
+	if unsupportedW.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported preview expected 415, got %d body=%s", unsupportedW.Code, unsupportedW.Body.String())
+	}
+}
+
 func TestFileBrowserUpload(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Default()
@@ -458,6 +505,48 @@ func TestFileBrowserSaveApprovalFlow(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].Tool != "file_browser.write" {
 		t.Fatalf("expected file browser write audit, got %#v", records)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("server changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overwriteBody, err := json.Marshal(saveFileContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "forced overwrite", Overwrite: true})
+	if err != nil {
+		t.Fatalf("marshal overwrite request: %v", err)
+	}
+	overwriteReq := httptest.NewRequest(http.MethodPut, "https://admin.test/api/admin/v1/file-browser/files/content", bytes.NewReader(overwriteBody))
+	overwriteReq.Header.Set("Content-Type", "application/json")
+	overwriteReq.Header.Set("Origin", "https://admin.test")
+	overwriteW := httptest.NewRecorder()
+	mux.ServeHTTP(overwriteW, overwriteReq)
+	if overwriteW.Code != http.StatusAccepted {
+		t.Fatalf("overwrite expected 202, got %d body=%s", overwriteW.Code, overwriteW.Body.String())
+	}
+	var overwriteSubmit struct {
+		TaskID   string `json:"task_id"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(overwriteW.Body.Bytes(), &overwriteSubmit); err != nil {
+		t.Fatalf("decode overwrite submission: %v", err)
+	}
+	if overwriteSubmit.TaskID == "" || overwriteSubmit.Approval.ID == "" {
+		t.Fatalf("unexpected overwrite submission: %#v", overwriteSubmit)
+	}
+	if _, err := application.ApproveApproval(overwriteSubmit.Approval.ID, approval.Actor{ID: "tester", AuthMethod: "test"}); err != nil {
+		t.Fatalf("approve overwrite: %v", err)
+	}
+	waitForTaskStatus(t, application, overwriteSubmit.TaskID, core.StatusSucceeded)
+	if got, err := os.ReadFile(filepath.Join(root, "note.txt")); err != nil || string(got) != "forced overwrite" {
+		t.Fatalf("unexpected overwrite content: %q err=%v", got, err)
+	}
+	overwriteRecords, err := application.Approvals.QueryAudit(map[string]string{"task_id": overwriteSubmit.TaskID, "action": "file_browser_write_succeeded"}, 10, 0)
+	if err != nil {
+		t.Fatalf("query overwrite audit: %v", err)
+	}
+	if len(overwriteRecords) != 1 || overwriteRecords[0].Tool != "file_browser.write" {
+		t.Fatalf("expected overwrite audit, got %#v", overwriteRecords)
 	}
 }
 

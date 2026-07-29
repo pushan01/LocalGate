@@ -157,7 +157,7 @@ mux.HandleFunc(Prefix+"/file-browser/files/mkdir", a.wrap(a.handleFileMkdir))
 mux.HandleFunc(Prefix+"/file-browser/files/rename", a.wrap(a.handleFileRename))
 mux.HandleFunc(Prefix+"/file-browser/files/upload", a.wrap(a.handleFileUpload))
 mux.HandleFunc(Prefix+"/file-browser/files/download", a.wrap(a.handleFileDownload))
-mux.HandleFunc(Prefix+"/file-browser/files/search", a.wrap(a.handleFileSearch))
+mux.HandleFunc(Prefix+"/file-browser/files/preview", a.wrap(a.handleFilePreview))
 ```
 
 接口草案：
@@ -230,6 +230,10 @@ mux.HandleFunc(Prefix+"/file-browser/files/search", a.wrap(a.handleFileSearch))
 ### `GET /api/admin/v1/file-browser/files/download`
 
 下载文件。只能下载普通文件，拒绝目录、符号链接和特殊文件。
+
+### `GET /api/admin/v1/file-browser/files/preview`
+
+以内联响应预览受支持的图片。当前只接受经内容嗅探确认的 PNG、JPEG、GIF 和 WebP，继续遵守 workspace sandbox、隐藏和排除路径、symlink 以及 `file_browser.max_file_bytes` 限制。SVG 和其他二进制格式不进入内联预览，前端降级为下载。
 
 ## 配置
 
@@ -394,8 +398,9 @@ Status: basic editing experience partially implemented; advanced editor integrat
 - [x] 支持上传 / 下载 UI。
 - [x] 支持文件和目录的列表级重命名、删除入口。
 - [x] 管理侧栏支持折叠，减少对编辑区横向空间的占用。
-- [ ] 支持 Markdown / 图片预览。
-- [ ] 支持 ETag 冲突后的 Reload / Overwrite / Diff 选择界面。
+- [x] 支持安全的 Markdown 子集预览；原始 HTML 始终转义，不执行脚本和内联 HTML。
+- [x] 支持 PNG、JPEG、GIF 和 WebP 图片预览；使用带管理鉴权的 Blob 请求，失败时降级下载。
+- [x] 支持 ETag 冲突后的 Reload / Overwrite / 并排 Diff 选择界面。
 - [ ] 明确前端依赖管理和构建产物策略后接入 Monaco Editor。
 - [ ] 支持多标签页和每个标签独立 dirty 状态。
 - [ ] 支持通用 Diff 视图。
@@ -415,14 +420,14 @@ Status: basic editing experience partially implemented; advanced editor integrat
 
 ## 推荐执行顺序
 
-### CH-FB-002：预览与冲突处理
+### CH-FB-002：预览与冲突处理（已完成）
 
 - Markdown 安全预览。
 - 图片预览和下载降级。
 - ETag 冲突时提供 Reload、显式 Overwrite 和 Diff 入口。
 - 保持所有覆盖写入继续经过审批和审计策略。
 
-这是下一项，原因是它直接改善当前 textarea 编辑器的可用性，同时不依赖 Monaco 或新的前端构建链。
+实现结果：Markdown 预览只渲染受控结构并转义原始 HTML；图片通过受限预览 API 和带鉴权 Blob 加载；ETag 冲突保留本地编辑内容并提供 Reload、Overwrite 和并排 Diff。显式覆盖继续走既有审批任务和审计记录。
 
 ### CH-ADMIN-003：前端构建链与 Monaco 决策
 
@@ -430,6 +435,8 @@ Status: basic editing experience partially implemented; advanced editor integrat
 - 明确构建产物是否提交仓库，以及 Go embed 如何消费产物。
 - 评估 Monaco 体积、Web Worker、CSP 和离线部署影响。
 - 完成最小构建链后再接入 Monaco，避免直接手工 vendoring 大型依赖。
+
+这是下一项。先确定依赖和构建产物策略，再决定是否引入 Monaco，避免继续扩大当前手写 `dist/app.js` 的维护成本。
 
 ### CH-FB-003：多标签编辑状态
 
