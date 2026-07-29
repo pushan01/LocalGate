@@ -1,5 +1,23 @@
 # Plan
 
+## 下一项：CH-FB-002 文件名搜索与快速打开
+
+- **状态**：待开始
+- **目标**：让用户在大型 workspace 中按文件名快速定位并打开文件，不需要逐层展开目录。
+- **非目标**：本轮不做全文搜索、Git 搜索、Monaco、多标签页或终端集成。
+- **涉及范围**：`internal/filebrowser`、`internal/adminapi/files.go`、`web/admin/dist/app.js`、`web/admin/dist/styles.css`、相关测试和文件浏览器文档。
+- **依赖与风险**：搜索必须复用隐藏文件、exclude、workspace sandbox 和 symlink 安全边界；结果数量必须有上限，避免大 workspace 中的无界遍历和响应。
+- **预计规模**：约 350–650 行有效 diff。
+- **验收条件**：
+  - 支持按文件名片段搜索当前 workspace root。
+  - 搜索忽略大小写，过滤隐藏和排除目录，并拒绝路径逃逸。
+  - API 使用有界 `limit`，返回相对路径、类型、大小和修改时间。
+  - Files 页面可输入关键词、查看结果并打开文件或进入目录。
+  - 搜索和结果导航遵守现有未保存内容保护。
+- **验证方式**：`node --check web/admin/dist/app.js`、文件浏览器与 Admin API 定向测试、`git diff --check`、`go test ./...`。
+
+后续顺序：`CH-FB-003` 预览与冲突处理 → `CH-ADMIN-003` 前端构建链与 Monaco 决策 → `CH-FB-004` 多标签状态 → `CH-FB-005` 终端与任务联动。
+
 ## CH-ADMIN-002：可折叠管理侧栏
 
 - **状态**：已完成

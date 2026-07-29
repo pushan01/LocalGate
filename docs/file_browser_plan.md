@@ -27,6 +27,17 @@ code-server 可以作为后续可选的 dynamic deployment 模板存在，但不
 - 首版不把 code-server 作为默认文件编辑后端。
 - 首版不支持跨 workspace 的任意绝对路径访问。
 
+## 当前状态
+
+截至 2026-07-29：
+
+- Phase 1 只读浏览已完成。
+- Phase 2 安全写入、审批与审计已完成。
+- Files 页面已经具备基础文本编辑、语言元数据、上传、下载、创建、重命名、删除、ETag 冲突提示和未保存导航保护。
+- 管理侧栏可折叠，桌面端可为文件工作区释放更多横向空间。
+- 当前前端仍是无 Node 构建链的原生 JavaScript 和嵌入式静态资源；引入 Monaco 前需要先明确依赖管理、构建和产物提交方式。
+- 文件名搜索、Markdown / 图片预览、多标签页、Diff 合并、终端面板和 Git 联动尚未完成。
+
 ## 用户体验
 
 Admin Console 新增 Files 页面：
@@ -377,12 +388,20 @@ Status: save-file backend, mkdir backend, rename/move backend, delete backend, d
 
 ### Phase 3: 编辑体验
 
-- 接入 Monaco Editor。
-- 支持多标签页和 dirty 状态。
-- 支持语言识别。
-- 支持 Markdown / 图片预览。
-- 支持 Diff 视图。
-- 支持上传 / 下载 UI。
+Status: basic editing experience partially implemented; advanced editor integration remains.
+
+- [x] 支持基础文本编辑和保存。
+- [x] 支持语言识别元数据。
+- [x] 支持 dirty 状态、离开确认和浏览器关闭保护。
+- [x] 支持上传 / 下载 UI。
+- [x] 支持文件和目录的列表级重命名、删除入口。
+- [x] 管理侧栏支持折叠，减少对编辑区横向空间的占用。
+- [ ] 支持基础文件名搜索和快速打开。
+- [ ] 支持 Markdown / 图片预览。
+- [ ] 支持 ETag 冲突后的 Reload / Overwrite / Diff 选择界面。
+- [ ] 明确前端依赖管理和构建产物策略后接入 Monaco Editor。
+- [ ] 支持多标签页和每个标签独立 dirty 状态。
+- [ ] 支持通用 Diff 视图。
 
 ### Phase 4: 终端与任务联动
 
@@ -397,6 +416,50 @@ Status: save-file backend, mkdir backend, rename/move backend, delete backend, d
 - 全文搜索。
 - 可选 code-server dynamic deployment 模板。
 - 可选 LSP / 语言服务研究。
+
+## 推荐执行顺序
+
+### CH-FB-002：文件名搜索与快速打开
+
+- 后端增加受 workspace、root、隐藏文件和 exclude 策略约束的文件名搜索。
+- Admin API 增加有界 `limit` 的搜索接口。
+- Files 页面增加搜索框、结果列表和键盘快速打开。
+- 搜索结果只返回相对路径和必要元数据，不暴露绝对路径。
+
+这是下一项，原因是改动独立、风险低、无需引入前端构建链，同时能明显改善大目录下的使用效率。
+
+### CH-FB-003：预览与冲突处理
+
+- Markdown 安全预览。
+- 图片预览和下载降级。
+- ETag 冲突时提供 Reload、显式 Overwrite 和 Diff 入口。
+- 保持所有覆盖写入继续经过审批和审计策略。
+
+### CH-ADMIN-003：前端构建链与 Monaco 决策
+
+- 明确是否引入 Node、包管理器和 TypeScript。
+- 明确构建产物是否提交仓库，以及 Go embed 如何消费产物。
+- 评估 Monaco 体积、Web Worker、CSP 和离线部署影响。
+- 完成最小构建链后再接入 Monaco，避免直接手工 vendoring 大型依赖。
+
+### CH-FB-004：多标签编辑状态
+
+- 多标签页。
+- 每标签独立内容、ETag、dirty 和冲突状态。
+- 关闭标签、切换 workspace 和浏览器导航时统一保护未保存内容。
+
+### CH-FB-005：终端与任务联动
+
+- 从当前目录创建 Session。
+- 首版轮询终端缓冲，后续再升级 SSE / WebSocket。
+- 在 Files 页面展示相关 Task 和 Approval 状态，并支持审批完成后返回原上下文。
+
+### CH-FB-006：高级工作区能力
+
+- Git status / diff。
+- 全文搜索。
+- 可选 code-server private dynamic deployment 模板。
+- LSP / 语言服务只作为后续研究项，不阻塞轻量工作台交付。
 
 ## 测试计划
 
