@@ -1,6 +1,14 @@
 const API = "/api/admin/v1";
 const app = document.querySelector("#app");
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "" };
+const SIDEBAR_STORAGE_KEY = "localgate_admin_sidebar_collapsed";
+function loadSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", sidebarCollapsed: loadSidebarCollapsed() };
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
@@ -48,16 +56,36 @@ function navigate(path, options={}) {
   return true;
 }
 
+function setSidebarCollapsed(collapsed) {
+  state.sidebarCollapsed = Boolean(collapsed);
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, state.sidebarCollapsed ? "1" : "0");
+  } catch {
+    // The UI still works when browser storage is unavailable.
+  }
+  document.querySelector(".shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  const toggle = document.querySelector('[data-action="toggle-sidebar"]');
+  if (!toggle) return;
+  const label = state.sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏";
+  toggle.setAttribute("aria-label", label);
+  toggle.setAttribute("title", label);
+  toggle.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
+  const icon = toggle.querySelector("[data-sidebar-toggle-icon]");
+  if (icon) icon.textContent = state.sidebarCollapsed ? "›" : "‹";
+}
+
 function layout(title, body, actions="") {
   const path = location.pathname;
   const notice = state.notice;
   state.notice = "";
-  return `<div class="shell"><aside class="sidebar"><div class="brand">LocalGate Admin</div><nav class="nav">
-    <a data-nav="/admin" class="${path==="/admin"||path==="/admin/"?"active":""}">Overview</a>
-    <a data-nav="/admin/history" class="${path.startsWith("/admin/history")?"active":""}">History</a>
-    <a data-nav="/admin/files" class="${path.startsWith("/admin/files")?"active":""}">Files</a>
-    <a data-nav="/admin/deployments" class="${path.startsWith("/admin/deployments")?"active":""}">Deployments</a>
-    <a data-nav="/admin/approvals" class="${path.startsWith("/admin/approvals")?"active":""}">Approvals</a>
+  const collapsed = state.sidebarCollapsed;
+  const toggleLabel = collapsed ? "展开侧边栏" : "折叠侧边栏";
+  return `<div class="shell${collapsed?" sidebar-collapsed":""}"><aside class="sidebar"><div class="sidebar-head"><div class="brand"><span class="brand-mark" aria-hidden="true">LG</span><span class="sidebar-label">LocalGate Admin</span></div><button class="sidebar-toggle" data-action="toggle-sidebar" type="button" aria-label="${toggleLabel}" title="${toggleLabel}" aria-expanded="${String(!collapsed)}"><span data-sidebar-toggle-icon aria-hidden="true">${collapsed?"›":"‹"}</span></button></div><nav class="nav">
+    <a data-nav="/admin" title="Overview" aria-label="Overview" class="${path==="/admin"||path==="/admin/"?"active":""}"><span class="nav-icon" aria-hidden="true">O</span><span class="nav-label">Overview</span></a>
+    <a data-nav="/admin/history" title="History" aria-label="History" class="${path.startsWith("/admin/history")?"active":""}"><span class="nav-icon" aria-hidden="true">H</span><span class="nav-label">History</span></a>
+    <a data-nav="/admin/files" title="Files" aria-label="Files" class="${path.startsWith("/admin/files")?"active":""}"><span class="nav-icon" aria-hidden="true">F</span><span class="nav-label">Files</span></a>
+    <a data-nav="/admin/deployments" title="Deployments" aria-label="Deployments" class="${path.startsWith("/admin/deployments")?"active":""}"><span class="nav-icon" aria-hidden="true">D</span><span class="nav-label">Deployments</span></a>
+    <a data-nav="/admin/approvals" title="Approvals" aria-label="Approvals" class="${path.startsWith("/admin/approvals")?"active":""}"><span class="nav-icon" aria-hidden="true">A</span><span class="nav-label">Approvals</span></a>
   </nav></aside><main class="content"><header class="topbar"><h1>${esc(title)}</h1><div class="actions">${actions}<button class="button" data-action="token">Token</button></div></header>
   ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}${notice ? `<div class="notice">${esc(notice)}</div>` : ""}${body}</main></div>`;
 }
@@ -451,6 +479,7 @@ async function mutate(path, options={}) {state.error="";const result=await reque
 document.addEventListener("click", async event => {
   const nav=event.target.closest("[data-nav]");if(nav){event.preventDefault();return navigate(nav.dataset.nav)}
   const action=event.target.closest("[data-action]")?.dataset.action;
+  if(action==="toggle-sidebar") return setSidebarCollapsed(!state.sidebarCollapsed);
   if(action==="token"){if(!confirmDiscardFileChanges())return;setFileDirty(false);return loginView()}
   if(action==="save-token"){state.token=document.querySelector("#token-input")?.value.trim()||"";sessionStorage.setItem("localgate_admin_token",state.token);return navigate(location.pathname)}
   if(action==="clear-history"){history.replaceState({},"","/admin/history");return render()}

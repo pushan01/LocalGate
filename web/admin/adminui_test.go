@@ -39,6 +39,29 @@ func TestFileBrowserUIIsBundled(t *testing.T) {
 	}
 }
 
+func TestAdminSidebarCanCollapse(t *testing.T) {
+	appData, err := fs.ReadFile(assets, "dist/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	stylesData, err := fs.ReadFile(assets, "dist/styles.css")
+	if err != nil {
+		t.Fatalf("read styles.css: %v", err)
+	}
+	appText := string(appData)
+	for _, expected := range []string{"localgate_admin_sidebar_collapsed", "toggle-sidebar", "setSidebarCollapsed", "sidebar-collapsed", "aria-expanded"} {
+		if !strings.Contains(appText, expected) {
+			t.Fatalf("admin sidebar UI missing %q", expected)
+		}
+	}
+	stylesText := string(stylesData)
+	for _, expected := range []string{".shell.sidebar-collapsed", ".sidebar-toggle", ".nav-icon", "grid-template-columns:72px"} {
+		if !strings.Contains(stylesText, expected) {
+			t.Fatalf("admin sidebar styles missing %q", expected)
+		}
+	}
+}
+
 func TestDeploymentUIIncludesAccessControls(t *testing.T) {
 	data, err := fs.ReadFile(assets, "dist/app.js")
 	if err != nil {
