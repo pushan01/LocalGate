@@ -130,6 +130,8 @@ var FileTerminalState = class {
     this.cursorExpired = false;
     this.truncated = false;
     this.error = "";
+    this.transport = "idle";
+    this.transportWarning = "";
     return this;
   }
   setContext(workspaceID, rootID, path) {
@@ -157,6 +159,8 @@ var FileTerminalState = class {
       this.cursorExpired = false;
       this.truncated = false;
       this.error = "";
+      this.transport = "idle";
+      this.transportWarning = "";
     } else if (approval !== void 0) {
       this.approval = approval;
     }
@@ -172,6 +176,8 @@ var FileTerminalState = class {
     this.cursorExpired = false;
     this.truncated = false;
     this.error = "";
+    this.transport = "idle";
+    this.transportWarning = "";
     return this;
   }
   applyTask(payload) {
@@ -219,6 +225,66 @@ var FileTerminalState = class {
     return Boolean(this.taskID && !["succeeded", "failed", "canceled", "timeout"].includes(this.task?.status));
   }
 };
+
+// src/file-terminal-stream.js
+var SSEParser = class {
+  constructor(onEvent) {
+    this.onEvent = onEvent;
+    this.buffer = "";
+  }
+  push(chunk) {
+    this.buffer += chunk || "";
+    while (true) {
+      const match = this.buffer.match(/(?:\r\n|\r|\n){2}/);
+      if (!match || match.index === void 0) return;
+      const block = this.buffer.slice(0, match.index);
+      this.buffer = this.buffer.slice(match.index + match[0].length);
+      const event = parseSSEBlock(block);
+      if (event) this.onEvent(event);
+    }
+  }
+};
+function parseSSEBlock(block) {
+  let event = "message";
+  let id = "";
+  const data = [];
+  for (const line of String(block || "").split(/\r\n|\r|\n/)) {
+    if (!line || line.startsWith(":")) continue;
+    const colon = line.indexOf(":");
+    const field = colon < 0 ? line : line.slice(0, colon);
+    let value = colon < 0 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value || "message";
+    else if (field === "id") id = value;
+    else if (field === "data") data.push(value);
+  }
+  if (!data.length) return null;
+  return { event, id, data: data.join("\n") };
+}
+async function consumeSSE(response, onEvent) {
+  if (!response?.body?.getReader) throw new Error("Streaming response body is unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SSEParser(onEvent);
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.push(decoder.decode());
+    completed = true;
+  } finally {
+    if (!completed && typeof reader.cancel === "function") {
+      try {
+        await reader.cancel();
+      } catch {
+      }
+    }
+    if (typeof reader.releaseLock === "function") reader.releaseLock();
+  }
+}
 
 // src/file-git.js
 function fileGitContextKey(workspaceID, rootID, path) {
@@ -296,7 +362,7 @@ function loadSidebarCollapsed() {
     return false;
   }
 }
-var state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), fileGit: new FileGitState(), terminalPollTimer: 0, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
+var state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), fileGit: new FileGitState(), terminalPollTimer: 0, terminalStreamAbort: null, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
 var esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[c]);
 var short = (value, n = 18) => value ? value.length > n ? `${value.slice(0, n)}…` : value : "—";
 var fmtTime = (value) => value ? new Date(value).toLocaleString() : "—";
@@ -353,7 +419,7 @@ function syncActiveFileTabFromDOM() {
 }
 function resetFileTabs() {
   releaseImageObjectURL();
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   state.fileTerminal.reset();
   state.fileTabs.clear();
   state.fileDirty = false;
@@ -363,6 +429,15 @@ function clearTerminalPoll() {
   if (!state.terminalPollTimer) return;
   clearTimeout(state.terminalPollTimer);
   state.terminalPollTimer = 0;
+}
+function stopFileTerminalStream() {
+  const controller = state.terminalStreamAbort;
+  state.terminalStreamAbort = null;
+  if (controller) controller.abort();
+}
+function clearFileTerminalUpdates() {
+  clearTerminalPoll();
+  stopFileTerminalStream();
 }
 function fileTabsWithUnsavedChanges() {
   syncActiveFileTabFromDOM();
@@ -436,7 +511,7 @@ async function render() {
   const path = location.pathname.replace(/\/$/, "") || "/admin";
   if (path !== "/admin/files") {
     releaseImageObjectURL();
-    clearTerminalPoll();
+    clearFileTerminalUpdates();
   }
   try {
     if (path === "/admin") return renderOverview();
@@ -559,7 +634,7 @@ async function renderFiles() {
   setFileDirty(Boolean(tab?.dirty));
   state.fileURL = currentURL();
   if (tab?.imageFile) loadImagePreview({ workspaceID, rootID, path: filePath });
-  scheduleFileTerminalPoll();
+  startFileTerminalUpdates();
   if (state.fileGit.open && !state.fileGit.status && !state.fileGit.loading) loadFileGitStatus();
 }
 async function openFileTab({ workspaceID, rootID, dirPath, filePath, entry }) {
@@ -800,7 +875,7 @@ function currentFileContext() {
   };
 }
 async function hydrateFileTerminal({ workspaceID, rootID, path, taskID, sessionID }) {
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   if (!taskID && !sessionID) {
     state.fileTerminal.reset().setContext(workspaceID, rootID, path);
     return;
@@ -841,6 +916,7 @@ function fileTerminalPanel() {
 function fileTerminalWarning() {
   const terminal = state.fileTerminal;
   const messages = [];
+  if (terminal.transport === "poll" && terminal.transportWarning) messages.push(terminal.transportWarning);
   if (terminal.cursorExpired) messages.push(`较早输出已被终端缓冲裁剪，当前从 cursor ${terminal.baseOffset} 继续。`);
   else if (terminal.truncated) messages.push("终端缓冲已达到保留上限，较早输出可能被裁剪。");
   return messages.length ? `<div class="notice">${esc(messages.join(" "))}</div>` : "";
@@ -884,6 +960,76 @@ function scheduleFileTerminalPoll(delay = 800) {
   if (!state.fileTerminal.shouldPoll()) return;
   state.terminalPollTimer = setTimeout(pollFileTerminal, delay);
 }
+function startFileTerminalUpdates(delay = 100) {
+  clearTerminalPoll();
+  const terminal = state.fileTerminal;
+  if (!terminal.shouldPoll()) return;
+  if (!terminal.sessionID || terminal.transport === "poll") {
+    scheduleFileTerminalPoll(delay);
+    return;
+  }
+  startFileTerminalStream();
+}
+async function startFileTerminalStream() {
+  const terminal = state.fileTerminal;
+  if (!terminal.sessionID || !terminal.shouldPoll()) return;
+  stopFileTerminalStream();
+  clearTerminalPoll();
+  const sessionID = terminal.sessionID;
+  const controller = new AbortController();
+  state.terminalStreamAbort = controller;
+  terminal.transport = "stream";
+  terminal.transportWarning = "";
+  refreshFileTerminalPanel();
+  const query = new URLSearchParams({ workspace_id: terminal.workspaceID, cursor: String(terminal.cursor), max_output_items: "200" });
+  const headers = new Headers({ Accept: "text/event-stream" });
+  if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+  try {
+    const response = await fetch(`${API}/file-browser/terminals/${encodeURIComponent(sessionID)}/stream?${query}`, { headers, signal: controller.signal });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.message || `Terminal stream HTTP ${response.status}`);
+    }
+    if (!String(response.headers.get("Content-Type") || "").toLowerCase().includes("text/event-stream")) {
+      throw new Error("Terminal stream returned an unsupported content type");
+    }
+    await consumeSSE(response, (event) => {
+      if (state.fileTerminal.sessionID !== sessionID) return;
+      if (event.event === "error") {
+        let message = event.data || "Terminal stream failed";
+        try {
+          message = JSON.parse(event.data)?.message || message;
+        } catch {
+        }
+        throw new Error(message);
+      }
+      if (event.event !== "terminal") return;
+      const payload = JSON.parse(event.data);
+      state.fileTerminal.applyRead(payload);
+      state.fileTerminal.transport = "stream";
+      state.fileTerminal.transportWarning = "";
+      refreshFileTerminalPanel();
+      syncFileTerminalURL();
+    });
+    if (state.terminalStreamAbort === controller) state.terminalStreamAbort = null;
+    if (state.fileTerminal.sessionID === sessionID && state.fileTerminal.shouldPoll()) {
+      fallbackFileTerminalPolling("实时终端流意外结束，已回退到轮询。");
+    }
+  } catch (error) {
+    if (state.terminalStreamAbort === controller) state.terminalStreamAbort = null;
+    if (controller.signal.aborted || state.fileTerminal.sessionID !== sessionID) return;
+    fallbackFileTerminalPolling(`实时终端流不可用，已回退到轮询：${error.message || "连接失败"}`);
+  }
+}
+function fallbackFileTerminalPolling(message) {
+  stopFileTerminalStream();
+  const terminal = state.fileTerminal;
+  if (!terminal.shouldPoll()) return;
+  terminal.transport = "poll";
+  terminal.transportWarning = message;
+  refreshFileTerminalPanel();
+  scheduleFileTerminalPoll(300);
+}
 async function pollFileTerminal() {
   state.terminalPollTimer = 0;
   if (location.pathname.replace(/\/$/, "") !== "/admin/files") return;
@@ -894,7 +1040,14 @@ async function pollFileTerminal() {
       state.fileTerminal.applyTask(detail);
       syncFileTerminalURL();
     }
-    if (state.fileTerminal.sessionID) await readFileTerminal();
+    if (state.fileTerminal.sessionID) {
+      if (state.fileTerminal.transport !== "poll") {
+        refreshFileTerminalPanel(beforeMode !== state.fileTerminal.mode());
+        startFileTerminalStream();
+        return;
+      }
+      await readFileTerminal();
+    }
   } catch (error) {
     state.fileTerminal.error = error.message || "终端轮询失败";
   }
@@ -957,7 +1110,7 @@ async function startFileTerminal() {
       return navigate(approvalReturnURL(result.approval.id, returnTo), { force: true, preserveFileTabs: true });
     }
     refreshFileTerminalPanel(true);
-    scheduleFileTerminalPoll(100);
+    startFileTerminalUpdates(100);
   } catch (error) {
     state.fileTerminal.error = error.message || "终端启动失败";
     refreshFileTerminalPanel(true);
@@ -970,7 +1123,7 @@ async function sendFileTerminalInput(chars) {
     const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/stdin`, { method: "POST", body: JSON.stringify({ workspace_id: terminal.workspaceID, chars, cursor: terminal.cursor, wait_ms: 100, max_output_items: 200 }) });
     terminal.applyRead(result);
     refreshFileTerminalPanel();
-    scheduleFileTerminalPoll();
+    if (terminal.transport === "poll") scheduleFileTerminalPoll();
   } catch (error) {
     terminal.error = error.message || "发送终端输入失败";
     refreshFileTerminalPanel();
@@ -990,7 +1143,13 @@ async function closeFileTerminal() {
   try {
     const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/close`, { method: "POST", body: JSON.stringify({ workspace_id: terminal.workspaceID }) });
     terminal.session = result.session || terminal.session;
-    clearTerminalPoll();
+    if (terminal.transport === "poll") {
+      try {
+        await readFileTerminal();
+      } catch {
+      }
+      clearTerminalPoll();
+    }
     refreshFileTerminalPanel();
   } catch (error) {
     terminal.error = error.message || "关闭终端失败";
@@ -998,7 +1157,7 @@ async function closeFileTerminal() {
   }
 }
 function resetFileTerminalPanel() {
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   const ctx = currentFileContext();
   state.fileTerminal.reset().setContext(ctx.workspaceID, ctx.rootID, ctx.path);
   const next = fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: ctx.file, terminalTask: "", terminalSession: "", terminalPath: "", preserveTerminal: false });

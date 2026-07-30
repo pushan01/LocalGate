@@ -1,5 +1,6 @@
 import { FileTabStore, fileTabKey } from "./file-tabs.js";
 import { FileTerminalState } from "./file-terminal.js";
+import { consumeSSE } from "./file-terminal-stream.js";
 import { FileGitState, gitEntryHasStagedChanges, gitEntryHasWorktreeChanges } from "./file-git.js";
 
 const API = "/api/admin/v1";
@@ -12,7 +13,7 @@ function loadSidebarCollapsed() {
     return false;
   }
 }
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), fileGit: new FileGitState(), terminalPollTimer: 0, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), fileGit: new FileGitState(), terminalPollTimer: 0, terminalStreamAbort: null, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
@@ -78,7 +79,7 @@ function syncActiveFileTabFromDOM() {
 
 function resetFileTabs() {
   releaseImageObjectURL();
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   state.fileTerminal.reset();
   state.fileTabs.clear();
   state.fileDirty = false;
@@ -89,6 +90,17 @@ function clearTerminalPoll() {
   if (!state.terminalPollTimer) return;
   clearTimeout(state.terminalPollTimer);
   state.terminalPollTimer = 0;
+}
+
+function stopFileTerminalStream() {
+  const controller = state.terminalStreamAbort;
+  state.terminalStreamAbort = null;
+  if (controller) controller.abort();
+}
+
+function clearFileTerminalUpdates() {
+  clearTerminalPoll();
+  stopFileTerminalStream();
 }
 
 function fileTabsWithUnsavedChanges() {
@@ -170,7 +182,7 @@ async function render() {
   const path = location.pathname.replace(/\/$/, "") || "/admin";
   if (path !== "/admin/files") {
     releaseImageObjectURL();
-    clearTerminalPoll();
+    clearFileTerminalUpdates();
   }
   try {
     if (path === "/admin") return renderOverview();
@@ -292,7 +304,7 @@ async function renderFiles() {
   setFileDirty(Boolean(tab?.dirty));
   state.fileURL = currentURL();
   if (tab?.imageFile) loadImagePreview({workspaceID, rootID, path:filePath});
-  scheduleFileTerminalPoll();
+  startFileTerminalUpdates();
   if (state.fileGit.open && !state.fileGit.status && !state.fileGit.loading) loadFileGitStatus();
 }
 
@@ -563,7 +575,7 @@ function currentFileContext() {
 }
 
 async function hydrateFileTerminal({workspaceID, rootID, path, taskID, sessionID}) {
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   if (!taskID && !sessionID) {
     state.fileTerminal.reset().setContext(workspaceID, rootID, path);
     return;
@@ -606,6 +618,7 @@ function fileTerminalPanel() {
 function fileTerminalWarning() {
   const terminal = state.fileTerminal;
   const messages = [];
+  if (terminal.transport === "poll" && terminal.transportWarning) messages.push(terminal.transportWarning);
   if (terminal.cursorExpired) messages.push(`较早输出已被终端缓冲裁剪，当前从 cursor ${terminal.baseOffset} 继续。`);
   else if (terminal.truncated) messages.push("终端缓冲已达到保留上限，较早输出可能被裁剪。");
   return messages.length ? `<div class="notice">${esc(messages.join(" "))}</div>` : "";
@@ -651,6 +664,77 @@ function scheduleFileTerminalPoll(delay=800) {
   state.terminalPollTimer = setTimeout(pollFileTerminal, delay);
 }
 
+function startFileTerminalUpdates(delay=100) {
+  clearTerminalPoll();
+  const terminal = state.fileTerminal;
+  if (!terminal.shouldPoll()) return;
+  if (!terminal.sessionID || terminal.transport === "poll") {
+    scheduleFileTerminalPoll(delay);
+    return;
+  }
+  startFileTerminalStream();
+}
+
+async function startFileTerminalStream() {
+  const terminal = state.fileTerminal;
+  if (!terminal.sessionID || !terminal.shouldPoll()) return;
+  stopFileTerminalStream();
+  clearTerminalPoll();
+  const sessionID = terminal.sessionID;
+  const controller = new AbortController();
+  state.terminalStreamAbort = controller;
+  terminal.transport = "stream";
+  terminal.transportWarning = "";
+  refreshFileTerminalPanel();
+
+  const query = new URLSearchParams({workspace_id:terminal.workspaceID, cursor:String(terminal.cursor), max_output_items:"200"});
+  const headers = new Headers({Accept:"text/event-stream"});
+  if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+  try {
+    const response = await fetch(`${API}/file-browser/terminals/${encodeURIComponent(sessionID)}/stream?${query}`, {headers, signal:controller.signal});
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.message || `Terminal stream HTTP ${response.status}`);
+    }
+    if (!String(response.headers.get("Content-Type") || "").toLowerCase().includes("text/event-stream")) {
+      throw new Error("Terminal stream returned an unsupported content type");
+    }
+    await consumeSSE(response, event => {
+      if (state.fileTerminal.sessionID !== sessionID) return;
+      if (event.event === "error") {
+        let message = event.data || "Terminal stream failed";
+        try { message = JSON.parse(event.data)?.message || message; } catch {}
+        throw new Error(message);
+      }
+      if (event.event !== "terminal") return;
+      const payload = JSON.parse(event.data);
+      state.fileTerminal.applyRead(payload);
+      state.fileTerminal.transport = "stream";
+      state.fileTerminal.transportWarning = "";
+      refreshFileTerminalPanel();
+      syncFileTerminalURL();
+    });
+    if (state.terminalStreamAbort === controller) state.terminalStreamAbort = null;
+    if (state.fileTerminal.sessionID === sessionID && state.fileTerminal.shouldPoll()) {
+      fallbackFileTerminalPolling("实时终端流意外结束，已回退到轮询。");
+    }
+  } catch (error) {
+    if (state.terminalStreamAbort === controller) state.terminalStreamAbort = null;
+    if (controller.signal.aborted || state.fileTerminal.sessionID !== sessionID) return;
+    fallbackFileTerminalPolling(`实时终端流不可用，已回退到轮询：${error.message || "连接失败"}`);
+  }
+}
+
+function fallbackFileTerminalPolling(message) {
+  stopFileTerminalStream();
+  const terminal = state.fileTerminal;
+  if (!terminal.shouldPoll()) return;
+  terminal.transport = "poll";
+  terminal.transportWarning = message;
+  refreshFileTerminalPanel();
+  scheduleFileTerminalPoll(300);
+}
+
 async function pollFileTerminal() {
   state.terminalPollTimer = 0;
   if (location.pathname.replace(/\/$/, "") !== "/admin/files") return;
@@ -661,7 +745,14 @@ async function pollFileTerminal() {
       state.fileTerminal.applyTask(detail);
       syncFileTerminalURL();
     }
-    if (state.fileTerminal.sessionID) await readFileTerminal();
+    if (state.fileTerminal.sessionID) {
+      if (state.fileTerminal.transport !== "poll") {
+        refreshFileTerminalPanel(beforeMode !== state.fileTerminal.mode());
+        startFileTerminalStream();
+        return;
+      }
+      await readFileTerminal();
+    }
   } catch (error) {
     state.fileTerminal.error = error.message || "终端轮询失败";
   }
@@ -729,7 +820,7 @@ async function startFileTerminal() {
       return navigate(approvalReturnURL(result.approval.id, returnTo), {force:true, preserveFileTabs:true});
     }
     refreshFileTerminalPanel(true);
-    scheduleFileTerminalPoll(100);
+    startFileTerminalUpdates(100);
   } catch (error) {
     state.fileTerminal.error = error.message || "终端启动失败";
     refreshFileTerminalPanel(true);
@@ -743,7 +834,7 @@ async function sendFileTerminalInput(chars) {
     const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/stdin`, {method:"POST", body:JSON.stringify({workspace_id:terminal.workspaceID, chars, cursor:terminal.cursor, wait_ms:100, max_output_items:200})});
     terminal.applyRead(result);
     refreshFileTerminalPanel();
-    scheduleFileTerminalPoll();
+    if (terminal.transport === "poll") scheduleFileTerminalPoll();
   } catch (error) {
     terminal.error = error.message || "发送终端输入失败";
     refreshFileTerminalPanel();
@@ -764,7 +855,10 @@ async function closeFileTerminal() {
   try {
     const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/close`, {method:"POST", body:JSON.stringify({workspace_id:terminal.workspaceID})});
     terminal.session = result.session || terminal.session;
-    clearTerminalPoll();
+    if (terminal.transport === "poll") {
+      try { await readFileTerminal(); } catch {}
+      clearTerminalPoll();
+    }
     refreshFileTerminalPanel();
   } catch (error) {
     terminal.error = error.message || "关闭终端失败";
@@ -773,7 +867,7 @@ async function closeFileTerminal() {
 }
 
 function resetFileTerminalPanel() {
-  clearTerminalPoll();
+  clearFileTerminalUpdates();
   const ctx = currentFileContext();
   state.fileTerminal.reset().setContext(ctx.workspaceID, ctx.rootID, ctx.path);
   const next = fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:ctx.file, terminalTask:"", terminalSession:"", terminalPath:"", preserveTerminal:false});

@@ -38,3 +38,12 @@ test("expired cursor replaces stale output with retained buffer", () => {
   assert.equal(state.cursorExpired, true);
   assert.equal(state.truncated, true);
 });
+
+test("new session clears stream fallback state", () => {
+  const state = new FileTerminalState().setContext("ws", "0", "docs");
+  state.transport = "poll";
+  state.transportWarning = "fallback";
+  state.attachSession("session-1");
+  assert.equal(state.transport, "idle");
+  assert.equal(state.transportWarning, "");
+});

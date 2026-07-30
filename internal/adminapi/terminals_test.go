@@ -2,12 +2,14 @@ package adminapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,6 +204,157 @@ func TestFileTerminalRejectsNonDirectoryAndCrossSiteMutation(t *testing.T) {
 	if crossW.Code != http.StatusForbidden {
 		t.Fatalf("cross-site create expected 403, got %d body=%s", crossW.Code, crossW.Body.String())
 	}
+}
+
+func TestFileTerminalStreamPushesOutputAndFinalState(t *testing.T) {
+	root := t.TempDir()
+	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}, false)
+	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	if err := application.Sessions.Start(session.ID); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws&cursor=0", nil).WithContext(ctx)
+	w := newTerminalStreamWriter()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mux.ServeHTTP(w, req)
+	}()
+	w.waitFlush(t)
+	if got := w.bodyString(); !strings.Contains(got, "event: terminal") || !strings.Contains(got, `"status":"running"`) {
+		t.Fatalf("initial stream event missing: %s", got)
+	}
+
+	if err := application.Sessions.AppendOutput(session.ID, "stdout", "streamed"); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	w.waitFlush(t)
+	if got := w.bodyString(); !strings.Contains(got, "streamed") || !strings.Contains(got, "id: 1") {
+		t.Fatalf("output stream event missing: %s", got)
+	}
+	if err := application.Sessions.SetOutputError(session.ID, "stderr", context.DeadlineExceeded); err != nil {
+		t.Fatalf("set output error: %v", err)
+	}
+	w.waitFlush(t)
+	if got := w.bodyString(); !strings.Contains(got, `"output_error":"stderr: context deadline exceeded"`) {
+		t.Fatalf("output error stream event missing: %s", got)
+	}
+
+	if err := application.Sessions.Finish(session.ID, 0, nil); err != nil {
+		t.Fatalf("finish session: %v", err)
+	}
+	w.waitFlush(t)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("terminal stream did not close after final state")
+	}
+	if got := w.bodyString(); !strings.Contains(got, `"status":"exited"`) {
+		t.Fatalf("final stream event missing: %s", got)
+	}
+}
+
+func TestFileTerminalStreamRejectsWorkspaceAndInvalidCursor(t *testing.T) {
+	root := t.TempDir()
+	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}, {ID: "other", Roots: []string{t.TempDir()}}}, false)
+	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+
+	wrongReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=other", nil)
+	wrongW := httptest.NewRecorder()
+	mux.ServeHTTP(wrongW, wrongReq)
+	if wrongW.Code != http.StatusForbidden {
+		t.Fatalf("cross-workspace stream expected 403, got %d body=%s", wrongW.Code, wrongW.Body.String())
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws&cursor=-1", nil)
+	invalidW := httptest.NewRecorder()
+	mux.ServeHTTP(invalidW, invalidReq)
+	if invalidW.Code != http.StatusBadRequest {
+		t.Fatalf("invalid stream cursor expected 400, got %d body=%s", invalidW.Code, invalidW.Body.String())
+	}
+}
+
+func TestFileTerminalStreamRequiresFlusher(t *testing.T) {
+	root := t.TempDir()
+	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}, false)
+	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws", nil)
+	w := &terminalNonFlushingWriter{header: make(http.Header)}
+	mux.ServeHTTP(w, req)
+	if w.status != http.StatusInternalServerError || !strings.Contains(w.body.String(), "streaming is not supported") {
+		t.Fatalf("unsupported flusher expected 500, got %d body=%s", w.status, w.body.String())
+	}
+}
+
+type terminalStreamWriter struct {
+	mu      sync.Mutex
+	header  http.Header
+	status  int
+	body    bytes.Buffer
+	flushes chan struct{}
+}
+
+func newTerminalStreamWriter() *terminalStreamWriter {
+	return &terminalStreamWriter{header: make(http.Header), flushes: make(chan struct{}, 8)}
+}
+
+func (w *terminalStreamWriter) Header() http.Header { return w.header }
+
+func (w *terminalStreamWriter) WriteHeader(status int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *terminalStreamWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(data)
+}
+
+func (w *terminalStreamWriter) Flush() {
+	select {
+	case w.flushes <- struct{}{}:
+	default:
+	}
+}
+
+func (w *terminalStreamWriter) waitFlush(t *testing.T) {
+	t.Helper()
+	select {
+	case <-w.flushes:
+	case <-time.After(time.Second):
+		t.Fatal("terminal stream did not flush")
+	}
+}
+
+func (w *terminalStreamWriter) bodyString() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
+}
+
+type terminalNonFlushingWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *terminalNonFlushingWriter) Header() http.Header    { return w.header }
+func (w *terminalNonFlushingWriter) WriteHeader(status int) { w.status = status }
+func (w *terminalNonFlushingWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(data)
 }
 
 type fileTerminalStartResponse struct {

@@ -23,6 +23,8 @@ export class FileTerminalState {
     this.cursorExpired = false;
     this.truncated = false;
     this.error = "";
+    this.transport = "idle";
+    this.transportWarning = "";
     return this;
   }
 
@@ -53,6 +55,8 @@ export class FileTerminalState {
       this.cursorExpired = false;
       this.truncated = false;
       this.error = "";
+      this.transport = "idle";
+      this.transportWarning = "";
     } else if (approval !== undefined) {
       this.approval = approval;
     }
@@ -69,6 +73,8 @@ export class FileTerminalState {
     this.cursorExpired = false;
     this.truncated = false;
     this.error = "";
+    this.transport = "idle";
+    this.transportWarning = "";
     return this;
   }
 

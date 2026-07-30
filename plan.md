@@ -156,6 +156,37 @@
 
 下一项：独立评估实时终端流、多终端 UX 和 code-server private dynamic deployment 模板。
 
+## CH-FB-005B：实时终端流
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-31
+- **优先级**：P1
+- **目标**：为 Files 当前终端增加 Admin 同源 SSE 输出流，在输出或 Session 状态变化时实时更新 UI，并在流不可用或中断时自动回退现有绝对 cursor 轮询。
+- **非目标**：本轮不实现多终端标签、浏览器重启后的完整终端恢复、WebSocket、终端历史持久化，也不改变 `exec_command`、Task、Approval 或 Session 的权限策略。
+- **涉及范围**：`internal/core` Session 变更订阅、`internal/adminapi` SSE 代理、`web/admin/src` 流解析与终端更新、生成资源、测试和文档。
+- **安全边界**：SSE 继续要求 Admin 鉴权并按 workspace 校验 Session 所有权；浏览器使用可附加 Bearer Header 的 `fetch` 流而非原生 `EventSource`；连接随页面、终端或请求 context 取消，不允许无限遗留 goroutine。
+- **验收条件**：
+  - `GET /api/admin/v1/file-browser/terminals/{id}/stream` 使用 SSE 返回初始 Session 快照，并在输出、错误或状态变化时推送后续事件。
+  - SSE 使用绝对 cursor；cursor 过期、base offset、截断和 output error 与轮询接口保持同一契约。
+  - Session 结束且缓冲输出追平后发送最终状态并关闭流；客户端断开会及时释放订阅。
+  - 跨 workspace 访问拒绝，未知 Session、非法 cursor 和不支持 flush 的响应有明确错误。
+  - Files 默认使用带 Admin Authorization Header 的 fetch SSE；连接失败或意外中断时显示降级提示并继续轮询，不丢失或重复输出。
+  - 离开 Files、重置终端或切换 Session 时取消旧流；终端更新不重渲染编辑器，不影响 dirty 标签。
+  - Core/Admin/前端定向测试、全量测试、vet、相关 race 测试、重复构建和浏览器冒烟通过。
+- **验证方式**：`go test ./internal/core ./internal/adminapi ./web/admin`、`npm run check`、无头浏览器 SSE 与轮询降级冒烟、`go test -race ./internal/core ./internal/adminapi ./web/admin`、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实现结果**：
+  - SessionManager 新增按 workspace 授权的变更订阅；输出、状态、关闭和 `output_error` 变化会通知 watcher，取消与清理均幂等释放。
+  - Admin 新增同源 SSE 终端流，发送初始快照、绝对 cursor 增量、状态/错误变化和心跳；最终输出追平后关闭连接。
+  - Files 使用带 Admin Authorization Header 的 `fetch` 读取 SSE，解析分片和多行 data；流失败时显示原因并自动回退绝对 cursor 轮询。
+  - 离开 Files、重置终端和切换 Session 会取消旧流；终端局部刷新不重建编辑器，不影响 dirty 标签、Git 面板或 Approval 返回上下文。
+- **验证结果**：
+  - `go test ./...`、`go vet ./...`、`go test -race ./internal/core ./internal/adminapi ./web/admin`、`npm run check` 和 `git diff --check` 均通过。
+  - 前端 18 个 Node 测试通过，连续两次 Admin 构建 SHA-256 一致。
+  - 无头 Chrome 冒烟通过：正常路径在命令结束前收到首段 SSE；阻断 stream 后显示降级提示，并由轮询在命令结束前收到首段输出、最终补齐全部内容。
+
+下一项：独立设计 `CH-FB-005C` 多终端标签与浏览器重启恢复规则；code-server 模板继续后置。
+
 ## CH-FB-003：多标签编辑状态
 
 - **状态**：已完成

@@ -24,6 +24,7 @@ type sessionState struct {
 	baseOffset int
 	nextOffset int
 	ctrl       SessionController
+	watchers   map[chan struct{}]struct{}
 }
 
 type SessionManager struct {
@@ -76,7 +77,7 @@ func (m *SessionManager) Create(s Session, ctrl SessionController) Session {
 		s.LastActiveAt = s.CreatedAt
 	}
 	cp := s
-	m.sessions[s.ID] = &sessionState{session: cp, maxOut: m.maxPerSession, ctrl: ctrl}
+	m.sessions[s.ID] = &sessionState{session: cp, maxOut: m.maxPerSession, ctrl: ctrl, watchers: map[chan struct{}]struct{}{}}
 	return cp
 }
 
@@ -105,8 +106,44 @@ func (m *SessionManager) Start(id string) error {
 		now := time.Now().UTC()
 		st.session.StartedAt = now
 		st.session.LastActiveAt = now
+		notifySessionWatchersLocked(st)
 	}
 	return nil
+}
+
+func (m *SessionManager) SubscribeForWorkspace(id, workspaceID string) (<-chan struct{}, func(), error) {
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	st, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, nil, ErrSessionNotFound
+	}
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		m.mu.Unlock()
+		return nil, nil, err
+	}
+	watcher := make(chan struct{}, 1)
+	if st.watchers == nil {
+		st.watchers = map[chan struct{}]struct{}{}
+	}
+	st.watchers[watcher] = struct{}{}
+	m.mu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			m.mu.Lock()
+			if current, exists := m.sessions[id]; exists {
+				if _, subscribed := current.watchers[watcher]; subscribed {
+					delete(current.watchers, watcher)
+					close(watcher)
+				}
+			}
+			m.mu.Unlock()
+		})
+	}
+	return watcher, cancel, nil
 }
 
 func (m *SessionManager) Get(id string) (Session, error) {
@@ -239,6 +276,7 @@ func (m *SessionManager) AppendOutputChunk(id, stream, data string, continues bo
 			st.session.LastOffset = st.baseOffset
 		}
 	}
+	notifySessionWatchersLocked(st)
 	return nil
 }
 
@@ -259,6 +297,7 @@ func (m *SessionManager) SetOutputError(id, stream string, err error) error {
 	}
 	st.session.OutputError = message
 	st.session.LastActiveAt = time.Now().UTC()
+	notifySessionWatchersLocked(st)
 	return nil
 }
 
@@ -351,6 +390,7 @@ func (m *SessionManager) Finish(id string, exitCode int, err error) error {
 	} else {
 		st.session.Status = SessionExited
 	}
+	notifySessionWatchersLocked(st)
 	return nil
 }
 
@@ -368,6 +408,7 @@ func (m *SessionManager) Close(id string) (Session, error) {
 	st.session.EndedAt = now
 	st.session.LastActiveAt = now
 	out := st.session
+	notifySessionWatchersLocked(st)
 	m.mu.Unlock()
 	if closeFn != nil {
 		return out, closeFn()
@@ -393,6 +434,7 @@ func (m *SessionManager) CloseForWorkspace(id, workspaceID string) (Session, err
 	st.session.EndedAt = now
 	st.session.LastActiveAt = now
 	out := st.session
+	notifySessionWatchersLocked(st)
 	m.mu.Unlock()
 	if closeFn != nil {
 		return out, closeFn()
@@ -417,6 +459,7 @@ func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {
 	res := SessionSweepResult{}
 	for id, st := range m.sessions {
 		if shouldDeleteFinished(st.session, m.cleanup, now) {
+			closeSessionWatchersLocked(st)
 			delete(m.sessions, id)
 			deletedIDs[id] = struct{}{}
 			res.Deleted++
@@ -427,6 +470,7 @@ func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {
 				closeActions = append(closeActions, closeAction{fn: st.ctrl.Close})
 				res.Closed++
 			}
+			closeSessionWatchersLocked(st)
 			delete(m.sessions, id)
 			deletedIDs[id] = struct{}{}
 			res.Deleted++
@@ -452,6 +496,7 @@ func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {
 			if len(m.sessions) <= m.cleanup.MaxSessions {
 				break
 			}
+			closeSessionWatchersLocked(m.sessions[c.id])
 			delete(m.sessions, c.id)
 			if _, ok := deletedIDs[c.id]; !ok {
 				res.Deleted++
@@ -466,6 +511,28 @@ func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {
 		}
 	}
 	return res
+}
+
+func notifySessionWatchersLocked(st *sessionState) {
+	if st == nil {
+		return
+	}
+	for watcher := range st.watchers {
+		select {
+		case watcher <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func closeSessionWatchersLocked(st *sessionState) {
+	if st == nil {
+		return
+	}
+	for watcher := range st.watchers {
+		close(watcher)
+		delete(st.watchers, watcher)
+	}
 }
 
 func shouldDeleteFinished(s Session, opt SessionCleanupOptions, now time.Time) bool {

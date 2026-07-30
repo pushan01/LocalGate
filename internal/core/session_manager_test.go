@@ -60,6 +60,89 @@ func TestSessionManagerRejectsCrossWorkspaceAccess(t *testing.T) {
 	if _, err := m.CloseForWorkspace(s.ID, "ws-b"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
 		t.Fatalf("close mismatch: %v", err)
 	}
+	if _, _, err := m.SubscribeForWorkspace(s.ID, "ws-b"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
+		t.Fatalf("subscribe mismatch: %v", err)
+	}
+}
+
+func TestSessionManagerSubscriptionSignalsOutputAndFinish(t *testing.T) {
+	m := NewSessionManager()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer cancel()
+
+	if err := m.AppendOutput(s.ID, "stdout", "hello"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	select {
+	case <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("output update was not signaled")
+	}
+
+	if err := m.Finish(s.ID, 0, nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	select {
+	case <-updates:
+	case <-time.After(time.Second):
+		t.Fatal("finish update was not signaled")
+	}
+}
+
+func TestSessionManagerSubscriptionCancelRemovesWatcher(t *testing.T) {
+	m := NewSessionManager()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	cancel()
+	cancel()
+	select {
+	case _, ok := <-updates:
+		if ok {
+			t.Fatal("expected canceled subscription channel to close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not close subscription")
+	}
+	m.mu.Lock()
+	watchers := len(m.sessions[s.ID].watchers)
+	m.mu.Unlock()
+	if watchers != 0 {
+		t.Fatalf("expected watcher removal, got %d", watchers)
+	}
+}
+
+func TestSessionManagerSubscriptionClosesWhenSessionSwept(t *testing.T) {
+	m := NewSessionManager()
+	m.SetCleanupOptions(SessionCleanupOptions{FinishedTTL: time.Minute, MaxSessions: 100})
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer cancel()
+	if err := m.Finish(s.ID, 0, nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	<-updates
+	m.mu.Lock()
+	m.sessions[s.ID].session.EndedAt = time.Now().UTC().Add(-2 * time.Minute)
+	m.mu.Unlock()
+	m.Sweep(time.Now().UTC())
+	select {
+	case _, ok := <-updates:
+		if ok {
+			t.Fatal("expected subscription channel to close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sweep did not close subscription")
+	}
 }
 
 func TestSessionManagerSweepDeletesFinished(t *testing.T) {

@@ -135,6 +135,22 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "stream":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+			return
+		}
+		workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
+		if workspaceID == "" {
+			workspaceID = a.DefaultWSID
+		}
+		cursor, ok := parseTerminalCursor(w, r.URL.Query().Get("cursor"))
+		if !ok {
+			return
+		}
+		maxItems := terminalReadItems(parsePositiveInt(r.URL.Query().Get("max_output_items")))
+		a.writeFileTerminalStream(w, r, sessionID, workspaceID, cursor, maxItems)
 	case "stdin":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -196,24 +212,42 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) writeFileTerminalRead(w http.ResponseWriter, sessionID, workspaceID string, cursor, maxItems int) {
-	read, err := a.App.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
+	payload, err := a.readFileTerminal(sessionID, workspaceID, cursor, maxItems)
 	if err != nil {
 		writeFileTerminalError(w, err)
 		return
+	}
+	server.WriteJSON(w, http.StatusOK, payload)
+}
+
+type fileTerminalReadResponse struct {
+	Session       core.Session         `json:"session"`
+	Items         []core.SessionOutput `json:"items"`
+	NextOffset    int                  `json:"next_offset"`
+	BaseOffset    int                  `json:"base_offset"`
+	CursorExpired bool                 `json:"cursor_expired,omitempty"`
+	Truncated     bool                 `json:"truncated"`
+	OutputError   string               `json:"output_error,omitempty"`
+}
+
+func (a *API) readFileTerminal(sessionID, workspaceID string, cursor, maxItems int) (fileTerminalReadResponse, error) {
+	read, err := a.App.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
+	if err != nil {
+		return fileTerminalReadResponse{}, err
 	}
 	session, err := a.App.Sessions.GetForWorkspace(sessionID, workspaceID)
 	if err != nil {
-		writeFileTerminalError(w, err)
-		return
+		return fileTerminalReadResponse{}, err
 	}
-	server.WriteJSON(w, http.StatusOK, map[string]any{
-		"session":        session,
-		"items":          read.Items,
-		"next_offset":    read.NextOffset,
-		"base_offset":    read.BaseOffset,
-		"cursor_expired": read.CursorExpired,
-		"truncated":      read.Truncated,
-	})
+	return fileTerminalReadResponse{
+		Session:       session,
+		Items:         read.Items,
+		NextOffset:    read.NextOffset,
+		BaseOffset:    read.BaseOffset,
+		CursorExpired: read.CursorExpired,
+		Truncated:     read.Truncated,
+		OutputError:   read.OutputError,
+	}, nil
 }
 
 func writeFileTerminalSubmission(w http.ResponseWriter, submission app.Submission, directory filebrowser.DirectoryContext) {
