@@ -233,6 +233,10 @@ tr:last-child td {
 .kv {
   display: grid;
   gap: 5px;
+  min-width: 0;
+}
+.kv > div {
+  min-width: 0;
 }
 .kv strong {
   font-size: 12px;
@@ -558,6 +562,13 @@ pre {
 }
 .file-meta {
   margin-bottom: 12px;
+}
+.file-etag {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .file-content {
   max-height: 70vh;

@@ -17,6 +17,10 @@ const state = { token: sessionStorage.getItem("localgate_admin_token") || "", er
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
+const compact = (value, head=20, tail=12) => {
+  const text = String(value || "");
+  return text.length > head + tail + 1 ? `${text.slice(0, head)}…${text.slice(-tail)}` : text || "—";
+};
 const fmtTime = value => value ? new Date(value).toLocaleString() : "—";
 const fmtDuration = value => value ? (value < 1000 ? `${value} ms` : `${(value/1000).toFixed(1)} s`) : "—";
 const badge = value => `<span class="badge ${esc(value)}">${esc(value || "unknown")}</span>`;
@@ -407,9 +411,10 @@ function filePreview(filePath, content, error, context={}) {
   const markdown = content.language === "markdown";
   const tab = context.tab || {};
   const previewMode = Boolean(markdown && tab.previewMode);
+  const etag = `<span class="mono file-etag" title="${esc(content.etag)}">${esc(compact(content.etag))}</span>`;
   return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">${esc(content.language || "text")}</span><span class="badge pending${tab.dirty?"":" hidden"}" data-file-dirty>Unsaved</span>${markdown?`<button class="button" data-file-markdown-preview="1">${previewMode?"Edit":"Preview"}</button>`:""}<button class="button primary" data-file-save="1">Save</button><button class="button" data-file-rename="1">Rename</button><button class="button" data-file-download="1">Download</button><button class="button danger" data-file-delete="1">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
     <div data-file-status>${tab.conflict?fileConflictPanel():""}</div>
-    <div class="detail-grid file-meta">${kv("Path", content.path)}${kv("Size", formatBytes(content.size))}${kv("Modified", fmtTime(content.mod_time))}${kv("ETag", content.etag)}</div>
+    <div class="detail-grid file-meta">${kv("Path", content.path)}${kv("Size", formatBytes(content.size))}${kv("Modified", fmtTime(content.mod_time))}${kv("ETag", etag)}</div>
     <textarea class="file-editor${previewMode?" hidden":""}" data-file-editor data-tab-key="${esc(tab.key || "")}" data-workspace-id="${esc(content.workspace_id)}" data-root-id="${esc(content.root_id)}" data-path="${esc(content.path)}" data-etag="${esc(content.etag)}" data-language="${esc(content.language || "text")}" spellcheck="false">${esc(content.content)}</textarea>
     ${markdown?`<article class="markdown-preview${previewMode?"":" hidden"}" data-markdown-preview>${previewMode?renderMarkdown(content.content):""}</article>`:""}`;
 }
