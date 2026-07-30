@@ -278,6 +278,39 @@ func TestRenameHonorsApprovalRequired(t *testing.T) {
 	}
 }
 
+func TestResolveDirectoryUsesSandboxedCurrentPath(t *testing.T) {
+	root := t.TempDir()
+	docs := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+	cfg := config.Default().FileBrowser
+	svc := NewService(cfg, map[string]config.Workspace{
+		"ws": {ID: "ws", Roots: []string{root}},
+	})
+
+	ctx, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"})
+	if err != nil {
+		t.Fatalf("resolve directory: %v", err)
+	}
+	realDocs, err := filepath.EvalSymlinks(docs)
+	if err != nil {
+		t.Fatalf("resolve docs fixture: %v", err)
+	}
+	if ctx.WorkspaceID != "ws" || ctx.RootID != "0" || ctx.Path != "docs" || ctx.AbsPath != realDocs {
+		t.Fatalf("unexpected directory context: %#v", ctx)
+	}
+	if _, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt"}); !errors.Is(err, ErrNotDirectory) {
+		t.Fatalf("expected file rejection, got %v", err)
+	}
+	if _, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "../outside"}); !errors.Is(err, ErrPathNotAllowed) {
+		t.Fatalf("expected path rejection, got %v", err)
+	}
+}
+
 func TestDeleteRemovesFileAndDirectory(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "old.txt"), "hello")

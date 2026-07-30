@@ -12,6 +12,7 @@ import (
 
 	"localgate/internal/config"
 	"localgate/internal/core"
+	"localgate/internal/fileio"
 	"localgate/internal/security"
 )
 
@@ -34,10 +35,12 @@ type patchLine struct {
 }
 
 type stagedPatchFile struct {
-	action  string
-	path    string
-	absPath string
-	content []byte
+	action   string
+	path     string
+	absPath  string
+	content  []byte
+	mode     os.FileMode
+	original os.FileInfo
 }
 
 func newApplyPatchTool(ws config.Workspace) core.Tool {
@@ -46,7 +49,7 @@ func newApplyPatchTool(ws config.Workspace) core.Tool {
 
 func (t applyPatchTool) Name() string { return "apply_patch" }
 func (t applyPatchTool) Description() string {
-	return "Apply a patch to one or more files atomically inside the workspace. Use a single patch string that starts with *** Begin Patch and ends with *** End Patch. Supported operations are *** Add File:, *** Update File:, and *** Delete File:."
+	return "Apply a validated patch to one or more files inside the workspace with in-process rollback on commit failure. This is not a crash-atomic or multi-process transaction."
 }
 func (t applyPatchTool) Schema() any {
 	return map[string]any{
@@ -55,7 +58,7 @@ func (t applyPatchTool) Schema() any {
 		"properties": map[string]any{
 			"patch": map[string]any{
 				"type":        "string",
-				"description": "Patch document. Required envelope: *** Begin Patch ... *** End Patch. Supported file ops: *** Add File: <path>, *** Update File: <path>, *** Delete File: <path>. Add-file contents must use only + lines. Update hunks must start with @@ and then use patch lines prefixed with space (context), - (remove), or + (add). *** End of File is optional. Multiple file ops may appear in one patch and are applied atomically. Example:\n*** Begin Patch\n*** Update File: /abs/path/to/file.txt\n@@\n-old line\n+new line\n*** End Patch",
+				"description": "Patch document. Required envelope: *** Begin Patch ... *** End Patch. Supported file ops: *** Add File: <path>, *** Update File: <path>, *** Delete File: <path>. Add-file contents must use only + lines. Update hunks must start with @@ and then use patch lines prefixed with space (context), - (remove), or + (add). *** End of File is optional. Multiple file ops are committed with best-effort in-process rollback; the operation is not crash-atomic or safe as a cross-process transaction. Example:\n*** Begin Patch\n*** Update File: /abs/path/to/file.txt\n@@\n-old line\n+new line\n*** End Patch",
 			},
 		},
 		"required": []string{"patch"},
@@ -119,8 +122,13 @@ func (t applyPatchTool) prepare(ops []patchOp) ([]stagedPatchFile, error) {
 				path:    op.path,
 				absPath: dec.Path,
 				content: []byte(content),
+				mode:    0o644,
 			})
 		case "update":
+			info, err := os.Lstat(dec.Path)
+			if err != nil {
+				return nil, err
+			}
 			current, err := os.ReadFile(dec.Path)
 			if err != nil {
 				return nil, err
@@ -130,16 +138,23 @@ func (t applyPatchTool) prepare(ops []patchOp) ([]stagedPatchFile, error) {
 				return nil, fmt.Errorf("update %s: %w", op.path, err)
 			}
 			staged = append(staged, stagedPatchFile{
-				action:  op.action,
-				path:    op.path,
-				absPath: dec.Path,
-				content: []byte(updated),
+				action:   op.action,
+				path:     op.path,
+				absPath:  dec.Path,
+				content:  []byte(updated),
+				mode:     info.Mode().Perm(),
+				original: info,
 			})
 		case "delete":
+			info, err := os.Lstat(dec.Path)
+			if err != nil {
+				return nil, err
+			}
 			staged = append(staged, stagedPatchFile{
-				action:  op.action,
-				path:    op.path,
-				absPath: dec.Path,
+				action:   op.action,
+				path:     op.path,
+				absPath:  dec.Path,
+				original: info,
 			})
 		default:
 			return nil, fmt.Errorf("unsupported operation: %s", op.action)
@@ -454,10 +469,13 @@ func commitStagedFiles(staged []stagedPatchFile) error {
 	for _, item := range staged {
 		undos, commits, err := commitOne(item)
 		if err != nil {
+			rollbackErrs := []error{err}
 			for i := len(rollback) - 1; i >= 0; i-- {
-				_ = rollback[i]()
+				if rollbackErr := rollback[i](); rollbackErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback failed: %w", rollbackErr))
+				}
 			}
-			return err
+			return errors.Join(rollbackErrs...)
 		}
 		for _, fn := range undos {
 			rollback = append(rollback, cleanupFn(fn))
@@ -480,23 +498,27 @@ func commitOne(item stagedPatchFile) ([]func() error, []func() error, error) {
 		if err := os.MkdirAll(filepath.Dir(item.absPath), 0o755); err != nil {
 			return nil, nil, err
 		}
-		tempPath, err := writeTempFile(item.absPath, item.content)
+		tempPath, err := writeTempFile(item.absPath, item.content, item.mode)
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := os.Rename(tempPath, item.absPath); err != nil {
+		if err := os.Link(tempPath, item.absPath); err != nil {
 			_ = os.Remove(tempPath)
 			return nil, nil, err
 		}
+		_ = os.Remove(tempPath)
 		return []func() error{
 			func() error { return os.Remove(item.absPath) },
 		}, nil, nil
 	case "update":
+		if err := ensurePatchTargetUnchanged(item); err != nil {
+			return nil, nil, err
+		}
 		backup, err := reserveTempPath(item.absPath)
 		if err != nil {
 			return nil, nil, err
 		}
-		tempPath, err := writeTempFile(item.absPath, item.content)
+		tempPath, err := writeTempFile(item.absPath, item.content, item.mode)
 		if err != nil {
 			_ = os.Remove(backup)
 			return nil, nil, err
@@ -520,6 +542,9 @@ func commitOne(item stagedPatchFile) ([]func() error, []func() error, error) {
 				func() error { return os.Remove(backup) },
 			}, nil
 	case "delete":
+		if err := ensurePatchTargetUnchanged(item); err != nil {
+			return nil, nil, err
+		}
 		backup, err := reserveTempPath(item.absPath)
 		if err != nil {
 			return nil, nil, err
@@ -538,22 +563,46 @@ func commitOne(item stagedPatchFile) ([]func() error, []func() error, error) {
 	}
 }
 
-func writeTempFile(target string, content []byte) (string, error) {
+func writeTempFile(target string, content []byte, mode os.FileMode) (string, error) {
 	dir := filepath.Dir(target)
 	f, err := os.CreateTemp(dir, ".localgate-applypatch-*")
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	if _, err := bytes.NewReader(content).WriteTo(f); err != nil {
+		_ = f.Close()
 		_ = os.Remove(f.Name())
 		return "", err
 	}
-	if err := f.Chmod(0o644); err != nil {
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := f.Chmod(mode.Perm()); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
 		_ = os.Remove(f.Name())
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+func ensurePatchTargetUnchanged(item stagedPatchFile) error {
+	if item.original == nil {
+		return fileio.ErrTargetChanged
+	}
+	current, err := os.Lstat(item.absPath)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(item.original, current) {
+		return fileio.ErrTargetChanged
+	}
+	return nil
 }
 
 func reserveTempPath(target string) (string, error) {

@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"localgate/internal/config"
+	"localgate/internal/fileio"
 	"localgate/internal/security"
 )
 
@@ -75,6 +76,19 @@ func (s *Service) Workspaces() ([]WorkspaceItem, error) {
 		items = append(items, WorkspaceItem{ID: id, Roots: roots})
 	}
 	return items, nil
+}
+
+func (s *Service) ResolveDirectory(req PathRequest) (DirectoryContext, error) {
+	resolved, err := s.resolve(req, true)
+	if err != nil {
+		return DirectoryContext{}, err
+	}
+	return DirectoryContext{
+		WorkspaceID: resolved.workspaceID,
+		RootID:      resolved.rootID,
+		Path:        filepath.ToSlash(resolved.relPath),
+		AbsPath:     resolved.absPath,
+	}, nil
 }
 
 func (s *Service) List(ctx context.Context, req PathRequest) (ListResult, error) {
@@ -544,31 +558,12 @@ func (s *Service) writeBytes(ctx context.Context, req writeBytesRequest) (SaveCo
 		return SaveContentResult{}, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(resolved.absPath), 0o755); err != nil {
-		return SaveContentResult{}, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(resolved.absPath), ".filebrowser-*")
-	if err != nil {
-		return SaveContentResult{}, err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return SaveContentResult{}, err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return SaveContentResult{}, err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return SaveContentResult{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		return SaveContentResult{}, err
-	}
-	if err := os.Rename(tmpPath, resolved.absPath); err != nil {
+	if _, err := fileio.WriteFileAtomic(resolved.absPath, content, fileio.AtomicWriteOptions{
+		Mode:          0o644,
+		PreserveMode:  true,
+		CreateParents: true,
+		MaxBytes:      req.LimitBytes,
+	}); err != nil {
 		return SaveContentResult{}, err
 	}
 	info, err := os.Stat(resolved.absPath)

@@ -207,7 +207,9 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 约束：
 
 - 支持 `Add File`、`Update File`、`Delete File`
-- 多文件 patch 是全量原子应用
+- 多文件 patch 会先完整验证，并在提交失败时做进程内回滚
+- 更新会保留原文件权限并检查目标是否被并发替换
+- 不承诺进程崩溃或多个 LocalGate 进程之间的事务原子性
 - 不支持 unified diff
 
 典型参数：
@@ -335,10 +337,13 @@ LocalGate 里的大多数普通工具调用都会包装成 task。拿到 `task_i
 
 1. 调用 `exec_command`
 2. 读取返回里的 `session_id`
-3. 用 `write_stdin` 继续发输入或顺带拉新输出
-4. 用 `read_thread_terminal` 只读缓冲输出，不写 stdin
+3. 保存返回里的 `next_offset`
+4. 用 `write_stdin` 继续发输入，并把上次 `next_offset` 作为 `cursor`
+5. 用 `read_thread_terminal` 只读缓冲输出，同样持续传递 `cursor`
 
 不要对 session 工具使用 `task_status` 或 `task_result`。
+
+Session 访问必须使用创建它的 workspace。若输出缓冲已裁剪，检查 `base_offset`、`truncated` 和 `cursor_expired`，并从服务端返回的新 cursor 继续读取。
 
 ## 常见错误
 

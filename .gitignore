@@ -8,3 +8,4 @@ internal/*.json
 /bin/localgate-v002
 /cmd/localgate/localgate
 /run_daemon.sh
+/web/admin/node_modules/

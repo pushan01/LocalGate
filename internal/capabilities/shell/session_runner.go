@@ -25,6 +25,10 @@ type SessionRunner struct {
 }
 
 func (r SessionRunner) StartSession(ctx context.Context, requester, command, cwd string, env map[string]string, shell string, login, tty bool) (core.Session, error) {
+	return r.StartSessionWithInvokeContext(ctx, core.InvokeContext{WorkspaceID: r.WS.ID, Requester: requester}, command, cwd, env, shell, login, tty)
+}
+
+func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic core.InvokeContext, command, cwd string, env map[string]string, shell string, login, tty bool) (core.Session, error) {
 	if d := security.ValidateCommand(command, r.WS); !d.Allowed {
 		return core.Session{}, errors.New("command not allowed: " + d.Reason)
 	}
@@ -38,11 +42,9 @@ func (r SessionRunner) StartSession(ctx context.Context, requester, command, cwd
 	}
 	execCmd := exec.CommandContext(ctx, shPath, shArgs...)
 	execCmd.Dir = resolvedCWD
-	if len(env) > 0 {
-		execCmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
-	}
+	execCmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
 	if tty {
-		return r.startTTYSession(execCmd, requester, command, resolvedCWD, shPath, login)
+		return r.startTTYSession(execCmd, ic, command, resolvedCWD, shPath, login)
 	}
 	execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -60,13 +62,19 @@ func (r SessionRunner) StartSession(ctx context.Context, requester, command, cwd
 	}
 
 	session := r.Sessions.Create(core.Session{
-		Requester:   requester,
-		WorkspaceID: r.WS.ID,
-		Command:     command,
-		CWD:         resolvedCWD,
-		Shell:       shPath,
-		Login:       login,
-		TTY:         tty,
+		TaskID:          ic.TaskID,
+		Requester:       ic.Requester,
+		WorkspaceID:     r.WS.ID,
+		Transport:       ic.Transport,
+		MCPSessionID:    ic.MCPSessionID,
+		SessionMode:     ic.SessionMode,
+		SessionIDSource: ic.SessionIDSource,
+		RequestID:       ic.RequestID,
+		Command:         command,
+		CWD:             resolvedCWD,
+		Shell:           shPath,
+		Login:           login,
+		TTY:             tty,
 	}, core.SessionController{Stdin: stdin})
 
 	if err := execCmd.Start(); err != nil {
@@ -108,19 +116,25 @@ func (r SessionRunner) StartSession(ctx context.Context, requester, command, cwd
 	return r.Sessions.Get(session.ID)
 }
 
-func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, requester, command, cwd, shell string, login bool) (core.Session, error) {
+func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext, command, cwd, shell string, login bool) (core.Session, error) {
 	ptyFile, err := pty.Start(execCmd)
 	if err != nil {
 		return core.Session{}, err
 	}
 	session := r.Sessions.Create(core.Session{
-		Requester:   requester,
-		WorkspaceID: r.WS.ID,
-		Command:     command,
-		CWD:         cwd,
-		Shell:       shell,
-		Login:       login,
-		TTY:         true,
+		TaskID:          ic.TaskID,
+		Requester:       ic.Requester,
+		WorkspaceID:     r.WS.ID,
+		Transport:       ic.Transport,
+		MCPSessionID:    ic.MCPSessionID,
+		SessionMode:     ic.SessionMode,
+		SessionIDSource: ic.SessionIDSource,
+		RequestID:       ic.RequestID,
+		Command:         command,
+		CWD:             cwd,
+		Shell:           shell,
+		Login:           login,
+		TTY:             true,
 	}, core.SessionController{Stdin: ptyFile})
 	if err := r.Sessions.Start(session.ID); err != nil {
 		_ = ptyFile.Close()
@@ -155,17 +169,21 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, requester, command, cw
 }
 
 func (r SessionRunner) WriteStdin(sessionID, chars string, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
-	if err := r.Sessions.WriteStdin(sessionID, chars); err != nil {
+	return r.WriteStdinForWorkspace(sessionID, r.WS.ID, chars, 0, wait, maxItems)
+}
+
+func (r SessionRunner) WriteStdinForWorkspace(sessionID, workspaceID, chars string, cursor int, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
+	if err := r.Sessions.WriteStdinForWorkspace(sessionID, workspaceID, chars); err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
 	if wait > 0 {
 		time.Sleep(wait)
 	}
-	read, err := r.Sessions.ReadLatest(sessionID, maxItems)
+	read, err := r.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
 	if err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
-	s, err := r.Sessions.Get(sessionID)
+	s, err := r.Sessions.GetForWorkspace(sessionID, workspaceID)
 	if err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
@@ -173,11 +191,15 @@ func (r SessionRunner) WriteStdin(sessionID, chars string, wait time.Duration, m
 }
 
 func (r SessionRunner) ReadSession(sessionID string, maxItems int) (core.Session, core.SessionReadResult, error) {
-	read, err := r.Sessions.Read(sessionID, 0, maxItems)
+	return r.ReadSessionForWorkspace(sessionID, r.WS.ID, 0, maxItems)
+}
+
+func (r SessionRunner) ReadSessionForWorkspace(sessionID, workspaceID string, cursor, maxItems int) (core.Session, core.SessionReadResult, error) {
+	read, err := r.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
 	if err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
-	s, err := r.Sessions.Get(sessionID)
+	s, err := r.Sessions.GetForWorkspace(sessionID, workspaceID)
 	if err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
@@ -185,15 +207,32 @@ func (r SessionRunner) ReadSession(sessionID string, maxItems int) (core.Session
 }
 
 func (r SessionRunner) CloseSession(sessionID string) (core.Session, error) {
-	return r.Sessions.Close(sessionID)
+	return r.Sessions.CloseForWorkspace(sessionID, r.WS.ID)
 }
 
 func (r SessionRunner) streamSessionOutput(sessionID, stream string, src io.Reader) {
-	sc := bufio.NewScanner(src)
-	buf := make([]byte, 0, 64*1024)
-	sc.Buffer(buf, 1024*1024)
-	for sc.Scan() {
-		_ = r.Sessions.AppendOutput(sessionID, stream, sc.Text())
+	reader := bufio.NewReaderSize(src, 32*1024)
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			continues := errors.Is(err, bufio.ErrBufferFull)
+			if !continues && fragment[len(fragment)-1] == '\n' {
+				fragment = fragment[:len(fragment)-1]
+				if len(fragment) > 0 && fragment[len(fragment)-1] == '\r' {
+					fragment = fragment[:len(fragment)-1]
+				}
+			}
+			_ = r.Sessions.AppendOutputChunk(sessionID, stream, string(fragment), continues)
+		}
+		switch {
+		case err == nil, errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return
+		default:
+			_ = r.Sessions.SetOutputError(sessionID, stream, err)
+			return
+		}
 	}
 }
 
@@ -226,21 +265,47 @@ func shellCommand(shell string, login bool, command string) (string, []string, e
 	if strings.TrimSpace(command) == "" {
 		return "", nil, errors.New("cmd required")
 	}
+	resolvedShell, err := resolveTrustedShell(shell)
+	if err != nil {
+		return "", nil, err
+	}
+	switch filepath.Base(resolvedShell) {
+	case "sh":
+		if login {
+			return "", nil, fmt.Errorf("login shell not supported for %s", resolvedShell)
+		}
+		return resolvedShell, []string{"-c", command}, nil
+	case "bash", "zsh":
+		if login {
+			return resolvedShell, []string{"-lc", command}, nil
+		}
+		return resolvedShell, []string{"-c", command}, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported shell: %s", resolvedShell)
+	}
+}
+
+func resolveTrustedShell(shell string) (string, error) {
+	shell = strings.TrimSpace(shell)
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	switch filepath.Base(shell) {
-	case "sh":
-		if login {
-			return "", nil, fmt.Errorf("login shell not supported for %s", shell)
-		}
-		return shell, []string{"-c", command}, nil
-	case "bash", "zsh":
-		if login {
-			return shell, []string{"-lc", command}, nil
-		}
-		return shell, []string{"-c", command}, nil
-	default:
-		return "", nil, fmt.Errorf("unsupported shell: %s", shell)
+	if !filepath.IsAbs(shell) {
+		return "", fmt.Errorf("shell must be an absolute trusted path: %s", shell)
 	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(shell))
+	if err != nil {
+		return "", fmt.Errorf("resolve shell %s: %w", shell, err)
+	}
+	trusted := []string{
+		"/bin/sh", "/bin/bash", "/bin/zsh",
+		"/usr/bin/sh", "/usr/bin/bash", "/usr/bin/zsh",
+	}
+	for _, candidate := range trusted {
+		candidateResolved, candidateErr := filepath.EvalSymlinks(candidate)
+		if candidateErr == nil && resolved == candidateResolved {
+			return candidateResolved, nil
+		}
+	}
+	return "", fmt.Errorf("shell is not a trusted system shell: %s", shell)
 }

@@ -1,0 +1,20 @@
+{
+  "name": "localgate-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18",
+    "npm": ">=9"
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "check": "node --test ./src/file-tabs.test.js ./src/file-terminal.test.js && node --check ./src/app.js && npm run build && node --check ./dist/app.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

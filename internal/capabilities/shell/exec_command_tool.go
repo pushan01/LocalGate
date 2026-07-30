@@ -62,36 +62,41 @@ func (t ExecCommandTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 	maxItems := intFromAny(args["max_output_tokens"])
 	env := mapFromAny(args["env"])
 	r := SessionRunner{WS: t.WS, Sessions: t.Sessions}
-	session, err := r.StartSession(ctx, "", cmd, workdir, env, shellName, login, tty)
+	session, err := r.StartSessionWithInvokeContext(ctx, ic, cmd, workdir, env, shellName, login, tty)
 	if err != nil {
 		return nil, err
 	}
 	if yield > 0 {
 		time.Sleep(time.Duration(yield) * time.Millisecond)
 	}
-	current, read, err := r.ReadSession(session.ID, maxItems)
+	current, read, err := r.ReadSessionForWorkspace(session.ID, t.WS.ID, 0, maxItems)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"session_id":   current.ID,
-		"status":       current.Status,
-		"running":      current.Status == core.SessionStarting || current.Status == core.SessionRunning,
-		"completed":    current.Status == core.SessionExited || current.Status == core.SessionFailed || current.Status == core.SessionClosed,
-		"output":       joinSessionOutput(read.Items),
-		"items":        read.Items,
-		"next_offset":  read.NextOffset,
-		"exit_code":    current.ExitCode,
-		"workspace_id": current.WorkspaceID,
+		"session_id":     current.ID,
+		"status":         current.Status,
+		"running":        current.Status == core.SessionStarting || current.Status == core.SessionRunning,
+		"completed":      current.Status == core.SessionExited || current.Status == core.SessionFailed || current.Status == core.SessionClosed,
+		"output":         joinSessionOutput(read.Items),
+		"items":          read.Items,
+		"next_offset":    read.NextOffset,
+		"base_offset":    read.BaseOffset,
+		"truncated":      read.Truncated,
+		"cursor_expired": read.CursorExpired,
+		"output_error":   read.OutputError,
+		"exit_code":      current.ExitCode,
+		"workspace_id":   current.WorkspaceID,
 	}, nil
 }
 
 type WriteStdinTool struct {
 	Sessions *core.SessionManager
+	WSID     string
 }
 
-func NewWriteStdinTool(sessions *core.SessionManager) core.Tool {
-	return WriteStdinTool{Sessions: sessions}
+func NewWriteStdinTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
+	return WriteStdinTool{Sessions: sessions, WSID: ws.ID}
 }
 
 func (t WriteStdinTool) Name() string { return "write_stdin" }
@@ -109,6 +114,7 @@ func (t WriteStdinTool) Schema() any {
 			"chars":             map[string]any{"type": "string"},
 			"yield_time_ms":     map[string]any{"type": "integer"},
 			"max_output_tokens": map[string]any{"type": "integer"},
+			"cursor":            map[string]any{"type": "integer", "description": "Absolute output cursor returned by the previous call"},
 		},
 		"required": []string{"session_id"},
 	}
@@ -124,28 +130,34 @@ func (t WriteStdinTool) Execute(ctx context.Context, ic core.InvokeContext, args
 	chars, _ := args["chars"].(string)
 	yield := intFromAny(args["yield_time_ms"])
 	maxItems := intFromAny(args["max_output_tokens"])
-	r := SessionRunner{Sessions: t.Sessions}
-	session, read, err := r.WriteStdin(sessionID, chars, time.Duration(yield)*time.Millisecond, maxItems)
+	cursor := intFromAny(args["cursor"])
+	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
+	session, read, err := r.WriteStdinForWorkspace(sessionID, t.WSID, chars, cursor, time.Duration(yield)*time.Millisecond, maxItems)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"session_id":  session.ID,
-		"status":      session.Status,
-		"running":     session.Status == core.SessionStarting || session.Status == core.SessionRunning,
-		"output":      joinSessionOutput(read.Items),
-		"items":       read.Items,
-		"next_offset": read.NextOffset,
-		"exit_code":   session.ExitCode,
+		"session_id":     session.ID,
+		"status":         session.Status,
+		"running":        session.Status == core.SessionStarting || session.Status == core.SessionRunning,
+		"output":         joinSessionOutput(read.Items),
+		"items":          read.Items,
+		"next_offset":    read.NextOffset,
+		"base_offset":    read.BaseOffset,
+		"truncated":      read.Truncated,
+		"cursor_expired": read.CursorExpired,
+		"output_error":   read.OutputError,
+		"exit_code":      session.ExitCode,
 	}, nil
 }
 
 type ReadThreadTerminalTool struct {
 	Sessions *core.SessionManager
+	WSID     string
 }
 
-func NewReadThreadTerminalTool(sessions *core.SessionManager) core.Tool {
-	return ReadThreadTerminalTool{Sessions: sessions}
+func NewReadThreadTerminalTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
+	return ReadThreadTerminalTool{Sessions: sessions, WSID: ws.ID}
 }
 
 func (t ReadThreadTerminalTool) Name() string { return "read_thread_terminal" }
@@ -161,6 +173,7 @@ func (t ReadThreadTerminalTool) Schema() any {
 		"properties": map[string]any{
 			"session_id":        map[string]any{"type": "string"},
 			"max_output_tokens": map[string]any{"type": "integer"},
+			"cursor":            map[string]any{"type": "integer", "description": "Absolute output cursor returned by the previous call"},
 		},
 		"required": []string{"session_id"},
 	}
@@ -174,19 +187,24 @@ func (t ReadThreadTerminalTool) Execute(ctx context.Context, ic core.InvokeConte
 		return nil, fmt.Errorf("session_id required")
 	}
 	maxItems := intFromAny(args["max_output_tokens"])
-	r := SessionRunner{Sessions: t.Sessions}
-	session, read, err := r.ReadSession(sessionID, maxItems)
+	cursor := intFromAny(args["cursor"])
+	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
+	session, read, err := r.ReadSessionForWorkspace(sessionID, t.WSID, cursor, maxItems)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"session_id":  session.ID,
-		"status":      session.Status,
-		"running":     session.Status == core.SessionStarting || session.Status == core.SessionRunning,
-		"output":      joinSessionOutput(read.Items),
-		"items":       read.Items,
-		"next_offset": read.NextOffset,
-		"exit_code":   session.ExitCode,
+		"session_id":     session.ID,
+		"status":         session.Status,
+		"running":        session.Status == core.SessionStarting || session.Status == core.SessionRunning,
+		"output":         joinSessionOutput(read.Items),
+		"items":          read.Items,
+		"next_offset":    read.NextOffset,
+		"base_offset":    read.BaseOffset,
+		"truncated":      read.Truncated,
+		"cursor_expired": read.CursorExpired,
+		"output_error":   read.OutputError,
+		"exit_code":      session.ExitCode,
 	}, nil
 }
 
@@ -194,9 +212,12 @@ func joinSessionOutput(items []core.SessionOutput) string {
 	if len(items) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(items))
-	for _, item := range items {
-		lines = append(lines, item.Data)
+	var out strings.Builder
+	for i, item := range items {
+		out.WriteString(item.Data)
+		if !item.Continues && i < len(items)-1 {
+			out.WriteByte('\n')
+		}
 	}
-	return strings.Join(lines, "\n")
+	return out.String()
 }

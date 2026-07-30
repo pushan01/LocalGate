@@ -77,6 +77,41 @@ func TestListTools(t *testing.T) {
 	}
 }
 
+func TestSessionRoutesRejectCrossWorkspaceAccess(t *testing.T) {
+	cfg := config.Config{Workspaces: []config.Workspace{
+		{ID: "ws-a", CommandAllowlist: []string{"echo"}},
+		{ID: "ws-b", CommandAllowlist: []string{"echo"}},
+	}}
+	application, err := app.New(cfg)
+	if err != nil {
+		t.Fatalf("app: %v", err)
+	}
+	defer application.Close()
+	session := application.Sessions.Create(core.Session{WorkspaceID: "ws-a"}, core.SessionController{})
+	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	mux := http.NewServeMux()
+	api.RegisterControl(mux)
+
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/sessions/" + session.ID + "?workspace_id=ws-b"},
+		{method: http.MethodPost, path: "/sessions/" + session.ID + "/stdin?workspace_id=ws-b", body: `{}`},
+		{method: http.MethodGet, path: "/sessions/" + session.ID + "/terminal?workspace_id=ws-b"},
+		{method: http.MethodPost, path: "/sessions/" + session.ID + "/close?workspace_id=ws-b"},
+	}
+	for _, tc := range tests {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: expected 403, got %d body=%s", tc.method, tc.path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestListToolsInToolHTTPModeStillShowsVisibleRegistryTools(t *testing.T) {
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},

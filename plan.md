@@ -1,5 +1,196 @@
 # Plan
 
+## CH-SEC-001：工具与 Session 安全加固
+
+- **状态**：已完成
+- **规划日期**：2026-07-30
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **优先级**：P0
+- **目标**：修复文件和执行工具中已确认的环境隔离、Shell 信任、Session 所有权、远程上传、终端游标和文件 I/O 一致性问题，并把已复现场景固化为回归测试。
+- **非目标**：本阶段不新增 Files 终端 UI、不接入 SSE / WebSocket、不扩展命令策略语法，也不重构审批状态机。
+- **涉及范围**：`internal/capabilities/shell`、`internal/core/session_manager.go`、`internal/capabilities/filesystem`、`internal/httpapi`、相关安全辅助模块、测试和文档。
+- **依赖与风险**：该阶段修改命令执行、Session 授权和文件写入等核心安全边界，必须按高风险变更验证。`CH-FB-004` 在本阶段完成前保持阻塞，避免 Files 终端 UI 暴露现有缺陷。
+- **实施顺序**：
+  1. `CH-SEC-001A`：执行环境与可信 Shell。
+  2. `CH-SEC-001B`：Session 所有权、游标与输出可靠性。
+  3. `CH-SEC-001C`：`upload_file` SSRF 防护。
+  4. `CH-SEC-001D`：原子写入、权限保留与 Patch 事务语义。
+  5. `CH-SEC-001E`：读取和目录遍历资源限制。
+- **总体验收条件**：
+  - 命令子进程只能获得 workspace `env_allowlist` 允许的环境变量，调用方省略 `env` 时也不得继承 LocalGate 全部进程环境。
+  - `exec_command.shell` 只能使用明确允许的可信真实路径，不能通过 workspace 内伪造的 `sh`、`bash` 或 `zsh` 绕过命令策略。
+  - Session 的读取、stdin、关闭和所有 `/sessions/*` 路由统一校验 workspace 所有权，并保留 requester 和调用关联信息。
+  - 终端输出使用客户端持有的单调递增 cursor；缓冲裁剪不会重复或跳过输出，cursor 过期和截断有明确响应。
+  - 超长单行和底层读取错误不会被静默丢弃；输出采用受限字节块或等价的可靠分片机制。
+  - `upload_file` 拒绝 loopback、private、link-local、multicast 和 unspecified 目标，重定向后重新校验，并具有完整超时。
+  - `write_file` 和 `/system/uploads` 使用不会在失败时截断原文件的原子写入流程。
+  - `apply_patch` 更新现有文件时保留权限位，并准确描述多文件提交在崩溃和多进程场景下的保证。
+  - `read_file`、`list_directory` 和 `search_files` 具有文件类型、大小、数量、取消和错误传播保护。
+  - 所有已确认问题均有永久回归测试，相关并发路径通过 race 测试。
+- **总体验证方式**：各子 Change 定向回归测试、相关包 `go test -race`、`git diff --check`、`go test ./...`。
+- **总体结果**：五个子 Change 均已完成。命令环境、Session 授权和 cursor、远程上传网络边界、文件提交一致性以及读取/遍历资源限制均已落地，并同步更新 README、HTTP/MCP Skills 和 API 示例文档。
+- **最终验证结果**：`go test ./...`、`go vet ./...`、相关包竞态测试、`web/admin` 的 `npm run check` 和 `git diff --check` 均通过。
+- **保留边界**：普通文件工具已显著缩小路径替换窗口并拒绝已检测到的并发目标变化，但完整的 descriptor-relative 文件访问仍作为后续 Unix 专项；`apply_patch` 提供进程内回滚，不承诺崩溃原子性或多进程事务。
+
+### CH-SEC-001A：执行环境与可信 Shell
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **预计规模**：约 250–450 行有效 diff。
+- **范围**：统一构造 `run_command`、`run_argv`、`exec_command` 的子进程环境；限制 Shell 为配置允许的 canonical path；处理符号链接、`PATH`、`HOME`、`TMPDIR` 和 login shell 行为。
+- **验收**：环境变量泄漏和伪造 Shell 绕过的复现测试在修复前失败、修复后通过；现有命令 allowlist / denylist 测试保持通过。
+- **实际实现**：三个命令入口始终显式构造 allowlist 环境；环境输出稳定排序；交互 Session 只接受解析后等同于系统 `sh`、`bash` 或 `zsh` 的绝对路径，拒绝 workspace 内同名伪造程序。
+- **验证结果**：`go test ./internal/capabilities/shell` 通过，覆盖未授权环境变量不泄漏、allowlist `PATH` 保留和伪造 Shell 拒绝。
+
+### CH-SEC-001B：Session 所有权、游标与输出可靠性
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **预计规模**：约 350–650 行有效 diff。
+- **范围**：为 Session 读、写、关闭增加 workspace 和调用主体约束；保存 requester、transport 和请求关联元数据；使用绝对 cursor 与 retained-buffer base offset；替换会静默丢失长行的 Scanner 路径。
+- **验收**：跨 workspace Session 访问被拒绝；分页不会重复第一页；缓冲裁剪不跳过未读输出；超长单行和读取错误有明确输出或截断状态。
+- **实际实现**：Session 保存 Task、requester、transport 和 MCP 请求关联信息；工具与四类 `/sessions/*` 路由统一校验 workspace；输出改用绝对 cursor、`base_offset`、`cursor_expired` 和 `truncated`；终端读取改为 32 KiB 受限分片，并显式报告底层读取错误。
+- **验证结果**：Core、Shell、HTTP API 定向测试通过，覆盖跨 workspace 403、分页不重复、缓冲裁剪、2 MiB 单行和读取错误保留。
+
+### CH-SEC-001C：远程上传 SSRF 防护
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **预计规模**：约 250–450 行有效 diff。
+- **范围**：为 `upload_file` 引入专用 HTTP Client、连接和请求超时、目标 IP 策略、重定向复检以及 IPv4 / IPv6 覆盖。
+- **验收**：loopback、RFC1918/private、link-local、multicast、unspecified 和重定向到内网均被拒绝；允许的公网下载和大小上限仍正常工作。
+- **实际实现**：`upload_file` 使用无代理专用 HTTP Client、总请求/连接/TLS/响应头超时、DNS 与字面 IP 校验、重定向复检和拨号前再次解析；任一 DNS 结果为非公网地址时整体拒绝。
+- **验证结果**：`go test ./internal/capabilities/filesystem` 通过，覆盖 IPv4/IPv6 内网类别、混合 DNS、loopback 上传和重定向目标复检。
+
+### CH-SEC-001D：原子写入、权限与 Patch 事务语义
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **预计规模**：约 350–700 行有效 diff。
+- **范围**：抽取统一原子文件写入流程供 `write_file`、上传端点和文件浏览器复用；保留已有文件权限；缩小 symlink / 路径替换 TOCTOU；修正 `apply_patch` 权限和事务描述。
+- **验收**：失败写入不截断旧内容；Patch 后可执行位保持；并发创建、rename 失败、rollback 失败和磁盘写入失败均有测试和明确行为。
+- **实际实现**：新增 `internal/fileio` 同目录临时文件、同步落盘、权限保留、目标身份复检和无覆盖创建流程；`write_file`、`upload_file`、`/system/uploads` 与文件浏览器共用该实现。`apply_patch` 保留更新目标权限、拒绝并发替换与并发创建覆盖、汇总 rollback 错误，并把事务保证准确描述为进程内 best-effort rollback。
+- **验证结果**：File I/O、Filesystem、HTTP Upload、File Browser 和 Patch 定向测试通过，覆盖失败源读取保留旧文件、可执行位、并发创建与目标替换语义。
+
+### CH-SEC-001E：读取与目录遍历资源限制
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **预计规模**：约 200–400 行有效 diff。
+- **范围**：为 `read_file` 增加普通文件、大小和二进制策略；为递归列表和搜索增加最大结果数、glob 校验、context cancellation 和遍历错误传播。
+- **验收**：超大文件、目录、特殊文件、非法 glob、权限错误、取消和结果截断均返回明确结果，不再静默返回不完整成功。
+- **实际实现**：`read_file` 限制为最大 8 MiB 的普通 UTF-8 文本文件；`list_directory` 与 `search_files` 增加默认/硬上限、显式 `truncated`、非法 glob 拒绝、context cancellation、普通文件过滤和遍历错误传播。
+- **验证结果**：Filesystem 定向测试通过，覆盖目录、二进制、超限文件、取消、非法 glob、结果裁剪和权限错误传播。
+
+## CH-FB-004：终端与任务联动
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **优先级**：P1
+- **目标**：让 Admin Files 页面能从当前 workspace/root/目录启动受控 Session，持续读取终端输出、发送 stdin 和关闭 Session，并在命令需要审批时保留 Files 上下文、展示关联 Task / Approval 状态和返回入口。
+- **非目标**：本轮不增加 SSE / WebSocket、不实现多终端标签、不持久化终端到浏览器重启后、不增加 Git/LSP/Monaco，也不绕过现有 `exec_command` 审批和命令策略。
+- **涉及范围**：`internal/filebrowser` 目录解析、`internal/adminapi` 终端 API、`web/admin/src` 终端状态与 UI、Admin 构建产物、测试和文件浏览器文档。
+- **依赖与风险**：必须复用已完成的 `CH-SEC-001` Session workspace 校验与绝对 cursor；Admin 与控制面监听端口分离，因此浏览器不能直接调用 `/sessions/*`，需要 Admin 同源代理接口。终端轮询不得重渲染或覆盖编辑器中的未保存内容。
+- **预计规模**：约 650–1000 行有效 diff；若超过护栏，实时流、多终端和持久化继续拆到后续 Change。
+- **验收条件**：
+  - Files 当前目录可作为经过 file-browser sandbox 校验的绝对 workdir 启动 `exec_command` Task。
+  - 启动、stdin 和 close 使用 Admin 同源 API，统一执行 Origin、workspace 和 Session 所有权校验。
+  - 终端使用绝对 cursor 增量轮询；输出不重复，cursor 过期和截断有明确 UI 提示。
+  - 启动操作需要审批时，Files 展示 Task / Approval 状态；批准、拒绝或取消后可返回原 workspace/root/path 与终端 Task 上下文。
+  - Task 成功产生 `session_id` 后自动接入终端；失败、取消和超时显示可操作错误，并提供 Task 详情入口。
+  - 终端轮询和输入不会导致 Files 页面整体重渲染，不丢失打开标签或未保存内容。
+  - 后端、前端状态模块、生成资源和全量测试均通过。
+- **验证方式**：Admin API 和 File Browser 定向 Go 测试、终端状态 Node 单元测试、`npm run check`、相关包 race 测试、`git diff --check`、`go test ./...`。
+- **实际实现**：
+  - 新增 Admin 同源 `/api/admin/v1/file-browser/terminals` 接口，支持从 file-browser sandbox 校验后的当前目录创建审批型 `exec_command` Task，以及按 workspace 读取、stdin 和关闭 Session。
+  - Files URL 使用 `terminal_task`、`terminal_session`、`terminal_path` 保存关联；Task 成功后自动取得 `session_id`，终端面板使用绝对 cursor 增量轮询并显示 cursor 过期与截断提示。
+  - 新增独立 `FileTerminalState` 前端状态模块，按 offset 去重输出并限制内存保留；轮询只更新终端 DOM，不重渲染文件编辑器。
+  - 审批页面支持经过同源 `/admin` 校验的 `return_to`；Files 发起的终端和文件变更审批完成后可返回原 workspace/root/path，并保留内存中的 dirty 标签。
+  - 修复显式关闭 Session 后进程退出回调把 `closed` 覆盖成 `failed` 的竞态。
+- **验证结果**：
+  - Admin API、File Browser、Core 和 Admin 资源定向测试通过，覆盖当前目录 workdir、输出读取、stdin、关闭、跨 workspace 拒绝、审批 Task 绑定和 Origin 校验。
+  - Node 终端状态与文件标签共 10 个测试通过；Admin `dist` 连续两次构建 SHA-256 一致。
+  - 无头 Chrome 普通终端冒烟通过：未保存编辑内容在 Task/Session 轮询期间保持不变，终端输出、状态和 Task 链接正确。
+  - 无头 Chrome 审批往返冒烟通过：`return_to` 带回原 Files 和 terminal Task 上下文，批准后自动接入 Session，dirty 编辑内容保持不变。
+  - `go test ./...`、`go vet ./...`、`go test -race ./internal/core ./internal/capabilities/shell ./internal/adminapi ./internal/filebrowser ./internal/app` 和 `git diff --check` 均通过。
+- **范围说明**：工作树同时包含尚未提交的 `CH-FB-003` 和 `CH-SEC-001` 改动，因此未伪造单独的实际 diff 行数；实时 SSE/WebSocket、多终端标签和浏览器重启后的完整状态持久化已拆出后续事项。
+
+下一项：评估 `CH-FB-005` 高级工作区能力，优先拆分 Git status / diff 与实时终端流。
+
+## CH-FB-003：多标签编辑状态
+
+- **状态**：已完成
+- **开始日期**：2026-07-29
+- **完成日期**：2026-07-29
+- **目标**：让 Files 页面可以同时保留多个打开文件，每个标签独立维护内容、ETag、dirty、预览和冲突状态，并在切换标签时不丢失编辑内容。
+- **非目标**：本轮不接入 Monaco、不持久化标签到浏览器重启后、不实现终端、Git、LSP 或跨标签批量保存。
+- **涉及范围**：`web/admin/src/app.js`、新增文件标签状态模块及 Node 单元测试、Admin 样式、生成资源、资源测试和文件浏览器文档。
+- **依赖与风险**：现有页面通过 URL 表示当前目录和文件；浏览器前进/后退、离开 Files、关闭 dirty 标签、重命名和删除必须与内存标签状态一致。审批跳转不能静默丢失其他 dirty 标签。
+- **预计规模**：约 450–850 行有效 diff。
+- **验收条件**：
+  - 打开多个文件时显示标签栏，切换标签不会重新读取或丢失其他标签中的未保存内容。
+  - 每个文本标签独立维护内容、保存基线、ETag、dirty、Markdown 预览和 ETag 冲突状态。
+  - 关闭 dirty 标签和离开 Files 时有明确确认；关闭干净标签和 Files 内部导航不产生无关确认。
+  - 浏览器前进/后退可以在 Files 标签和目录上下文间切换，离开 Files 时仍保护全部 dirty 标签。
+  - 直接完成的文件重命名和删除会同步更新或关闭受影响标签；等待审批的操作保留标签状态。
+  - 前端状态模块有独立 Node 单元测试，生成资源和现有 Go 测试继续通过。
+- **验证方式**：`npm run check`、文件标签 Node 单元测试、`go test ./web/admin ./internal/adminapi ./internal/filebrowser`、重复构建产物哈希、`git diff --check`、`go test ./...`。
+- **实际实现**：
+  - 新增独立 `FileTabStore` 模块，按 workspace、root 和 path 管理标签；每个标签独立保存当前内容、保存基线、ETag、dirty、Markdown 预览模式和冲突状态。
+  - Files 内部的文件、目录和浏览器历史导航会保留所有标签；离开 Files、刷新浏览器或关闭 dirty 标签时统一保护未保存内容。
+  - 标签切换优先使用内存状态，不重复读取已打开文件；关闭活动标签后自动选择相邻标签。
+  - 文件直接重命名或移动时同步更新匹配标签路径，文件或目录直接删除时关闭受影响标签；进入审批页面时保留标签状态，避免在审批前静默丢失编辑内容。
+  - 新增水平滚动标签栏、活动和 dirty 标记、暗色模式样式，并将状态模块纳入前端构建产物与 Go embed 资源测试。
+- **验证结果**：
+  - `npm run check`：通过，6 个文件标签状态测试全部通过，源码和生成 JavaScript 语法检查通过。
+  - 连续两次构建的 `app.js`、`styles.css`、`index.html` SHA-256 一致。
+  - 无头 Chrome 交互冒烟通过：打开两个标签、修改、切换、dirty 保留、取消关闭和确认关闭均符合预期，未发现运行时异常。
+  - `go test ./web/admin ./internal/adminapi ./internal/filebrowser`：通过。
+  - `go test ./...`：通过。
+  - `BUILD_ADMIN=1 OUTPUT=/tmp/localgate-ch-fb-003 bash scripts/build.sh`：通过。
+  - `git diff --check`：通过。
+
+后续：先完成 `CH-SEC-001` 工具与 Session 安全加固，再开始 `CH-FB-004` 终端与任务联动。
+
+## CH-ADMIN-003：前端构建链与 Monaco 决策
+
+- **状态**：已完成
+- **开始日期**：2026-07-29
+- **完成日期**：2026-07-29
+- **目标**：为 Admin Console 建立最小、可重复的前端构建链，把可维护源码与 Go embed 使用的提交产物分离，并形成明确的 Monaco 引入决策。
+- **非目标**：本轮不接入 Monaco、不改写为 TypeScript 或组件框架、不实现多标签页，也不改变 Admin API。
+- **涉及范围**：`web/admin/src/`、`web/admin/dist/`、`web/admin/package.json`、锁文件、Admin 构建脚本、资源测试和相关文档。
+- **依赖与风险**：Go 二进制构建和运行不能强制依赖 Node；`dist/` 必须继续提交并可直接 embed；构建输出必须稳定，不能破坏现有 CSP、路由和无鉴权资源加载方式。
+- **预计规模**：约 150–350 行有效 diff，另包含现有前端资源从 `dist/` 到 `src/` 的机械复制。
+- **验收条件**：
+  - `web/admin/src/` 成为前端源码入口，`dist/` 明确为提交的生成产物。
+  - 使用 npm 锁文件和固定版本构建工具，可通过单一命令重新生成 `dist/`。
+  - 默认 Go 构建继续只消费已提交的 `dist/`，没有 Node 或网络时仍可编译 LocalGate。
+  - 生成的 Admin 页面继续满足现有路由、CSP 和文件管理器资源测试。
+  - 文档明确 Monaco 的体积、Worker、CSP、离线构建影响，以及当前是否接入的结论和后续启动条件。
+- **验证方式**：`npm ci`、`npm run build`、重复构建后 `git diff --exit-code -- web/admin/dist`、`node --check web/admin/dist/app.js`、`go test ./web/admin`、`git diff --check`、`go test ./...`。
+- **实际实现**：
+  - 新增 `web/admin/src/` 作为可维护源码目录，`dist/` 继续作为提交并由 Go embed 消费的生成产物。
+  - 使用固定版本的 esbuild、npm lockfile 和显式 install-script 许可建立可重复构建；新增根目录 `scripts/build-admin.sh`。
+  - `scripts/build.sh` 仅在 `BUILD_ADMIN=1` 时重建前端，默认 Go 构建仍不依赖 Node 或网络。
+  - Admin 资源测试增加构建输入检查，并解除对旧压缩 CSS 空格格式的脆弱依赖。
+  - Monaco 当前暂缓：必须先完成多标签编辑状态模块化和编辑器 adapter，再验证同源 Worker、现有 CSP、离线打包、体积与启动成本；不接受 CDN、`unsafe-eval` 或默认放宽 CSP。
+- **验证结果**：
+  - `npm ci`、`npm run check`：通过，无已知 npm 漏洞。
+  - 连续两次构建的 `app.js`、`styles.css`、`index.html` SHA-256 一致。
+  - `go test ./...`：通过。
+  - `BUILD_ADMIN=1 OUTPUT=/tmp/localgate-ch-admin-003 bash scripts/build.sh`：通过。
+  - `git diff --check`：通过。
+
+后续编辑器增强：增加编辑器 adapter，再评估 Monaco 的 Worker、CSP、体积和启动成本。
+
 ## CH-FB-002：预览与冲突处理
 
 - **状态**：已完成
@@ -30,7 +221,7 @@
   - `go test ./...`：通过。
 - **实际规模**：532 行有效 diff（490 行新增、42 行删除，包含计划与专项文档）。
 
-后续顺序：`CH-ADMIN-003` 前端构建链与 Monaco 决策 → `CH-FB-003` 多标签状态 → `CH-FB-004` 终端与任务联动 → `CH-FB-005` 高级工作区能力。
+后续顺序：`CH-ADMIN-003` 前端构建链与 Monaco 决策 → `CH-FB-003` 多标签状态 → `CH-SEC-001` 工具与 Session 安全加固 → `CH-FB-004` 终端与任务联动 → `CH-FB-005` 高级工作区能力。
 
 ## CH-ADMIN-002：可折叠管理侧栏
 

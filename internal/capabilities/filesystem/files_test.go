@@ -1,7 +1,9 @@
 package filesystem
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -53,19 +55,30 @@ func TestReadWriteList(t *testing.T) {
 	}
 }
 
+func TestWriteFilePreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(target, []byte("old"), 0o751); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target, "content": "new"}); err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	info, _ := os.Stat(target)
+	if info.Mode().Perm() != 0o751 {
+		t.Fatalf("mode changed: %o", info.Mode().Perm())
+	}
+}
+
 func TestUploadFile(t *testing.T) {
 	dir := t.TempDir()
 	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
-	var tool core.Tool
-	for _, tl := range NewTools(ws) {
-		if tl.Name() == "upload_file" {
-			tool = tl
-		}
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, "payload")
 	}))
 	defer srv.Close()
+	tool := uploadFileTool{fsToolBase: fsToolBase{ws: ws}, client: srv.Client()}
 
 	target := filepath.Join(dir, "nested", "target.bin")
 	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
@@ -89,6 +102,19 @@ func TestUploadFile(t *testing.T) {
 	}
 	if res["file_id"] != "file_123" || res["file_name"] != "input.bin" || res["mime_type"] != "application/octet-stream" {
 		t.Fatalf("unexpected metadata: %#v", res)
+	}
+}
+
+func TestUploadFileRejectsLoopbackDownload(t *testing.T) {
+	dir := t.TempDir()
+	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	tool := uploadFileTool{fsToolBase: fsToolBase{ws: ws}}
+	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+		"path": filepath.Join(dir, "target.bin"),
+		"file": map[string]any{"download_url": "http://127.0.0.1/file"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not public") {
+		t.Fatalf("expected loopback rejection, got %v", err)
 	}
 }
 
@@ -195,6 +221,112 @@ func TestSearchFiles(t *testing.T) {
 	}
 	if res["matches"] == nil {
 		t.Fatalf("no matches")
+	}
+}
+
+func TestReadFileRejectsDirectoryBinaryAndOversize(t *testing.T) {
+	dir := t.TempDir()
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir}); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected directory rejection, got %v", err)
+	}
+	binaryPath := filepath.Join(dir, "binary.bin")
+	if err := os.WriteFile(binaryPath, []byte{0, 1, 2}, 0o644); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": binaryPath}); err == nil || !strings.Contains(err.Error(), "binary file") {
+		t.Fatalf("expected binary rejection, got %v", err)
+	}
+	largePath := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(largePath, bytes.Repeat([]byte("x"), readFileMaxBytes+1), 0o644); err != nil {
+		t.Fatalf("write large: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": largePath}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size rejection, got %v", err)
+	}
+}
+
+func TestReadFileHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "file.txt")
+	_ = os.WriteFile(target, []byte("content"), 0o644)
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tool.Execute(ctx, core.InvokeContext{}, map[string]any{"path": target}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestListDirectoryReturnsExplicitTruncation(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		_ = os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
+	}
+	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir, "max_results": 2})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	entries, _ := res["entries"].([]map[string]any)
+	if len(entries) != 2 || res["truncated"] != true {
+		t.Fatalf("unexpected bounded list: %#v", res)
+	}
+}
+
+func TestRecursiveListHonorsCanceledContext(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "a"), []byte("a"), 0o644)
+	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tool.Execute(ctx, core.InvokeContext{}, map[string]any{"path": dir, "recursive": true}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestRecursiveTraversalPropagatesPermissionErrors(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatalf("mkdir blocked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "secret.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write blocked file: %v", err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	defer os.Chmod(blocked, 0o755)
+	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	list := listDirTool{fsToolBase: fsToolBase{ws: ws}}
+	search := searchFilesTool{fsToolBase: fsToolBase{ws: ws}}
+	_, listErr := list.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir, "recursive": true})
+	_, searchErr := search.Execute(context.Background(), core.InvokeContext{}, map[string]any{"root": dir, "glob": "*.txt"})
+	if listErr == nil && searchErr == nil {
+		t.Skip("filesystem does not enforce directory permission bits for this process")
+	}
+	if listErr == nil || searchErr == nil {
+		t.Fatalf("permission error was swallowed: list=%v search=%v", listErr, searchErr)
+	}
+}
+
+func TestSearchFilesRejectsInvalidGlobAndReportsTruncation(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		_ = os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
+	}
+	tool := searchFilesTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"root": dir, "glob": "["}); err == nil || !strings.Contains(err.Error(), "invalid glob") {
+		t.Fatalf("expected invalid glob rejection, got %v", err)
+	}
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"root": dir, "glob": "*.go", "max_results": 2})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	matches, _ := res["matches"].([]string)
+	if len(matches) != 2 || res["truncated"] != true {
+		t.Fatalf("unexpected bounded search: %#v", res)
 	}
 }
 

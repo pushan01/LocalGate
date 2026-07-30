@@ -10,6 +10,7 @@ import (
 
 var ErrSessionNotFound = errors.New("session not found")
 var ErrSessionClosed = errors.New("session closed")
+var ErrSessionWorkspaceMismatch = errors.New("session workspace mismatch")
 
 type SessionController struct {
 	Stdin io.WriteCloser
@@ -17,10 +18,12 @@ type SessionController struct {
 }
 
 type sessionState struct {
-	session Session
-	outputs []SessionOutput
-	maxOut  int
-	ctrl    SessionController
+	session    Session
+	outputs    []SessionOutput
+	maxOut     int
+	baseOffset int
+	nextOffset int
+	ctrl       SessionController
 }
 
 type SessionManager struct {
@@ -117,6 +120,20 @@ func (m *SessionManager) Get(id string) (Session, error) {
 	return st.session, nil
 }
 
+func (m *SessionManager) GetForWorkspace(id, workspaceID string) (Session, error) {
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sessions[id]
+	if !ok {
+		return Session{}, ErrSessionNotFound
+	}
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		return Session{}, err
+	}
+	return st.session, nil
+}
+
 func (m *SessionManager) Read(id string, from int, maxItems int) (SessionReadResult, error) {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
@@ -125,25 +142,59 @@ func (m *SessionManager) Read(id string, from int, maxItems int) (SessionReadRes
 	if !ok {
 		return SessionReadResult{}, ErrSessionNotFound
 	}
-	arr := st.outputs
-	if from < 0 || from > len(arr) {
-		from = 0
+	return readSessionState(st, from, maxItems), nil
+}
+
+func (m *SessionManager) ReadForWorkspace(id, workspaceID string, from int, maxItems int) (SessionReadResult, error) {
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sessions[id]
+	if !ok {
+		return SessionReadResult{}, ErrSessionNotFound
 	}
-	if maxItems <= 0 || from+maxItems > len(arr) {
-		maxItems = len(arr) - from
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		return SessionReadResult{}, err
+	}
+	return readSessionState(st, from, maxItems), nil
+}
+
+func readSessionState(st *sessionState, from int, maxItems int) SessionReadResult {
+	base := st.baseOffset
+	nextAvailable := st.nextOffset
+	cursorExpired := from < base
+	if from < base {
+		from = base
+	}
+	if from > nextAvailable {
+		from = nextAvailable
+	}
+	start := from - base
+	arr := st.outputs
+	if start < 0 {
+		start = 0
+	}
+	if start > len(arr) {
+		start = len(arr)
+	}
+	if maxItems <= 0 || start+maxItems > len(arr) {
+		maxItems = len(arr) - start
 	}
 	out := make([]SessionOutput, maxItems)
-	copy(out, arr[from:from+maxItems])
+	copy(out, arr[start:start+maxItems])
 	next := from + maxItems
 	now := time.Now().UTC()
 	st.session.LastOffset = next
 	st.session.LastReadAt = now
 	st.session.LastActiveAt = now
 	return SessionReadResult{
-		Items:      out,
-		NextOffset: next,
-		Truncated:  st.maxOut > 0 && len(arr) >= st.maxOut,
-	}, nil
+		Items:         out,
+		NextOffset:    next,
+		BaseOffset:    base,
+		Truncated:     st.baseOffset > 0,
+		CursorExpired: cursorExpired,
+		OutputError:   st.session.OutputError,
+	}
 }
 
 func (m *SessionManager) ReadLatest(id string, maxItems int) (SessionReadResult, error) {
@@ -154,30 +205,14 @@ func (m *SessionManager) ReadLatest(id string, maxItems int) (SessionReadResult,
 	if !ok {
 		return SessionReadResult{}, ErrSessionNotFound
 	}
-	start := st.session.LastOffset
-	if start < 0 || start > len(st.outputs) {
-		start = 0
-	}
-	if maxItems > 0 && start+maxItems < len(st.outputs) {
-		end := start + maxItems
-		out := make([]SessionOutput, end-start)
-		copy(out, st.outputs[start:end])
-		now := time.Now().UTC()
-		st.session.LastOffset = end
-		st.session.LastReadAt = now
-		st.session.LastActiveAt = now
-		return SessionReadResult{Items: out, NextOffset: end, Truncated: st.maxOut > 0 && len(st.outputs) >= st.maxOut}, nil
-	}
-	out := make([]SessionOutput, len(st.outputs[start:]))
-	copy(out, st.outputs[start:])
-	now := time.Now().UTC()
-	st.session.LastOffset = len(st.outputs)
-	st.session.LastReadAt = now
-	st.session.LastActiveAt = now
-	return SessionReadResult{Items: out, NextOffset: len(st.outputs), Truncated: st.maxOut > 0 && len(st.outputs) >= st.maxOut}, nil
+	return readSessionState(st, st.session.LastOffset, maxItems), nil
 }
 
 func (m *SessionManager) AppendOutput(id, stream, data string) error {
+	return m.AppendOutputChunk(id, stream, data, false)
+}
+
+func (m *SessionManager) AppendOutputChunk(id, stream, data string, continues bool) error {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -187,22 +222,43 @@ func (m *SessionManager) AppendOutput(id, stream, data string) error {
 	}
 	now := time.Now().UTC()
 	st.outputs = append(st.outputs, SessionOutput{
-		Offset: len(st.outputs),
-		Stream: stream,
-		Data:   data,
-		Time:   now,
+		Offset:    st.nextOffset,
+		Stream:    stream,
+		Data:      data,
+		Continues: continues,
+		Time:      now,
 	})
+	st.nextOffset++
 	st.session.LastOutputAt = now
 	st.session.LastActiveAt = now
 	if st.maxOut > 0 && len(st.outputs) > st.maxOut {
-		st.outputs = st.outputs[len(st.outputs)-st.maxOut:]
-		for i := range st.outputs {
-			st.outputs[i].Offset = i
-		}
-		if st.session.LastOffset > len(st.outputs) {
-			st.session.LastOffset = len(st.outputs)
+		dropped := len(st.outputs) - st.maxOut
+		st.outputs = st.outputs[dropped:]
+		st.baseOffset += dropped
+		if st.session.LastOffset < st.baseOffset {
+			st.session.LastOffset = st.baseOffset
 		}
 	}
+	return nil
+}
+
+func (m *SessionManager) SetOutputError(id, stream string, err error) error {
+	if err == nil {
+		return nil
+	}
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sessions[id]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	message := err.Error()
+	if stream != "" {
+		message = stream + ": " + message
+	}
+	st.session.OutputError = message
+	st.session.LastActiveAt = time.Now().UTC()
 	return nil
 }
 
@@ -237,6 +293,41 @@ func (m *SessionManager) WriteStdin(id string, chars string) error {
 	return err
 }
 
+func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) error {
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	st, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if st.session.Status == SessionClosed || st.session.Status == SessionExited || st.session.Status == SessionFailed {
+		m.mu.Unlock()
+		return ErrSessionClosed
+	}
+	stdin := st.ctrl.Stdin
+	m.mu.Unlock()
+	if stdin == nil {
+		return ErrSessionClosed
+	}
+	if chars == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	m.mu.Lock()
+	if st2, ok := m.sessions[id]; ok {
+		st2.session.LastInputAt = now
+		st2.session.LastActiveAt = now
+	}
+	m.mu.Unlock()
+	_, err := io.WriteString(stdin, chars)
+	return err
+}
+
 func (m *SessionManager) Finish(id string, exitCode int, err error) error {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
@@ -247,8 +338,13 @@ func (m *SessionManager) Finish(id string, exitCode int, err error) error {
 	}
 	st.session.ExitCode = exitCode
 	now := time.Now().UTC()
-	st.session.EndedAt = now
+	if st.session.EndedAt.IsZero() {
+		st.session.EndedAt = now
+	}
 	st.session.LastActiveAt = now
+	if st.session.Status == SessionClosed {
+		return nil
+	}
 	if err != nil {
 		st.session.Status = SessionFailed
 		st.session.ErrorMsg = err.Error()
@@ -277,6 +373,38 @@ func (m *SessionManager) Close(id string) (Session, error) {
 		return out, closeFn()
 	}
 	return out, nil
+}
+
+func (m *SessionManager) CloseForWorkspace(id, workspaceID string) (Session, error) {
+	_ = m.Sweep(time.Now().UTC())
+	m.mu.Lock()
+	st, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return Session{}, ErrSessionNotFound
+	}
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		m.mu.Unlock()
+		return Session{}, err
+	}
+	closeFn := st.ctrl.Close
+	st.session.Status = SessionClosed
+	now := time.Now().UTC()
+	st.session.EndedAt = now
+	st.session.LastActiveAt = now
+	out := st.session
+	m.mu.Unlock()
+	if closeFn != nil {
+		return out, closeFn()
+	}
+	return out, nil
+}
+
+func authorizeSessionWorkspace(session Session, workspaceID string) error {
+	if workspaceID != "" && session.WorkspaceID != workspaceID {
+		return ErrSessionWorkspaceMismatch
+	}
+	return nil
 }
 
 func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {

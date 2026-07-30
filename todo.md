@@ -16,8 +16,9 @@
 
 ## Existing runtime work
 
-- Define and document the session event cursor contract.
+- [x] Define and document the session event cursor contract, including absolute cursor, retained-buffer base offset, truncation and cursor expiry.
 - Add optional session persistence and streaming lifecycle events.
+- Add descriptor-relative file access hardening for general filesystem operations on supported Unix platforms.
 
 ## File browser / online IDE
 
@@ -27,8 +28,10 @@
 - [x] **Path and file safety.** Uses `workspace_id + root_id + relative_path`, workspace sandbox validation, symlink escape rejection, hidden/excluded directory filtering, and file size / binary detection.
 - [x] **Safe write support.** Save, create file, mkdir, rename/move, upload, download, and delete APIs use ETag conflict detection and atomic writes where applicable.
 - [x] **Approval and audit integration.** Write/delete/move/upload operations enter LocalGate approval tasks when configured and emit file-browser-specific audit actions.
-- [ ] **Editor UX.** Dirty navigation protection, list-level rename/delete, collapsible sidebar, safe Markdown/image preview, and actionable ETag conflict handling are implemented. Search is intentionally out of scope. Next is `CH-ADMIN-003` frontend build-chain and Monaco decision, followed by multi-tab editing.
-- [ ] **Terminal integration.** Let users open a Session terminal from the current directory and later add a real-time stream for terminal output.
+- [x] **Editor UX.** Dirty navigation protection, list-level rename/delete, collapsible sidebar, safe Markdown/image preview, actionable ETag conflict handling, frontend build-chain/Monaco decision, and per-tab content/ETag/dirty/conflict state are implemented through `CH-FB-003`. Search remains intentionally out of scope.
+- [x] **Tool and Session hardening.** `CH-SEC-001` completed environment / trusted Shell isolation, Session ownership / absolute cursor reliability, upload SSRF protection, atomic file I/O, and read / traversal limits.
+- [x] **Terminal integration.** `CH-FB-004` added current-directory Session creation, absolute-cursor polling, stdin/close, Task / Approval linkage, and approval return to the original Files context.
+- [ ] **Real-time and multi-terminal UX.** Replace polling with an Admin SSE / WebSocket stream, add multiple terminal tabs, and define browser-restart restoration after measuring retained Session and output limits.
 - [ ] **Optional code-server template.** Provide a private dynamic deployment template for code-server with explicit warnings that code-server internals bypass LocalGate's fine-grained file approvals.
 
 ## Approval backlog

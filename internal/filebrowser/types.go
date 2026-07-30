@@ -12,6 +12,13 @@ type WorkspaceItem struct {
 	Roots []Root `json:"roots"`
 }
 
+type DirectoryContext struct {
+	WorkspaceID string `json:"workspace_id"`
+	RootID      string `json:"root_id"`
+	Path        string `json:"path"`
+	AbsPath     string `json:"-"`
+}
+
 type Entry struct {
 	Name     string    `json:"name"`
 	Path     string    `json:"path"`

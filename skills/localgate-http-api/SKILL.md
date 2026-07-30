@@ -208,10 +208,10 @@ These are the core tools exposed by LocalGate in the default workspace.
 
 ### Filesystem tools
 
-- `read_file`: read file content once
+- `read_file`: read a regular text file up to the service limit
 - `write_file`: write file content
-- `upload_file`: download a host-provided file object and save it into the workspace
-- `apply_patch`: apply a multi-file patch atomically within the workspace
+- `upload_file`: download a host-provided file object from a public HTTP(S) target and save it into the workspace
+- `apply_patch`: validate a multi-file patch and commit it with best-effort in-process rollback
 
 For `upload_file`, the expected `file` shape is:
 
@@ -230,7 +230,9 @@ For `apply_patch`, keep these constraints stable:
 
 - input must be patch syntax starting with `*** Begin Patch`
 - supported operations are `Add File`, `Update File`, `Delete File`
-- multi-file patches are all-or-nothing
+- multi-file patches are fully validated before commit and use in-process rollback on commit failure
+- updated files preserve their permission bits and concurrently replaced targets are rejected
+- crash-atomic and cross-process transactional behavior is not guaranteed
 - do not send unified diff and expect it to work
 
 ### One-shot command tools
@@ -248,8 +250,10 @@ Use `run_command` instead when guiding a model through tool discovery under defa
 ### Session tools
 
 - `exec_command`: start a background-capable shell session
-- `write_stdin`: send more input or poll latest session output
-- `read_thread_terminal`: read buffered terminal output for a known `session_id`
+- `write_stdin`: send more input and read output from an explicit absolute `cursor`
+- `read_thread_terminal`: read buffered terminal output for a known `session_id` from an explicit absolute `cursor`
+
+Preserve the returned `next_offset` and pass it as the next `cursor`. A trimmed buffer is reported through `base_offset`, `truncated`, and `cursor_expired`. Session access must use the workspace that created the session.
 
 ### MCP admin tools
 

@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+if [[ "${BUILD_ADMIN:-0}" == "1" ]]; then
+  "$ROOT_DIR/scripts/build-admin.sh"
+fi
+
 VERSION="${VERSION:-dev}"
 OUTPUT="${OUTPUT:-$ROOT_DIR/bin/localgate}"
 GOOS_VALUE="${GOOS:-}"

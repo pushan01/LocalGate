@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,16 +39,11 @@ func (r Runner) Run(ctx context.Context, taskID string, command string, cwd stri
 		defer cancel()
 	}
 
-	// run_command should preserve the LocalGate process environment as-is.
-	// A login shell can source profiles and reorder PATH, making command
-	// resolution unexpectedly differ from exec_command.
 	cmd := exec.Command("/bin/sh", "-c", command)
 	if resolvedCWD != "" {
 		cmd.Dir = resolvedCWD
 	}
-	if len(env) > 0 {
-		cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
-	}
+	cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
@@ -126,9 +122,7 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 	if resolvedCWD != "" {
 		cmd.Dir = resolvedCWD
 	}
-	if len(env) > 0 {
-		cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
-	}
+	cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -242,8 +236,14 @@ func mergeEnvAllowed(env map[string]string, allow []string) []string {
 			base[k] = v
 		}
 	}
-	out := []string{}
-	for k, v := range base {
+	keys := make([]string, 0, len(base))
+	for k := range base {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := base[k]
 		out = append(out, fmt.Sprintf("%s=%s", k, v))
 	}
 	return out

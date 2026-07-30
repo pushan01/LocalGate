@@ -24,6 +24,7 @@ import (
 	"localgate/internal/core"
 	"localgate/internal/download"
 	"localgate/internal/fileexport"
+	"localgate/internal/fileio"
 	"localgate/internal/invocation"
 	"localgate/internal/security"
 	"localgate/internal/server"
@@ -123,6 +124,7 @@ type stdinRequest struct {
 	Chars           string `json:"chars"`
 	YieldTimeMs     int    `json:"yield_time_ms"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
+	Cursor          int    `json:"cursor"`
 }
 
 func (a *API) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -278,14 +280,22 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
 	}
+	wsid := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
+	if wsid == "" {
+		wsid = a.DefaultWSID
+	}
+	if _, ok := a.App.Registries[wsid]; !ok {
+		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": wsid})
+		return
+	}
 	if len(parts) == 1 {
 		if r.Method != http.MethodGet {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		s, err := a.App.Sessions.Get(sessionID)
+		s, err := a.App.Sessions.GetForWorkspace(sessionID, wsid)
 		if err != nil {
-			server.WriteError(w, http.StatusNotFound, "session_not_found", "session not found", nil)
+			writeSessionRouteError(w, err)
 			return
 		}
 		server.WriteJSON(w, http.StatusOK, s)
@@ -304,14 +314,19 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		res, err := a.App.InvokeTool(r.Context(), a.DefaultWSID, "write_stdin", map[string]any{
+		res, err := a.App.InvokeTool(r.Context(), wsid, "write_stdin", map[string]any{
 			"session_id":        sessionID,
 			"chars":             req.Chars,
 			"yield_time_ms":     req.YieldTimeMs,
 			"max_output_tokens": req.MaxOutputTokens,
+			"cursor":            req.Cursor,
 		})
 		if err != nil {
-			server.WriteError(w, http.StatusBadRequest, "stdin_failed", err.Error(), nil)
+			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {
+				writeSessionRouteError(w, err)
+			} else {
+				server.WriteError(w, http.StatusBadRequest, "stdin_failed", err.Error(), nil)
+			}
 			return
 		}
 		server.WriteJSON(w, http.StatusOK, res)
@@ -327,12 +342,23 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				maxOutput = i
 			}
 		}
-		res, err := a.App.InvokeTool(r.Context(), a.DefaultWSID, "read_thread_terminal", map[string]any{
+		cursor := 0
+		if v := r.URL.Query().Get("cursor"); v != "" {
+			if i, err := strconv.Atoi(v); err == nil && i >= 0 {
+				cursor = i
+			}
+		}
+		res, err := a.App.InvokeTool(r.Context(), wsid, "read_thread_terminal", map[string]any{
 			"session_id":        sessionID,
 			"max_output_tokens": maxOutput,
+			"cursor":            cursor,
 		})
 		if err != nil {
-			server.WriteError(w, http.StatusBadRequest, "terminal_read_failed", err.Error(), nil)
+			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {
+				writeSessionRouteError(w, err)
+			} else {
+				server.WriteError(w, http.StatusBadRequest, "terminal_read_failed", err.Error(), nil)
+			}
 			return
 		}
 		server.WriteJSON(w, http.StatusOK, res)
@@ -342,9 +368,9 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		s, err := a.App.Sessions.Close(sessionID)
+		s, err := a.App.Sessions.CloseForWorkspace(sessionID, wsid)
 		if err != nil {
-			server.WriteError(w, http.StatusBadRequest, "session_close_failed", err.Error(), nil)
+			writeSessionRouteError(w, err)
 			return
 		}
 		server.WriteJSON(w, http.StatusAccepted, s)
@@ -352,6 +378,17 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
+	}
+}
+
+func writeSessionRouteError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, core.ErrSessionNotFound):
+		server.WriteError(w, http.StatusNotFound, "session_not_found", "session not found", nil)
+	case errors.Is(err, core.ErrSessionWorkspaceMismatch):
+		server.WriteError(w, http.StatusForbidden, "session_workspace_mismatch", "session does not belong to the requested workspace", nil)
+	default:
+		server.WriteError(w, http.StatusBadRequest, "session_operation_failed", err.Error(), nil)
 	}
 }
 
@@ -944,18 +981,12 @@ func (a *API) handleUploads(w http.ResponseWriter, r *http.Request) {
 
 	_, statErr := os.Stat(dec.Path)
 	overwritten := statErr == nil
-	if err := os.MkdirAll(filepath.Dir(dec.Path), 0o755); err != nil {
-		server.WriteError(w, http.StatusInternalServerError, "upload_write_failed", err.Error(), nil)
-		return
-	}
-	out, err := os.OpenFile(dec.Path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		server.WriteError(w, http.StatusInternalServerError, "upload_write_failed", err.Error(), nil)
-		return
-	}
-	defer out.Close()
-
-	written, err := io.Copy(out, file)
+	written, err := fileio.WriteReaderAtomic(dec.Path, file, fileio.AtomicWriteOptions{
+		Mode:          0o644,
+		PreserveMode:  true,
+		CreateParents: true,
+		MaxBytes:      uploadFileMaxBytes,
+	})
 	if err != nil {
 		server.WriteError(w, http.StatusInternalServerError, "upload_write_failed", err.Error(), nil)
 		return

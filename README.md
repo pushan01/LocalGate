@@ -542,9 +542,11 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `export_file`：把 workspace 文件作为短期 MCP `resource_link` 返回给 ChatGPT/Agent
 - `apply_patch`
 
-`apply_patch` 支持一个请求中原子地新增、修改或删除多个文件。
+`apply_patch` 会先验证和准备整个 patch，再依次提交文件；提交失败时执行进程内回滚。它会保留被更新文件的权限，并拒绝已被并发替换的目标，但不承诺进程崩溃或多个 LocalGate 进程之间的事务原子性。
 
-`upload_file` 的核心参数是目标绝对路径 `path` 和宿主提供的 `file` 对象。对于 ChatGPT 附件，应优先使用该工具，不要先创建临时上传 Token。
+`upload_file` 的核心参数是目标绝对路径 `path` 和宿主提供的 `file` 对象。对于 ChatGPT 附件，应优先使用该工具，不要先创建临时上传 Token。下载地址及每次重定向必须解析到公网 IP；loopback、私网、link-local、multicast 和 unspecified 地址会被拒绝。
+
+`read_file` 只读取普通文本文件，默认上限为 8 MiB。`list_directory` 和 `search_files` 支持有上限的 `max_results`，达到上限时返回 `truncated=true`。
 
 ### 命令与终端
 
@@ -552,6 +554,8 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `exec_command`：启动交互式或长时间运行的 Session
 - `write_stdin`：向 Session 写入输入
 - `read_thread_terminal`：读取 Session 终端缓冲区
+
+Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；如果旧输出已被裁剪，响应会包含 `base_offset`、`truncated=true` 和 `cursor_expired=true`。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。
 
 ### Task 管理
 
@@ -630,6 +634,8 @@ Authorization: Bearer <token>
 </p>
 
 <p align="center"><sub>管理后台集中查看任务、审批、部署与审计记录</sub></p>
+
+管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览，以及从当前 workspace 目录启动受控终端。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
 
 ### Deployments 配置
 

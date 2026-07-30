@@ -572,8 +572,14 @@ curl -N "http://127.0.0.1:8000/tasks/<task_id>/events/stream"
 - `output`
 - `items`
 - `next_offset`
+- `base_offset`
+- `truncated`
+- `cursor_expired`
+- `output_error`
 - `exit_code`
 - `workspace_id`
+
+`next_offset` 是绝对 cursor。后续读取或写入 stdin 时，应把它作为 `cursor` 传回。若旧输出已被缓冲裁剪，服务端返回当前 `base_offset`，并设置 `truncated=true`、`cursor_expired=true`。
 
 **示例**
 
@@ -1113,7 +1119,7 @@ curl -X POST "http://127.0.0.1:8000/mcp" \
 
 #### 5.1 tools/call: `apply_patch`
 
-首版不支持 unified diff。多文件 patch 采用全量原子语义，任一文件失败则整份 patch 不落盘。
+不支持 unified diff。多文件 patch 会先完整验证，再依次提交；提交失败时执行进程内回滚。更新会保留文件权限并拒绝已被并发替换的目标，但不承诺进程崩溃或多个 LocalGate 进程之间的事务原子性。
 
 #### 5.2 `create_upload_token` / `create_download_token` 返回字段
 
@@ -1369,9 +1375,11 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 ```json
 {
-  "path": "relative/or/absolute/path"
+  "path": "/absolute/workspace/path"
 }
 ```
+
+只接受普通文本文件，默认最大 8 MiB；目录、特殊文件、二进制文件和超限文件会被拒绝。
 
 ### `write_file`
 
@@ -1386,20 +1394,25 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 ```json
 {
-  "path": ".",
-  "recursive": true
+  "path": "/absolute/workspace/path",
+  "recursive": true,
+  "max_results": 1000
 }
 ```
+
+达到结果上限时返回 `truncated=true`。
 
 ### `search_files`
 
 ```json
 {
-  "root": ".",
+  "root": "/absolute/workspace/path",
   "glob": "*.go",
   "max_results": 50
 }
 ```
+
+非法 glob 会被拒绝；达到结果上限时返回 `truncated=true`。
 
 ### `apply_patch`
 
@@ -1411,7 +1424,9 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 说明：
 - 支持 `Add File` / `Update File` / `Delete File`
-- 多文件 patch 全量原子应用
+- 整个 patch 会先验证，再依次提交；提交失败时执行进程内回滚
+- 更新保留权限并拒绝已被并发替换的目标
+- 不承诺进程崩溃或多进程场景的事务原子性
 
 ### `run_command`
 
@@ -1463,7 +1478,8 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
   "session_id": "session-id",
   "chars": "",
   "yield_time_ms": 1000,
-  "max_output_tokens": 4000
+  "max_output_tokens": 4000,
+  "cursor": 120
 }
 ```
 
@@ -1472,9 +1488,12 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 ```json
 {
   "session_id": "session-id",
-  "max_output_tokens": 4000
+  "max_output_tokens": 4000,
+  "cursor": 120
 }
 ```
+
+每次保存返回的 `next_offset` 并作为下一次 `cursor`；Session 必须通过其所属 workspace 的工具或 `/sessions/*?workspace_id=...` 路由访问。
 
 ### `task_status`
 

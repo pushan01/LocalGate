@@ -41,7 +41,7 @@ func TestRunEcho(t *testing.T) {
 	}
 }
 
-func TestRunCommandPreservesProcessPath(t *testing.T) {
+func TestRunCommandPreservesAllowlistedProcessPath(t *testing.T) {
 	pathValue := filepath.Join(t.TempDir(), "first") + string(os.PathListSeparator) +
 		filepath.Join(t.TempDir(), "second")
 	t.Setenv("PATH", pathValue)
@@ -49,6 +49,7 @@ func TestRunCommandPreservesProcessPath(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",
 		CommandAllowlist: []string{"printf"},
+		EnvAllowlist:     []string{"PATH"},
 	}
 	sink := core.NewEventSink()
 	tool := NewTool(ws, 0)
@@ -69,6 +70,29 @@ func TestRunCommandPreservesProcessPath(t *testing.T) {
 	}
 	if got := strings.Join(stdout, "\n"); got != pathValue {
 		t.Fatalf("PATH changed by run_command: got %q, want %q", got, pathValue)
+	}
+}
+
+func TestRunCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
+	t.Setenv("LOCALGATE_SECRET_TEST", "should-not-leak")
+	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}
+	sink := core.NewEventSink()
+	tool := NewTool(ws, 0)
+	_, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "t-env", Sink: sink}, map[string]any{
+		"command": `printf '%s' "${LOCALGATE_SECRET_TEST-unset}"`,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	events, _ := sink.List("t-env", 0)
+	var stdout []string
+	for _, event := range events {
+		if event.Type == core.EventTaskStdout {
+			stdout = append(stdout, event.Data)
+		}
+	}
+	if got := strings.Join(stdout, "\n"); got != "unset" {
+		t.Fatalf("unallowlisted environment leaked: %q", got)
 	}
 }
 

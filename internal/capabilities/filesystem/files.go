@@ -1,19 +1,23 @@
 package filesystem
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"localgate/internal/config"
 	"localgate/internal/core"
+	"localgate/internal/fileio"
 	"localgate/internal/security"
 )
 
@@ -34,6 +38,17 @@ func NewTools(ws config.Workspace) []core.Tool {
 }
 
 const uploadFileMaxDownloadBytes = 512 << 20
+
+const (
+	readFileMaxBytes          = 8 << 20
+	listDirectoryDefaultMax   = 1000
+	listDirectoryHardMax      = 10000
+	searchFilesDefaultMax     = 200
+	searchFilesHardMax        = 5000
+	searchFilesMaxPatternSize = 1024
+)
+
+var errResultLimitReached = errors.New("result limit reached")
 
 type readFileTool struct{ fsToolBase }
 
@@ -57,11 +72,42 @@ func (t readFileTool) Execute(ctx context.Context, ic core.InvokeContext, args m
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
 	}
-	b, err := os.ReadFile(dec.Path)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	f, err := os.Open(dec.Path)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": dec.Path, "content": string(b)}, nil
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("path must be a regular file")
+	}
+	if info.Size() > readFileMaxBytes {
+		return nil, fmt.Errorf("file exceeds %d bytes", readFileMaxBytes)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, readFileMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > readFileMaxBytes {
+		return nil, fmt.Errorf("file exceeds %d bytes", readFileMaxBytes)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if looksBinaryFile(b) {
+		return nil, errors.New("binary file is not supported by read_file")
+	}
+	return map[string]any{"path": dec.Path, "content": string(b), "bytes": len(b)}, nil
 }
 
 type writeFileTool struct{ fsToolBase }
@@ -91,16 +137,20 @@ func (t writeFileTool) Execute(ctx context.Context, ic core.InvokeContext, args 
 	if fi, err := os.Lstat(dec.Path); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
 		return nil, errors.New("path not allowed: symlink")
 	}
-	if err := os.MkdirAll(filepath.Dir(dec.Path), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(dec.Path, []byte(content), 0o644); err != nil {
+	if _, err := fileio.WriteFileAtomic(dec.Path, []byte(content), fileio.AtomicWriteOptions{
+		Mode:          0o644,
+		PreserveMode:  true,
+		CreateParents: true,
+	}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"path": dec.Path, "bytes": len(content)}, nil
 }
 
-type uploadFileTool struct{ fsToolBase }
+type uploadFileTool struct {
+	fsToolBase
+	client *http.Client
+}
 
 func (t uploadFileTool) Name() string { return "upload_file" }
 func (t uploadFileTool) Description() string {
@@ -156,15 +206,23 @@ func (t uploadFileTool) Execute(ctx context.Context, ic core.InvokeContext, args
 	if downloadURL == "" {
 		return nil, errors.New("file.download_url required")
 	}
-	if !strings.HasPrefix(downloadURL, "http://") && !strings.HasPrefix(downloadURL, "https://") {
-		return nil, errors.New("file.download_url must be http or https")
+	remoteURL, err := parseRemoteURL(downloadURL)
+	if err != nil {
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	client := t.client
+	if client == nil {
+		if err := validateRemoteURL(ctx, remoteURL, net.DefaultResolver.LookupIPAddr); err != nil {
+			return nil, fmt.Errorf("file.download_url rejected: %w", err)
+		}
+		client = newRemoteDownloadClient()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download file: %w", err)
 	}
@@ -172,30 +230,17 @@ func (t uploadFileTool) Execute(ctx context.Context, ic core.InvokeContext, args
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("download file: unexpected status %d", resp.StatusCode)
 	}
-	if err := os.MkdirAll(filepath.Dir(dec.Path), 0o755); err != nil {
-		return nil, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dec.Path), ".upload-file-*")
+	written, err := fileio.WriteReaderAtomic(dec.Path, resp.Body, fileio.AtomicWriteOptions{
+		Mode:          0o644,
+		PreserveMode:  true,
+		CreateParents: true,
+		MaxBytes:      uploadFileMaxDownloadBytes,
+	})
 	if err != nil {
-		return nil, err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	written, err := io.Copy(tmp, io.LimitReader(resp.Body, uploadFileMaxDownloadBytes+1))
-	if err != nil {
+		if errors.Is(err, fileio.ErrTooLarge) {
+			return nil, fmt.Errorf("download file exceeds %d bytes", uploadFileMaxDownloadBytes)
+		}
 		return nil, fmt.Errorf("save downloaded file: %w", err)
-	}
-	if written > uploadFileMaxDownloadBytes {
-		return nil, fmt.Errorf("download file exceeds %d bytes", uploadFileMaxDownloadBytes)
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmpPath, dec.Path); err != nil {
-		return nil, err
 	}
 	fileID, _ := file["file_id"].(string)
 	fileName, _ := file["file_name"].(string)
@@ -220,8 +265,9 @@ func (t listDirTool) Schema() any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"path":      map[string]any{"type": "string", "description": "Absolute path"},
-			"recursive": map[string]any{"type": "boolean"},
+			"path":        map[string]any{"type": "string", "description": "Absolute path"},
+			"recursive":   map[string]any{"type": "boolean"},
+			"max_results": map[string]any{"type": "integer", "description": "Maximum entries to return, up to 10000"},
 		},
 		"required": []string{"path"},
 	}
@@ -229,18 +275,43 @@ func (t listDirTool) Schema() any {
 func (t listDirTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	p, _ := args["path"].(string)
 	recursive, _ := args["recursive"].(bool)
+	maxResults := listDirectoryDefaultMax
+	if value := intFromAny(args["max_results"]); value > 0 {
+		maxResults = value
+	}
+	if maxResults > listDirectoryHardMax {
+		return nil, fmt.Errorf("max_results exceeds %d", listDirectoryHardMax)
+	}
 	dec := security.ValidatePath(p, t.ws, security.Options{FollowSymlink: true})
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
 	}
-	var out []map[string]any
+	out := make([]map[string]any, 0, minInt(maxResults, 128))
+	truncated := false
 	if !recursive {
-		entries, err := os.ReadDir(dec.Path)
+		dir, err := os.Open(dec.Path)
 		if err != nil {
 			return nil, err
 		}
+		defer dir.Close()
+		entries, err := dir.ReadDir(maxResults + 1)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if len(entries) > maxResults {
+			entries = entries[:maxResults]
+			truncated = true
+		}
 		for _, e := range entries {
-			info, _ := e.Info()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			info, err := e.Info()
+			if err != nil {
+				return nil, err
+			}
 			out = append(out, map[string]any{
 				"name":  e.Name(),
 				"isDir": e.IsDir(),
@@ -248,15 +319,27 @@ func (t listDirTool) Execute(ctx context.Context, ic core.InvokeContext, args ma
 			})
 		}
 	} else {
-		filepath.WalkDir(dec.Path, func(p string, d fs.DirEntry, err error) error {
+		walkErr := filepath.WalkDir(dec.Path, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
 			rel, _ := filepath.Rel(dec.Path, p)
 			if rel == "." {
 				return nil
 			}
-			info, _ := d.Info()
+			if len(out) >= maxResults {
+				truncated = true
+				return errResultLimitReached
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
 			out = append(out, map[string]any{
 				"path":  rel,
 				"isDir": d.IsDir(),
@@ -264,8 +347,11 @@ func (t listDirTool) Execute(ctx context.Context, ic core.InvokeContext, args ma
 			})
 			return nil
 		})
+		if walkErr != nil && !errors.Is(walkErr, errResultLimitReached) {
+			return nil, walkErr
+		}
 	}
-	return map[string]any{"entries": out}, nil
+	return map[string]any{"entries": out, "truncated": truncated, "max_results": maxResults}, nil
 }
 
 type searchFilesTool struct{ fsToolBase }
@@ -292,36 +378,66 @@ func (t searchFilesTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 	if pattern == "" {
 		pattern = "*"
 	}
-	maxResults := 200
+	if len(pattern) > searchFilesMaxPatternSize {
+		return nil, fmt.Errorf("glob exceeds %d bytes", searchFilesMaxPatternSize)
+	}
+	if _, err := path.Match(pattern, ""); err != nil {
+		return nil, fmt.Errorf("invalid glob: %w", err)
+	}
+	maxResults := searchFilesDefaultMax
 	if v := intFromAny(args["max_results"]); v > 0 {
 		maxResults = v
+	}
+	if maxResults > searchFilesHardMax {
+		return nil, fmt.Errorf("max_results exceeds %d", searchFilesHardMax)
 	}
 	dec := security.ValidatePath(root, t.ws, security.Options{FollowSymlink: true})
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
 	}
-	var results []string
-	filepath.WalkDir(dec.Path, func(p string, d fs.DirEntry, err error) error {
+	results := make([]string, 0, minInt(maxResults, 128))
+	truncated := false
+	walkErr := filepath.WalkDir(dec.Path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 		if d.IsDir() {
 			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
 		name := d.Name()
-		match, _ := path.Match(pattern, name)
+		match, err := path.Match(pattern, name)
+		if err != nil {
+			return err
+		}
 		if match {
-			results = append(results, p)
 			if len(results) >= maxResults {
-				return errors.New("max_results reached")
+				truncated = true
+				return errResultLimitReached
 			}
+			rel, err := filepath.Rel(dec.Path, p)
+			if err != nil {
+				return err
+			}
+			results = append(results, filepath.ToSlash(rel))
 		}
 		return nil
 	})
-	for i := range results {
-		results[i] = strings.TrimPrefix(results[i], dec.Path+string(os.PathSeparator))
+	if walkErr != nil && !errors.Is(walkErr, errResultLimitReached) {
+		return nil, walkErr
 	}
-	return map[string]any{"matches": results}, nil
+	return map[string]any{"matches": results, "truncated": truncated, "max_results": maxResults}, nil
 }
 
 func intFromAny(v any) int {
@@ -342,6 +458,24 @@ func sizeOf(info fs.FileInfo) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+func looksBinaryFile(content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+	sample := content
+	if len(sample) > 8192 {
+		sample = sample[:8192]
+	}
+	return bytes.IndexByte(sample, 0) >= 0 || !utf8.Valid(sample)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func validateReadPath(p string, ws config.Workspace) security.Decision {

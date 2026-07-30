@@ -1,6 +1,229 @@
-const API = "/api/admin/v1";
-const app = document.querySelector("#app");
-const SIDEBAR_STORAGE_KEY = "localgate_admin_sidebar_collapsed";
+// src/file-tabs.js
+function fileTabKey(workspaceID, rootID, path) {
+  return JSON.stringify([String(workspaceID || ""), String(rootID || ""), String(path || "")]);
+}
+function pathMatches(candidate, target, recursive) {
+  if (candidate === target) return true;
+  return Boolean(recursive && target && candidate.startsWith(`${target}/`));
+}
+function replacePathPrefix(candidate, fromPath, toPath) {
+  if (candidate === fromPath) return toPath;
+  if (fromPath && candidate.startsWith(`${fromPath}/`)) return `${toPath}${candidate.slice(fromPath.length)}`;
+  return candidate;
+}
+function parentPath(value) {
+  const parts = String(value || "").split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
+}
+var FileTabStore = class {
+  constructor() {
+    this.items = [];
+    this.activeKey = "";
+  }
+  get(key) {
+    return this.items.find((item) => item.key === key) || null;
+  }
+  find(workspaceID, rootID, path) {
+    return this.get(fileTabKey(workspaceID, rootID, path));
+  }
+  active() {
+    return this.get(this.activeKey);
+  }
+  open(input) {
+    const key = fileTabKey(input.workspaceID, input.rootID, input.path);
+    let tab = this.get(key);
+    if (!tab) {
+      tab = {
+        dirty: false,
+        conflict: null,
+        previewMode: false,
+        ...input,
+        key
+      };
+      this.items.push(tab);
+    } else {
+      Object.assign(tab, input, { key });
+    }
+    this.activeKey = key;
+    return tab;
+  }
+  activate(key) {
+    if (!this.get(key)) return null;
+    this.activeKey = key;
+    return this.active();
+  }
+  update(key, patch) {
+    const tab = this.get(key);
+    if (!tab) return null;
+    Object.assign(tab, patch);
+    return tab;
+  }
+  close(key) {
+    const index = this.items.findIndex((item) => item.key === key);
+    if (index < 0) return { removed: null, active: this.active() };
+    const [removed] = this.items.splice(index, 1);
+    if (this.activeKey === key) {
+      const next = this.items[index] || this.items[index - 1] || null;
+      this.activeKey = next?.key || "";
+    }
+    return { removed, active: this.active() };
+  }
+  dirtyItems() {
+    return this.items.filter((item) => item.dirty);
+  }
+  matching(workspaceID, rootID, path, recursive = false) {
+    return this.items.filter((item) => item.workspaceID === workspaceID && item.rootID === rootID && pathMatches(item.path, path, recursive));
+  }
+  removeMatching(workspaceID, rootID, path, recursive = false) {
+    const keys = new Set(this.matching(workspaceID, rootID, path, recursive).map((item) => item.key));
+    if (!keys.size) return [];
+    const removed = this.items.filter((item) => keys.has(item.key));
+    const activeIndex = this.items.findIndex((item) => item.key === this.activeKey);
+    this.items = this.items.filter((item) => !keys.has(item.key));
+    if (keys.has(this.activeKey)) {
+      const next = this.items[Math.min(activeIndex, this.items.length - 1)] || null;
+      this.activeKey = next?.key || "";
+    }
+    return removed;
+  }
+  renameMatching(workspaceID, rootID, fromPath, toPath, recursive = false) {
+    const matches = this.matching(workspaceID, rootID, fromPath, recursive);
+    if (!matches.length) return [];
+    const active = this.active();
+    for (const tab of matches) {
+      const exactFile = tab.path === fromPath;
+      tab.path = replacePathPrefix(tab.path, fromPath, toPath);
+      tab.dirPath = exactFile ? parentPath(toPath) : replacePathPrefix(tab.dirPath || "", fromPath, toPath);
+      tab.key = fileTabKey(tab.workspaceID, tab.rootID, tab.path);
+    }
+    if (active) this.activeKey = active.key;
+    return matches;
+  }
+  clear() {
+    this.items = [];
+    this.activeKey = "";
+  }
+};
+
+// src/file-terminal.js
+function fileTerminalContextKey(workspaceID, rootID, path) {
+  return `${workspaceID || ""}\0${rootID || ""}\0${path || ""}`;
+}
+var FileTerminalState = class {
+  constructor() {
+    this.reset();
+  }
+  reset() {
+    this.contextKey = "";
+    this.workspaceID = "";
+    this.rootID = "";
+    this.path = "";
+    this.taskID = "";
+    this.task = null;
+    this.approval = null;
+    this.sessionID = "";
+    this.session = null;
+    this.cursor = 0;
+    this.baseOffset = 0;
+    this.items = [];
+    this.cursorExpired = false;
+    this.truncated = false;
+    this.error = "";
+    return this;
+  }
+  setContext(workspaceID, rootID, path) {
+    const key = fileTerminalContextKey(workspaceID, rootID, path);
+    if (this.contextKey && this.contextKey !== key) this.reset();
+    this.contextKey = key;
+    this.workspaceID = workspaceID || "";
+    this.rootID = rootID || "";
+    this.path = path || "";
+    return this;
+  }
+  matchesWorkspaceRoot(workspaceID, rootID) {
+    return Boolean(this.contextKey && this.workspaceID === (workspaceID || "") && this.rootID === (rootID || ""));
+  }
+  attachTask(taskID, approval = null) {
+    if (taskID && this.taskID !== taskID) {
+      this.taskID = taskID;
+      this.task = null;
+      this.approval = approval;
+      this.sessionID = "";
+      this.session = null;
+      this.cursor = 0;
+      this.baseOffset = 0;
+      this.items = [];
+      this.cursorExpired = false;
+      this.truncated = false;
+      this.error = "";
+    } else if (approval !== void 0) {
+      this.approval = approval;
+    }
+    return this;
+  }
+  attachSession(sessionID) {
+    if (!sessionID || this.sessionID === sessionID) return this;
+    this.sessionID = sessionID;
+    this.session = null;
+    this.cursor = 0;
+    this.baseOffset = 0;
+    this.items = [];
+    this.cursorExpired = false;
+    this.truncated = false;
+    this.error = "";
+    return this;
+  }
+  applyTask(payload) {
+    const task = payload?.task || payload || null;
+    this.task = task;
+    this.approval = payload?.approval || this.approval;
+    const sessionID = task?.result?.session_id;
+    if (sessionID) this.attachSession(sessionID);
+    if (["failed", "canceled", "timeout"].includes(task?.status)) {
+      this.error = task.error_msg || task.error_message || `Terminal task ${task.status}`;
+    } else if (task?.status === "succeeded" && !sessionID) {
+      this.error = "Terminal task succeeded without returning a session_id";
+    } else {
+      this.error = "";
+    }
+    return this;
+  }
+  applyRead(payload) {
+    if (!payload) return this;
+    this.session = payload.session || this.session;
+    this.baseOffset = Number(payload.base_offset || 0);
+    this.cursorExpired = Boolean(payload.cursor_expired);
+    this.truncated = Boolean(payload.truncated);
+    if (this.cursorExpired) this.items = [];
+    const byOffset = new Map(this.items.map((item) => [Number(item.offset), item]));
+    for (const item of payload.items || []) byOffset.set(Number(item.offset), item);
+    this.items = Array.from(byOffset.values()).sort((a, b) => Number(a.offset) - Number(b.offset));
+    if (this.items.length > 2e3) this.items = this.items.slice(-2e3);
+    this.cursor = Number(payload.next_offset ?? this.cursor);
+    this.error = payload.output_error || "";
+    return this;
+  }
+  mode() {
+    if (this.sessionID) return "session";
+    if (this.taskID) return "task";
+    return "start";
+  }
+  output() {
+    return this.items.map((item) => item.data || "").join("");
+  }
+  shouldPoll() {
+    if (this.sessionID) {
+      return ["starting", "running"].includes(this.session?.status || "starting");
+    }
+    return Boolean(this.taskID && !["succeeded", "failed", "canceled", "timeout"].includes(this.task?.status));
+  }
+};
+
+// src/app.js
+var API = "/api/admin/v1";
+var app = document.querySelector("#app");
+var SIDEBAR_STORAGE_KEY = "localgate_admin_sidebar_collapsed";
 function loadSidebarCollapsed() {
   try {
     return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
@@ -8,23 +231,19 @@ function loadSidebarCollapsed() {
     return false;
   }
 }
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
-
-const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
-const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
-const fmtTime = value => value ? new Date(value).toLocaleString() : "—";
-const fmtDuration = value => value ? (value < 1000 ? `${value} ms` : `${(value/1000).toFixed(1)} s`) : "—";
-const badge = value => `<span class="badge ${esc(value)}">${esc(value || "unknown")}</span>`;
-const sessionBadge = item => item.session_id
-  ? `<div class="mono" title="${esc(item.session_id)}">${esc(short(item.session_id,22))}</div><div class="muted">${esc(item.session_mode || "")} ${item.session_id_source === "client_supplied" ? "· Client supplied" : ""}</div>`
-  : `<span class="muted">No session</span>`;
-
-async function request(path, options={}) {
+var state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), terminalPollTimer: 0, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
+var esc = (value) => String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[c]);
+var short = (value, n = 18) => value ? value.length > n ? `${value.slice(0, n)}…` : value : "—";
+var fmtTime = (value) => value ? new Date(value).toLocaleString() : "—";
+var fmtDuration = (value) => value ? value < 1e3 ? `${value} ms` : `${(value / 1e3).toFixed(1)} s` : "—";
+var badge = (value) => `<span class="badge ${esc(value)}">${esc(value || "unknown")}</span>`;
+var sessionBadge = (item) => item.session_id ? `<div class="mono" title="${esc(item.session_id)}">${esc(short(item.session_id, 22))}</div><div class="muted">${esc(item.session_mode || "")} ${item.session_id_source === "client_supplied" ? "· Client supplied" : ""}</div>` : `<span class="muted">No session</span>`;
+async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API}${path}`, {...options, headers});
-  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), {unauthorized:true});
+  const response = await fetch(`${API}${path}`, { ...options, headers });
+  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), { unauthorized: true });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.message || `HTTP ${response.status}`);
@@ -35,12 +254,11 @@ async function request(path, options={}) {
   }
   return data;
 }
-
-async function requestBlob(path, options={}) {
+async function requestBlob(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-  const response = await fetch(`${API}${path}`, {...options, headers});
-  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), {unauthorized:true});
+  const response = await fetch(`${API}${path}`, { ...options, headers });
+  if (response.status === 401) throw Object.assign(new Error("需要管理 Token"), { unauthorized: true });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     const error = new Error(data.message || `HTTP ${response.status}`);
@@ -48,41 +266,77 @@ async function requestBlob(path, options={}) {
     error.code = data.code;
     throw error;
   }
-  return {blob: await response.blob(), headers: response.headers};
+  return { blob: await response.blob(), headers: response.headers };
 }
-
 function releaseImageObjectURL() {
   if (!state.imageObjectURL) return;
   URL.revokeObjectURL(state.imageObjectURL);
   state.imageObjectURL = "";
 }
-
+function activeFileTab() {
+  return state.fileTabs.active();
+}
+function syncActiveFileTabFromDOM() {
+  const editor = document.querySelector("[data-file-editor]");
+  const tab = activeFileTab();
+  if (!editor || !tab || editor.dataset.tabKey !== tab.key) return tab;
+  tab.content = editor.value;
+  tab.etag = editor.dataset.etag;
+  tab.dirty = editor.value !== tab.savedContent;
+  state.fileDirty = tab.dirty;
+  return tab;
+}
+function resetFileTabs() {
+  releaseImageObjectURL();
+  clearTerminalPoll();
+  state.fileTerminal.reset();
+  state.fileTabs.clear();
+  state.fileDirty = false;
+  state.fileConflict = null;
+}
+function clearTerminalPoll() {
+  if (!state.terminalPollTimer) return;
+  clearTimeout(state.terminalPollTimer);
+  state.terminalPollTimer = 0;
+}
+function fileTabsWithUnsavedChanges() {
+  syncActiveFileTabFromDOM();
+  return state.fileTabs.dirtyItems();
+}
 function currentURL() {
   return `${location.pathname}${location.search}${location.hash}`;
 }
-
 function hasUnsavedFileChanges() {
-  return Boolean(state.fileDirty && document.querySelector("[data-file-editor]"));
+  return fileTabsWithUnsavedChanges().length > 0;
 }
+function confirmDiscardFileChanges(message = "存在未保存的文件标签。离开后这些修改会丢失，确定继续？") {
+  const dirty = fileTabsWithUnsavedChanges();
+  if (!dirty.length) return true;
+  const detail = dirty.length === 1 ? dirty[0].path : `${dirty.length} 个文件`;
+  return confirm(`${message}
 
-function confirmDiscardFileChanges(message="当前文件有未保存修改。离开后这些修改会丢失，确定继续？") {
-  return !hasUnsavedFileChanges() || confirm(message);
+未保存：${detail}`);
 }
-
-function navigate(path, options={}) {
+function navigate(path, options = {}) {
+  syncActiveFileTabFromDOM();
+  const target = new URL(path, location.origin);
+  const staysInFiles = target.pathname.replace(/\/$/, "") === "/admin/files";
+  if (staysInFiles) {
+    history.pushState({}, "", path);
+    render();
+    return true;
+  }
   if (!options.force && !confirmDiscardFileChanges()) return false;
-  setFileDirty(false);
+  if (!options.preserveFileTabs) resetFileTabs();
   history.pushState({}, "", path);
   render();
   return true;
 }
-
 function setSidebarCollapsed(collapsed) {
   state.sidebarCollapsed = Boolean(collapsed);
   try {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, state.sidebarCollapsed ? "1" : "0");
   } catch {
-    // The UI still works when browser storage is unavailable.
   }
   document.querySelector(".shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   const toggle = document.querySelector('[data-action="toggle-sidebar"]');
@@ -94,31 +348,31 @@ function setSidebarCollapsed(collapsed) {
   const icon = toggle.querySelector("[data-sidebar-toggle-icon]");
   if (icon) icon.textContent = state.sidebarCollapsed ? "›" : "‹";
 }
-
-function layout(title, body, actions="") {
+function layout(title, body, actions = "") {
   const path = location.pathname;
   const notice = state.notice;
   state.notice = "";
   const collapsed = state.sidebarCollapsed;
   const toggleLabel = collapsed ? "展开侧边栏" : "折叠侧边栏";
-  return `<div class="shell${collapsed?" sidebar-collapsed":""}"><aside class="sidebar"><div class="sidebar-head"><div class="brand"><span class="brand-mark" aria-hidden="true">LG</span><span class="sidebar-label">LocalGate Admin</span></div><button class="sidebar-toggle" data-action="toggle-sidebar" type="button" aria-label="${toggleLabel}" title="${toggleLabel}" aria-expanded="${String(!collapsed)}"><span data-sidebar-toggle-icon aria-hidden="true">${collapsed?"›":"‹"}</span></button></div><nav class="nav">
-    <a data-nav="/admin" title="Overview" aria-label="Overview" class="${path==="/admin"||path==="/admin/"?"active":""}"><span class="nav-icon" aria-hidden="true">O</span><span class="nav-label">Overview</span></a>
-    <a data-nav="/admin/history" title="History" aria-label="History" class="${path.startsWith("/admin/history")?"active":""}"><span class="nav-icon" aria-hidden="true">H</span><span class="nav-label">History</span></a>
-    <a data-nav="/admin/files" title="Files" aria-label="Files" class="${path.startsWith("/admin/files")?"active":""}"><span class="nav-icon" aria-hidden="true">F</span><span class="nav-label">Files</span></a>
-    <a data-nav="/admin/deployments" title="Deployments" aria-label="Deployments" class="${path.startsWith("/admin/deployments")?"active":""}"><span class="nav-icon" aria-hidden="true">D</span><span class="nav-label">Deployments</span></a>
-    <a data-nav="/admin/approvals" title="Approvals" aria-label="Approvals" class="${path.startsWith("/admin/approvals")?"active":""}"><span class="nav-icon" aria-hidden="true">A</span><span class="nav-label">Approvals</span></a>
+  return `<div class="shell${collapsed ? " sidebar-collapsed" : ""}"><aside class="sidebar"><div class="sidebar-head"><div class="brand"><span class="brand-mark" aria-hidden="true">LG</span><span class="sidebar-label">LocalGate Admin</span></div><button class="sidebar-toggle" data-action="toggle-sidebar" type="button" aria-label="${toggleLabel}" title="${toggleLabel}" aria-expanded="${String(!collapsed)}"><span data-sidebar-toggle-icon aria-hidden="true">${collapsed ? "›" : "‹"}</span></button></div><nav class="nav">
+    <a data-nav="/admin" title="Overview" aria-label="Overview" class="${path === "/admin" || path === "/admin/" ? "active" : ""}"><span class="nav-icon" aria-hidden="true">O</span><span class="nav-label">Overview</span></a>
+    <a data-nav="/admin/history" title="History" aria-label="History" class="${path.startsWith("/admin/history") ? "active" : ""}"><span class="nav-icon" aria-hidden="true">H</span><span class="nav-label">History</span></a>
+    <a data-nav="/admin/files" title="Files" aria-label="Files" class="${path.startsWith("/admin/files") ? "active" : ""}"><span class="nav-icon" aria-hidden="true">F</span><span class="nav-label">Files</span></a>
+    <a data-nav="/admin/deployments" title="Deployments" aria-label="Deployments" class="${path.startsWith("/admin/deployments") ? "active" : ""}"><span class="nav-icon" aria-hidden="true">D</span><span class="nav-label">Deployments</span></a>
+    <a data-nav="/admin/approvals" title="Approvals" aria-label="Approvals" class="${path.startsWith("/admin/approvals") ? "active" : ""}"><span class="nav-icon" aria-hidden="true">A</span><span class="nav-label">Approvals</span></a>
   </nav></aside><main class="content"><header class="topbar"><h1>${esc(title)}</h1><div class="actions">${actions}<button class="button" data-action="token">Token</button></div></header>
   ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}${notice ? `<div class="notice">${esc(notice)}</div>` : ""}${body}</main></div>`;
 }
-
-function loginView(message="") {
-  app.innerHTML = `<section class="login"><h1>LocalGate Admin</h1><p class="muted">输入 HTTP Bearer Token。未启用认证的实例可以留空。</p>${message?`<div class="error">${esc(message)}</div>`:""}<input id="token-input" type="password" autocomplete="current-password" placeholder="Bearer token"><button class="button primary" data-action="save-token">进入后台</button></section>`;
+function loginView(message = "") {
+  app.innerHTML = `<section class="login"><h1>LocalGate Admin</h1><p class="muted">输入 HTTP Bearer Token。未启用认证的实例可以留空。</p>${message ? `<div class="error">${esc(message)}</div>` : ""}<input id="token-input" type="password" autocomplete="current-password" placeholder="Bearer token"><button class="button primary" data-action="save-token">进入后台</button></section>`;
 }
-
 async function render() {
   state.error = "";
   const path = location.pathname.replace(/\/$/, "") || "/admin";
-  if (path !== "/admin/files") releaseImageObjectURL();
+  if (path !== "/admin/files") {
+    releaseImageObjectURL();
+    clearTerminalPoll();
+  }
   try {
     if (path === "/admin") return renderOverview();
     if (path === "/admin/history") return renderHistory();
@@ -134,7 +388,6 @@ async function render() {
     app.innerHTML = layout("Error", `<div class="empty">请求失败</div>`);
   }
 }
-
 async function renderOverview() {
   const data = await request("/overview");
   const tasks = data.tasks || {}, approvals = data.approvals || {}, deployments = data.deployments || {};
@@ -143,38 +396,40 @@ async function renderOverview() {
     ${metric("Calls / 24h", tasks.total_24h || 0)}${metric("Running", tasks.running || 0)}${metric("Failed / 24h", tasks.failed_24h || 0)}${metric("Pending approvals", approvals.pending || 0)}${metric("Deployments", deployments.total || 0)}${metric("Deployment failures", deployments.failed || 0)}
   </section><section class="section"><div class="section-head"><h2>Recent calls</h2><button class="link" data-nav="/admin/history">View all</button></div>${table(taskHeaders(), rows)}</section>`);
 }
-const metric = (label,value) => `<article class="card"><div class="muted">${esc(label)}</div><div class="metric">${esc(value)}</div></article>`;
-
-function taskHeaders(){return "<tr><th>Time</th><th>Tool</th><th>Status</th><th>Session</th><th>Transport</th><th>Duration</th><th>Requester</th></tr>"}
-function taskRow(item){return `<tr><td>${fmtTime(item.created_at)}</td><td><button class="link mono" data-nav="/admin/history/${esc(item.id)}">${esc(item.tool||item.id)}</button></td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td><td>${esc(item.transport||"—")}</td><td>${fmtDuration(item.duration_ms)}</td><td>${esc(item.requester||"—")}</td></tr>`}
-function table(headers, rows){return `<div class="table-wrap"><table><thead>${headers}</thead><tbody>${rows || `<tr><td colspan="8" class="empty">暂无数据</td></tr>`}</tbody></table></div>`}
-
+var metric = (label, value) => `<article class="card"><div class="muted">${esc(label)}</div><div class="metric">${esc(value)}</div></article>`;
+function taskHeaders() {
+  return "<tr><th>Time</th><th>Tool</th><th>Status</th><th>Session</th><th>Transport</th><th>Duration</th><th>Requester</th></tr>";
+}
+function taskRow(item) {
+  return `<tr><td>${fmtTime(item.created_at)}</td><td><button class="link mono" data-nav="/admin/history/${esc(item.id)}">${esc(item.tool || item.id)}</button></td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td><td>${esc(item.transport || "—")}</td><td>${fmtDuration(item.duration_ms)}</td><td>${esc(item.requester || "—")}</td></tr>`;
+}
+function table(headers, rows) {
+  return `<div class="table-wrap"><table><thead>${headers}</thead><tbody>${rows || `<tr><td colspan="8" class="empty">暂无数据</td></tr>`}</tbody></table></div>`;
+}
 async function renderHistory() {
   const query = new URLSearchParams(location.search);
   const data = await request(`/tasks?${query}`);
   const rows = (data.items || []).map(taskRow).join("");
   app.innerHTML = layout("History", `<form class="filters" id="history-filters">
-    <input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id")||"")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool")||"")}">
-    <select name="status"><option value="">All statuses</option>${["awaiting_approval","queued","running","succeeded","failed","canceled","timeout"].map(v=>`<option ${query.get("status")===v?"selected":""}>${v}</option>`).join("")}</select>
-    <select name="transport"><option value="">All transports</option>${["mcp_http","mcp_stdio","mcp_runtime","rest","tool_http","admin","system"].map(v=>`<option ${query.get("transport")===v?"selected":""}>${v}</option>`).join("")}</select>
+    <input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id") || "")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool") || "")}">
+    <select name="status"><option value="">All statuses</option>${["awaiting_approval", "queued", "running", "succeeded", "failed", "canceled", "timeout"].map((v) => `<option ${query.get("status") === v ? "selected" : ""}>${v}</option>`).join("")}</select>
+    <select name="transport"><option value="">All transports</option>${["mcp_http", "mcp_stdio", "mcp_runtime", "rest", "tool_http", "admin", "system"].map((v) => `<option ${query.get("transport") === v ? "selected" : ""}>${v}</option>`).join("")}</select>
     <button class="button primary">Filter</button><button type="button" class="button" data-action="clear-history">Clear</button>
-  </form>${table(taskHeaders(), rows)}${data.next_cursor?`<div class="section"><button class="button" data-action="next-history" data-cursor="${esc(data.next_cursor)}">Next page</button></div>`:""}`);
+  </form>${table(taskHeaders(), rows)}${data.next_cursor ? `<div class="section"><button class="button" data-action="next-history" data-cursor="${esc(data.next_cursor)}">Next page</button></div>` : ""}`);
 }
-
 async function renderTask(id) {
   const [detail, events, audits] = await Promise.all([request(`/tasks/${id}`), request(`/tasks/${id}/events`), request(`/tasks/${id}/audits`)]);
   const task = detail.task;
-  app.innerHTML = layout(`Task ${short(id,12)}`, `<section class="card detail-grid">${kv("Status",badge(task.status))}${kv("Tool",task.tool)}${kv("Transport",task.transport||"—")}${kv("Session",task.session_id||"No session")}${kv("Session source",task.session_id_source||"none")}${kv("Workspace",task.workspace_id||"—")}${kv("Requester",task.requester||"—")}${kv("Created",fmtTime(task.created_at))}</section>
-  ${task.error_msg?`<section class="section card"><h2>Error</h2><p>${esc(task.error_msg)}</p></section>`:""}
-  <section class="section card"><div class="section-head"><h2>Result</h2>${!["succeeded","failed","canceled","timeout"].includes(task.status)?`<button class="button danger" data-action="cancel-task" data-id="${esc(id)}">Cancel</button>`:""}</div><pre>${esc(JSON.stringify(task.result??{},null,2))}</pre></section>
-  <section class="section card"><h2>Events</h2><pre>${esc(JSON.stringify(events.items||[],null,2))}</pre></section>
-  <section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(audits.items||[],null,2))}</pre></section>`);
+  app.innerHTML = layout(`Task ${short(id, 12)}`, `<section class="card detail-grid">${kv("Status", badge(task.status))}${kv("Tool", task.tool)}${kv("Transport", task.transport || "—")}${kv("Session", task.session_id || "No session")}${kv("Session source", task.session_id_source || "none")}${kv("Workspace", task.workspace_id || "—")}${kv("Requester", task.requester || "—")}${kv("Created", fmtTime(task.created_at))}</section>
+  ${task.error_msg ? `<section class="section card"><h2>Error</h2><p>${esc(task.error_msg)}</p></section>` : ""}
+  <section class="section card"><div class="section-head"><h2>Result</h2>${!["succeeded", "failed", "canceled", "timeout"].includes(task.status) ? `<button class="button danger" data-action="cancel-task" data-id="${esc(id)}">Cancel</button>` : ""}</div><pre>${esc(JSON.stringify(task.result ?? {}, null, 2))}</pre></section>
+  <section class="section card"><h2>Events</h2><pre>${esc(JSON.stringify(events.items || [], null, 2))}</pre></section>
+  <section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(audits.items || [], null, 2))}</pre></section>`);
 }
-const kv=(label,value)=>`<div class="kv"><strong>${esc(label)}</strong><div>${value&&String(value).startsWith("<span")?value:esc(value)}</div></div>`;
-
+var kv = (label, value) => `<div class="kv"><strong>${esc(label)}</strong><div>${value && String(value).startsWith("<span") ? value : esc(value)}</div></div>`;
 async function renderFiles() {
+  syncActiveFileTabFromDOM();
   releaseImageObjectURL();
-  state.fileConflict = null;
   const workspacesData = await request("/file-browser/workspaces");
   const workspaces = workspacesData.items || [];
   if (!workspaces.length) {
@@ -183,7 +438,7 @@ async function renderFiles() {
   }
   const query = new URLSearchParams(location.search);
   let workspaceID = query.get("workspace_id") || workspaces[0].id;
-  let workspace = workspaces.find(item => item.id === workspaceID) || workspaces[0];
+  let workspace = workspaces.find((item) => item.id === workspaceID) || workspaces[0];
   workspaceID = workspace.id;
   const roots = workspace.roots || [];
   if (!roots.length) {
@@ -191,74 +446,154 @@ async function renderFiles() {
     return;
   }
   let rootID = query.get("root_id") || roots[0].id;
-  if (!roots.some(root => root.id === rootID)) rootID = roots[0].id;
+  if (!roots.some((root) => root.id === rootID)) rootID = roots[0].id;
   const dirPath = query.get("path") || "";
   const filePath = query.get("file") || "";
-  const listQuery = fileBrowserQuery({workspaceID, rootID, path: dirPath});
+  await hydrateFileTerminal({
+    workspaceID,
+    rootID,
+    path: query.get("terminal_path") || dirPath,
+    taskID: query.get("terminal_task") || "",
+    sessionID: query.get("terminal_session") || ""
+  });
+  const listQuery = fileBrowserQuery({ workspaceID, rootID, path: dirPath });
   const list = await request(`/file-browser/files/list?${listQuery}`);
-  let fileContent = null;
-  let fileError = "";
-  const imageFile = isPreviewableImage(filePath);
-  if (filePath && !imageFile) {
-    try {
-      fileContent = await request(`/file-browser/files/content?${fileBrowserQuery({workspaceID, rootID, path: filePath})}`);
-    } catch (error) {
-      fileError = error.message;
-    }
-  }
-  const workspaceOptions = workspaces.map(item => `<option value="${esc(item.id)}" ${item.id===workspaceID?"selected":""}>${esc(item.id)}</option>`).join("");
-  const rootOptions = roots.map(root => `<option value="${esc(root.id)}" ${root.id===rootID?"selected":""}>${esc(root.name || root.id)}</option>`).join("");
+  const workspaceOptions = workspaces.map((item) => `<option value="${esc(item.id)}" ${item.id === workspaceID ? "selected" : ""}>${esc(item.id)}</option>`).join("");
+  const rootOptions = roots.map((root) => `<option value="${esc(root.id)}" ${root.id === rootID ? "selected" : ""}>${esc(root.name || root.id)}</option>`).join("");
   const currentLabel = dirPath || "/";
   const entries = list.entries || [];
-  const rows = fileRows(entries, {workspaceID, rootID, dirPath, filePath});
-  const selectedEntry = entries.find(entry => entry.path === filePath) || null;
-  const preview = filePreview(filePath, fileContent, fileError, {workspaceID, rootID, entry:selectedEntry, imageFile});
+  const selectedEntry = entries.find((entry) => entry.path === filePath) || null;
+  let tab = null;
+  if (filePath) {
+    tab = await openFileTab({ workspaceID, rootID, dirPath, filePath, entry: selectedEntry });
+  } else {
+    state.fileTabs.activeKey = "";
+  }
+  const rows = fileRows(entries, { workspaceID, rootID, dirPath, filePath });
+  const preview = filePreview(filePath, fileContentFromTab(tab), tab?.error || "", { workspaceID, rootID, entry: selectedEntry || tab?.entry, imageFile: tab?.imageFile, tab });
+  state.fileConflict = tab?.conflict || null;
   app.innerHTML = layout("Files", `<section class="file-toolbar card">
     <label>Workspace <select data-file-select="workspace_id" data-current-value="${esc(workspaceID)}">${workspaceOptions}</select></label>
     <label>Root <select data-file-select="root_id" data-current-value="${esc(rootID)}">${rootOptions}</select></label>
     <div class="file-path mono">${esc(currentLabel)}</div>
-    <button class="button" data-file-new-file="1">New file</button><button class="button" data-file-new-folder="1">New folder</button><button class="button" data-file-upload="1">Upload</button><input class="hidden" type="file" data-file-upload-input><button class="button" data-file-refresh="1">Refresh</button>
+    <button class="button" data-file-new-file="1">New file</button><button class="button" data-file-new-folder="1">New folder</button><button class="button" data-file-upload="1">Upload</button><input class="hidden" type="file" data-file-upload-input><button class="button" data-file-terminal-open="1">Terminal</button><button class="button" data-file-refresh="1">Refresh</button>
   </section>
   <section class="file-browser section">
     <div class="file-panel card">
-      <div class="section-head"><h2>Files</h2>${dirPath?`<button class="link" data-file-dir="${esc(parentPath(dirPath))}">Up</button>`:""}</div>
+      <div class="section-head"><h2>Files</h2>${dirPath ? `<button class="link" data-file-dir="${esc(parentPath2(dirPath))}">Up</button>` : ""}</div>
       <div class="file-list">${rows || `<div class="empty">目录为空</div>`}</div>
     </div>
     <div class="file-preview card">
-      ${preview}
+      ${fileTabsView()}
+      <div class="file-tab-content">${preview}</div>
     </div>
-  </section>`);
-  state.fileDirty = false;
+  </section>
+  ${fileTerminalPanel()}`);
+  setFileDirty(Boolean(tab?.dirty));
   state.fileURL = currentURL();
-  if (imageFile) loadImagePreview({workspaceID, rootID, path:filePath});
+  if (tab?.imageFile) loadImagePreview({ workspaceID, rootID, path: filePath });
+  scheduleFileTerminalPoll();
 }
-
+async function openFileTab({ workspaceID, rootID, dirPath, filePath, entry }) {
+  const existing = state.fileTabs.find(workspaceID, rootID, filePath);
+  if (existing) {
+    existing.dirPath = dirPath;
+    if (entry) existing.entry = entry;
+    state.fileTabs.activate(existing.key);
+    return existing;
+  }
+  const imageFile = isPreviewableImage(filePath);
+  let content = null;
+  let error = "";
+  if (!imageFile) {
+    try {
+      content = await request(`/file-browser/files/content?${fileBrowserQuery({ workspaceID, rootID, path: filePath })}`);
+    } catch (loadError) {
+      error = loadError.message;
+    }
+  }
+  return state.fileTabs.open({
+    workspaceID,
+    rootID,
+    dirPath,
+    path: filePath,
+    entry,
+    imageFile,
+    error,
+    content: content?.content || "",
+    savedContent: content?.content || "",
+    etag: content?.etag || "",
+    language: content?.language || (imageFile ? "image" : "text"),
+    size: content?.size ?? entry?.size ?? 0,
+    modTime: content?.mod_time || entry?.mod_time || "",
+    dirty: false,
+    conflict: null,
+    previewMode: false
+  });
+}
+function fileContentFromTab(tab) {
+  if (!tab || tab.imageFile || tab.error) return null;
+  return {
+    workspace_id: tab.workspaceID,
+    root_id: tab.rootID,
+    path: tab.path,
+    content: tab.content,
+    etag: tab.etag,
+    language: tab.language,
+    size: tab.size,
+    mod_time: tab.modTime
+  };
+}
+function fileTabsView() {
+  if (!state.fileTabs.items.length) return "";
+  return `<div class="file-tabs" role="tablist" aria-label="Open files">${state.fileTabs.items.map((tab) => {
+    const active = tab.key === state.fileTabs.activeKey;
+    const name = tab.path.split("/").pop() || tab.path;
+    return `<div class="file-tab${active ? " active" : ""}${tab.dirty ? " dirty" : ""}" role="presentation"><button class="file-tab-open" type="button" role="tab" aria-selected="${String(active)}" title="${esc(tab.path)}" data-file-tab="${esc(tab.key)}"><span class="file-tab-label">${esc(name)}</span>${tab.dirty ? `<span class="file-tab-dirty" aria-label="Unsaved">●</span>` : ""}</button><button class="file-tab-close" type="button" aria-label="Close ${esc(name)}" title="Close" data-file-tab-close="${esc(tab.key)}">×</button></div>`;
+  }).join("")}</div>`;
+}
+function fileTabURL(tab) {
+  return fileBrowserURL({ workspaceID: tab.workspaceID, rootID: tab.rootID, path: tab.dirPath || parentPath2(tab.path), file: tab.path });
+}
+function closeFileTab(key) {
+  syncActiveFileTabFromDOM();
+  const tab = state.fileTabs.get(key);
+  if (!tab) return;
+  if (tab.dirty && !confirm(`关闭 ${tab.path} 会丢弃未保存修改，确定继续？`)) return;
+  const wasActive = state.fileTabs.activeKey === key;
+  const result = state.fileTabs.close(key);
+  if (!wasActive) return render();
+  if (result.active) return navigate(fileTabURL(result.active), { force: true });
+  const ctx = currentFileContext();
+  return navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: "" }), { force: true });
+}
 function fileRows(entries, context) {
-  return entries.map(entry => {
+  return entries.map((entry) => {
     const isDir = entry.type === "directory";
     const active = !isDir && context.filePath === entry.path ? " active" : "";
     const targetAttr = isDir ? `data-file-dir="${esc(entry.path)}"` : `data-file-open="${esc(entry.path)}"`;
     const icon = isDir ? "📁" : "📄";
-    const actions = entry.type === "file" || entry.type === "directory"
-      ? `<div class="file-row-actions"><button class="file-row-action" data-file-entry-rename data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Rename</button><button class="file-row-action danger" data-file-entry-delete data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Delete</button></div>`
-      : "";
-    return `<div class="file-row-wrap"><button class="file-row${active}" ${targetAttr}><span>${icon}</span><span class="file-name">${esc(entry.name)}</span><span class="muted">${isDir?"directory":formatBytes(entry.size)}</span></button>${actions}</div>`;
+    const actions = entry.type === "file" || entry.type === "directory" ? `<div class="file-row-actions"><button class="file-row-action" data-file-entry-rename data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Rename</button><button class="file-row-action danger" data-file-entry-delete data-entry-path="${esc(entry.path)}" data-entry-type="${esc(entry.type)}">Delete</button></div>` : "";
+    return `<div class="file-row-wrap"><button class="file-row${active}" ${targetAttr}><span>${icon}</span><span class="file-name">${esc(entry.name)}</span><span class="muted">${isDir ? "directory" : formatBytes(entry.size)}</span></button>${actions}</div>`;
   }).join("");
 }
-
-function filePreview(filePath, content, error, context={}) {
+function filePreview(filePath, content, error, context = {}) {
   if (!filePath) return `<div class="empty">选择一个文本文件预览</div>`;
   if (context.imageFile) return imageFilePreview(filePath, context);
   if (error) return unavailableFilePreview(filePath, error, context);
   if (!content) return `<div class="empty">正在加载文件内容…</div>`;
   const markdown = content.language === "markdown";
-  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">${esc(content.language || "text")}</span><span class="badge pending hidden" data-file-dirty>Unsaved</span>${markdown?`<button class="button" data-file-markdown-preview="1">Preview</button>`:""}<button class="button primary" data-file-save="1">Save</button><button class="button" data-file-rename="1">Rename</button><button class="button" data-file-download="1">Download</button><button class="button danger" data-file-delete="1">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
-    <div data-file-status></div>
+  const tab = context.tab || {};
+  const previewMode = Boolean(markdown && tab.previewMode);
+  return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">${esc(content.language || "text")}</span><span class="badge pending${tab.dirty ? "" : " hidden"}" data-file-dirty>Unsaved</span>${markdown ? `<button class="button" data-file-markdown-preview="1">${previewMode ? "Edit" : "Preview"}</button>` : ""}<button class="button primary" data-file-save="1">Save</button><button class="button" data-file-rename="1">Rename</button><button class="button" data-file-download="1">Download</button><button class="button danger" data-file-delete="1">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
+    <div data-file-status>${tab.conflict ? fileConflictPanel() : ""}</div>
     <div class="detail-grid file-meta">${kv("Path", content.path)}${kv("Size", formatBytes(content.size))}${kv("Modified", fmtTime(content.mod_time))}${kv("ETag", content.etag)}</div>
-    <textarea class="file-editor" data-file-editor data-workspace-id="${esc(content.workspace_id)}" data-root-id="${esc(content.root_id)}" data-path="${esc(content.path)}" data-etag="${esc(content.etag)}" data-language="${esc(content.language || "text")}" spellcheck="false">${esc(content.content)}</textarea>
-    ${markdown?`<article class="markdown-preview hidden" data-markdown-preview></article>`:""}`;
+    <textarea class="file-editor${previewMode ? " hidden" : ""}" data-file-editor data-tab-key="${esc(tab.key || "")}" data-workspace-id="${esc(content.workspace_id)}" data-root-id="${esc(content.root_id)}" data-path="${esc(content.path)}" data-etag="${esc(content.etag)}" data-language="${esc(content.language || "text")}" spellcheck="false">${esc(content.content)}</textarea>
+    ${markdown ? `<article class="markdown-preview${previewMode ? "" : " hidden"}" data-markdown-preview>${previewMode ? renderMarkdown(content.content) : ""}</article>` : ""}`;
 }
-
+function fileConflictPanel() {
+  return `<div class="conflict-panel"><div class="error">文件已被外部修改。请选择重新加载、覆盖服务器版本或查看差异。</div><div class="actions"><button class="button" data-file-conflict-reload>Reload server</button><button class="button danger" data-file-conflict-overwrite>Overwrite</button><button class="button" data-file-conflict-diff>Show diff</button></div><div class="hidden" data-file-conflict-diff-view></div></div>`;
+}
 function imageFilePreview(filePath, context) {
   const entry = context.entry || {};
   return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><span class="badge">image</span><button class="button" data-file-download-path="${esc(filePath)}">Download</button><button class="button" data-file-entry-rename data-entry-path="${esc(filePath)}" data-entry-type="file">Rename</button><button class="button danger" data-file-entry-delete data-entry-path="${esc(filePath)}" data-entry-type="file">Delete</button><button class="button" data-file-reload="1">Reload</button></div></div>
@@ -266,62 +601,275 @@ function imageFilePreview(filePath, context) {
     <div class="detail-grid file-meta">${kv("Path", filePath)}${kv("Size", formatBytes(entry.size))}${kv("Modified", fmtTime(entry.mod_time))}</div>
     <div class="image-preview-stage"><img class="file-preview-image hidden" data-file-image-preview alt="${esc(filePath.split("/").pop())}"></div>`;
 }
-
 function unavailableFilePreview(filePath, error, context) {
   return `<div class="section-head"><h2>${esc(filePath.split("/").pop())}</h2><div class="actions"><button class="button" data-file-download-path="${esc(filePath)}">Download</button><button class="button" data-file-entry-rename data-entry-path="${esc(filePath)}" data-entry-type="file">Rename</button><button class="button danger" data-file-entry-delete data-entry-path="${esc(filePath)}" data-entry-type="file">Delete</button></div></div>
     <div class="error">${esc(error)}</div><p class="muted">该文件不能作为文本或受支持图片预览，可以直接下载。</p>`;
 }
-
 function isPreviewableImage(path) {
   return /\.(png|jpe?g|gif|webp)$/i.test(String(path || ""));
 }
-
-function fileBrowserQuery({workspaceID, rootID, path}) {
+function fileBrowserQuery({ workspaceID, rootID, path }) {
   const q = new URLSearchParams();
   if (workspaceID) q.set("workspace_id", workspaceID);
   if (rootID) q.set("root_id", rootID);
   if (path) q.set("path", path);
   return q.toString();
 }
-
 function joinFilePath(base, name) {
   base = String(base || "").replace(/^\/+|\/+$/g, "");
   name = String(name || "").replace(/^\/+|\/+$/g, "");
   return base ? `${base}/${name}` : name;
 }
-
-function filePreviewPath({workspaceID, rootID, path}) {
-  return `/file-browser/files/preview?${fileBrowserQuery({workspaceID, rootID, path})}`;
+function filePreviewPath({ workspaceID, rootID, path }) {
+  return `/file-browser/files/preview?${fileBrowserQuery({ workspaceID, rootID, path })}`;
 }
-
-function fileBrowserURL({workspaceID, rootID, path, file}) {
+function fileBrowserURL({ workspaceID, rootID, path, file, terminalTask, terminalSession, terminalPath, preserveTerminal = true }) {
   const q = new URLSearchParams();
   if (workspaceID) q.set("workspace_id", workspaceID);
   if (rootID) q.set("root_id", rootID);
   if (path) q.set("path", path);
   if (file) q.set("file", file);
+  const current = new URLSearchParams(location.search);
+  const hasTerminalContext = Boolean(current.get("terminal_task") || current.get("terminal_session") || state.fileTerminal.taskID || state.fileTerminal.sessionID);
+  const sameTerminalScope = preserveTerminal && hasTerminalContext && state.fileTerminal.matchesWorkspaceRoot(workspaceID, rootID);
+  const taskValue = terminalTask !== void 0 ? terminalTask : sameTerminalScope ? current.get("terminal_task") || state.fileTerminal.taskID : "";
+  const sessionValue = terminalSession !== void 0 ? terminalSession : sameTerminalScope ? current.get("terminal_session") || state.fileTerminal.sessionID : "";
+  const terminalPathValue = terminalPath !== void 0 ? terminalPath : sameTerminalScope ? current.get("terminal_path") || state.fileTerminal.path : "";
+  if (taskValue) q.set("terminal_task", taskValue);
+  if (sessionValue) q.set("terminal_session", sessionValue);
+  if (terminalPathValue) q.set("terminal_path", terminalPathValue);
   const suffix = q.toString();
   return `/admin/files${suffix ? `?${suffix}` : ""}`;
 }
-
 function currentFileContext() {
   const q = new URLSearchParams(location.search);
-  return {workspaceID: q.get("workspace_id"), rootID: q.get("root_id"), path: q.get("path") || "", file: q.get("file") || ""};
+  const tab = activeFileTab();
+  const workspaceSelect = document.querySelector('[data-file-select="workspace_id"]');
+  const rootSelect = document.querySelector('[data-file-select="root_id"]');
+  return {
+    workspaceID: q.get("workspace_id") || tab?.workspaceID || workspaceSelect?.value || "",
+    rootID: q.get("root_id") || tab?.rootID || rootSelect?.value || "",
+    path: q.get("path") || "",
+    file: q.get("file") || ""
+  };
 }
-
-function parentPath(value) {
+async function hydrateFileTerminal({ workspaceID, rootID, path, taskID, sessionID }) {
+  clearTerminalPoll();
+  if (!taskID && !sessionID) {
+    state.fileTerminal.reset().setContext(workspaceID, rootID, path);
+    return;
+  }
+  state.fileTerminal.setContext(workspaceID, rootID, path);
+  if (taskID) state.fileTerminal.attachTask(taskID, state.fileTerminal.approval);
+  if (sessionID) state.fileTerminal.attachSession(sessionID);
+  try {
+    if (state.fileTerminal.taskID) {
+      const detail = await request(`/tasks/${encodeURIComponent(state.fileTerminal.taskID)}`);
+      state.fileTerminal.applyTask(detail);
+    }
+    if (state.fileTerminal.sessionID) {
+      await readFileTerminal();
+    }
+    syncFileTerminalURL();
+  } catch (error) {
+    state.fileTerminal.error = error.message || "终端状态读取失败";
+  }
+}
+function fileTerminalPanel() {
+  const terminal = state.fileTerminal;
+  const mode = terminal.mode();
+  const terminalPath = terminal.path || "/";
+  let body = "";
+  if (mode === "start") {
+    body = `<div class="file-terminal-start"><label>Command <input class="mono" data-file-terminal-command placeholder="sh, npm test, go test ./..." value="sh"></label><label>Shell <input class="mono" data-file-terminal-shell placeholder="/bin/sh (optional)"></label><label class="terminal-check"><input type="checkbox" data-file-terminal-tty checked> TTY</label><button class="button primary" data-file-terminal-start>Start terminal</button></div><p class="muted">命令会在当前目录启动，并继续遵守 workspace 命令策略、环境变量 allowlist 和审批规则。</p>`;
+  } else if (mode === "task") {
+    const task = terminal.task || {};
+    const approval = terminal.approval;
+    body = `<div class="terminal-task-state"><div data-terminal-status>${badge(task.status || "queued")}</div><p class="muted">正在等待终端 Task 创建 Session。</p><div class="actions">${terminal.taskID ? `<button class="button" data-nav="/admin/history/${esc(terminal.taskID)}">Open task</button>` : ""}${approval?.id ? `<button class="button primary" data-nav="${esc(approvalReturnURL(approval.id, currentURL()))}">Open approval</button>` : ""}<button class="button" data-file-terminal-reset>New terminal</button></div>${terminal.error ? `<div class="error" data-terminal-error>${esc(terminal.error)}</div>` : `<div data-terminal-error></div>`}</div>`;
+  } else {
+    const session = terminal.session || {};
+    body = `<div class="terminal-session-meta"><div data-terminal-status>${badge(session.status || "starting")}</div><div class="mono" title="${esc(terminal.sessionID)}">Session ${esc(short(terminal.sessionID, 24))}</div><div class="actions">${terminal.taskID ? `<button class="button" data-nav="/admin/history/${esc(terminal.taskID)}">Open task</button>` : ""}<button class="button" data-file-terminal-reset>New terminal</button><button class="button danger" data-file-terminal-close ${["closed", "exited", "failed"].includes(session.status) ? "disabled" : ""}>Close</button></div></div><div data-terminal-warning>${fileTerminalWarning()}</div><pre class="file-terminal-output" data-terminal-output tabindex="0">${esc(terminal.output())}</pre><div class="file-terminal-input"><input class="mono" data-file-terminal-stdin placeholder="Send input and press Enter" ${["closed", "exited", "failed"].includes(session.status) ? "disabled" : ""}><button class="button primary" data-file-terminal-send ${["closed", "exited", "failed"].includes(session.status) ? "disabled" : ""}>Send</button><button class="button" data-file-terminal-interrupt ${["closed", "exited", "failed"].includes(session.status) ? "disabled" : ""}>Ctrl-C</button></div>${terminal.error ? `<div class="error" data-terminal-error>${esc(terminal.error)}</div>` : `<div data-terminal-error></div>`}`;
+  }
+  return `<section class="section card file-terminal-card" data-terminal-mode="${mode}"><div class="section-head"><div><h2>Terminal</h2><div class="muted mono">${esc(terminal.workspaceID || "—")} · ${esc(terminalPath)}</div></div></div>${body}</section>`;
+}
+function fileTerminalWarning() {
+  const terminal = state.fileTerminal;
+  const messages = [];
+  if (terminal.cursorExpired) messages.push(`较早输出已被终端缓冲裁剪，当前从 cursor ${terminal.baseOffset} 继续。`);
+  else if (terminal.truncated) messages.push("终端缓冲已达到保留上限，较早输出可能被裁剪。");
+  return messages.length ? `<div class="notice">${esc(messages.join(" "))}</div>` : "";
+}
+function refreshFileTerminalPanel(force = false) {
+  const current = document.querySelector("[data-terminal-mode]");
+  const nextMode = state.fileTerminal.mode();
+  if (!current) return;
+  if (force || current.dataset.terminalMode !== nextMode) {
+    current.outerHTML = fileTerminalPanel();
+    scrollFileTerminalOutput();
+    return;
+  }
+  const status = document.querySelector("[data-terminal-status]");
+  const statusValue = nextMode === "session" ? state.fileTerminal.session?.status : state.fileTerminal.task?.status;
+  if (status) status.innerHTML = badge(statusValue || (nextMode === "task" ? "queued" : "unknown"));
+  const output = document.querySelector("[data-terminal-output]");
+  if (output) {
+    const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 48;
+    output.textContent = state.fileTerminal.output();
+    if (nearBottom) output.scrollTop = output.scrollHeight;
+  }
+  const warning = document.querySelector("[data-terminal-warning]");
+  if (warning) warning.innerHTML = fileTerminalWarning();
+  const error = document.querySelector("[data-terminal-error]");
+  if (error) {
+    error.className = state.fileTerminal.error ? "error" : "";
+    error.textContent = state.fileTerminal.error || "";
+  }
+  const ended = ["closed", "exited", "failed"].includes(state.fileTerminal.session?.status);
+  document.querySelectorAll("[data-file-terminal-stdin],[data-file-terminal-send],[data-file-terminal-interrupt],[data-file-terminal-close]").forEach((item) => {
+    item.disabled = ended;
+  });
+}
+function scrollFileTerminalOutput() {
+  const output = document.querySelector("[data-terminal-output]");
+  if (output) output.scrollTop = output.scrollHeight;
+}
+function scheduleFileTerminalPoll(delay = 800) {
+  clearTerminalPoll();
+  if (!state.fileTerminal.shouldPoll()) return;
+  state.terminalPollTimer = setTimeout(pollFileTerminal, delay);
+}
+async function pollFileTerminal() {
+  state.terminalPollTimer = 0;
+  if (location.pathname.replace(/\/$/, "") !== "/admin/files") return;
+  const beforeMode = state.fileTerminal.mode();
+  try {
+    if (state.fileTerminal.taskID && !state.fileTerminal.sessionID) {
+      const detail = await request(`/tasks/${encodeURIComponent(state.fileTerminal.taskID)}`);
+      state.fileTerminal.applyTask(detail);
+      syncFileTerminalURL();
+    }
+    if (state.fileTerminal.sessionID) await readFileTerminal();
+  } catch (error) {
+    state.fileTerminal.error = error.message || "终端轮询失败";
+  }
+  refreshFileTerminalPanel(beforeMode !== state.fileTerminal.mode());
+  scheduleFileTerminalPoll();
+}
+async function readFileTerminal() {
+  const terminal = state.fileTerminal;
+  if (!terminal.sessionID) return;
+  const query = new URLSearchParams({ workspace_id: terminal.workspaceID, cursor: String(terminal.cursor), max_output_items: "200" });
+  const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}?${query}`);
+  terminal.applyRead(result);
+}
+function syncFileTerminalURL() {
+  if (location.pathname.replace(/\/$/, "") !== "/admin/files") return;
+  const ctx = currentFileContext();
+  const next = fileBrowserURL({
+    workspaceID: ctx.workspaceID,
+    rootID: ctx.rootID,
+    path: ctx.path,
+    file: ctx.file,
+    terminalTask: state.fileTerminal.taskID,
+    terminalSession: state.fileTerminal.sessionID,
+    terminalPath: state.fileTerminal.path,
+    preserveTerminal: false
+  });
+  if (next !== currentURL()) history.replaceState({}, "", next);
+}
+function approvalReturnURL(approvalID, returnTo) {
+  const query = new URLSearchParams();
+  const safe = safeAdminReturnTo(returnTo);
+  if (safe) query.set("return_to", safe);
+  return `/admin/approvals/${encodeURIComponent(approvalID)}${query.toString() ? `?${query}` : ""}`;
+}
+function safeAdminReturnTo(value) {
+  value = String(value || "").trim();
+  if (!value.startsWith("/admin") || value.startsWith("//")) return "";
+  try {
+    const parsed = new URL(value, location.origin);
+    if (parsed.origin !== location.origin || !parsed.pathname.startsWith("/admin")) return "";
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "";
+  }
+}
+async function startFileTerminal() {
+  syncActiveFileTabFromDOM();
+  const command = document.querySelector("[data-file-terminal-command]")?.value.trim() || "";
+  const shell = document.querySelector("[data-file-terminal-shell]")?.value.trim() || "";
+  const tty = Boolean(document.querySelector("[data-file-terminal-tty]")?.checked);
+  if (!command) return alert("请输入要运行的命令");
+  const ctx = currentFileContext();
+  try {
+    const result = await request("/file-browser/terminals", { method: "POST", body: JSON.stringify({ workspace_id: ctx.workspaceID, root_id: ctx.rootID, path: ctx.path, command, shell, tty, yield_time_ms: 100, max_output_items: 200 }) });
+    state.fileTerminal.reset().setContext(ctx.workspaceID, ctx.rootID, ctx.path).attachTask(result.task_id, result.approval || null);
+    const returnTo = fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: ctx.file, terminalTask: result.task_id, terminalSession: "", terminalPath: ctx.path, preserveTerminal: false });
+    history.replaceState({}, "", returnTo);
+    if (result.approval?.id) {
+      state.notice = `终端启动等待审批：${result.approval.summary || result.approval.id}`;
+      return navigate(approvalReturnURL(result.approval.id, returnTo), { force: true, preserveFileTabs: true });
+    }
+    refreshFileTerminalPanel(true);
+    scheduleFileTerminalPoll(100);
+  } catch (error) {
+    state.fileTerminal.error = error.message || "终端启动失败";
+    refreshFileTerminalPanel(true);
+  }
+}
+async function sendFileTerminalInput(chars) {
+  const terminal = state.fileTerminal;
+  if (!terminal.sessionID) return;
+  try {
+    const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/stdin`, { method: "POST", body: JSON.stringify({ workspace_id: terminal.workspaceID, chars, cursor: terminal.cursor, wait_ms: 100, max_output_items: 200 }) });
+    terminal.applyRead(result);
+    refreshFileTerminalPanel();
+    scheduleFileTerminalPoll();
+  } catch (error) {
+    terminal.error = error.message || "发送终端输入失败";
+    refreshFileTerminalPanel();
+  }
+}
+async function sendFileTerminalLine() {
+  const input = document.querySelector("[data-file-terminal-stdin]");
+  if (!input || input.disabled) return;
+  const value = input.value;
+  input.value = "";
+  await sendFileTerminalInput(value.endsWith("\n") ? value : `${value}
+`);
+}
+async function closeFileTerminal() {
+  const terminal = state.fileTerminal;
+  if (!terminal.sessionID || !confirm("确认关闭这个终端 Session？")) return;
+  try {
+    const result = await request(`/file-browser/terminals/${encodeURIComponent(terminal.sessionID)}/close`, { method: "POST", body: JSON.stringify({ workspace_id: terminal.workspaceID }) });
+    terminal.session = result.session || terminal.session;
+    clearTerminalPoll();
+    refreshFileTerminalPanel();
+  } catch (error) {
+    terminal.error = error.message || "关闭终端失败";
+    refreshFileTerminalPanel();
+  }
+}
+function resetFileTerminalPanel() {
+  clearTerminalPoll();
+  const ctx = currentFileContext();
+  state.fileTerminal.reset().setContext(ctx.workspaceID, ctx.rootID, ctx.path);
+  const next = fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: ctx.file, terminalTask: "", terminalSession: "", terminalPath: "", preserveTerminal: false });
+  history.replaceState({}, "", next);
+  refreshFileTerminalPanel(true);
+}
+function parentPath2(value) {
   const parts = String(value || "").split("/").filter(Boolean);
   parts.pop();
   return parts.join("/");
 }
-
 function formatBytes(value) {
   const n = Number(value || 0);
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KiB`;
-  return `${(n/1024/1024).toFixed(1)} MiB`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
-
 async function loadImagePreview(context) {
   const image = document.querySelector("[data-file-image-preview]");
   if (!image) return;
@@ -336,7 +884,6 @@ async function loadImagePreview(context) {
     setFileStatus("error", `${error.message || "图片预览失败"}。可以尝试下载文件。`);
   }
 }
-
 async function downloadFile(context) {
   try {
     const result = await requestBlob(`/file-browser/files/download?${fileBrowserQuery(context)}`);
@@ -352,7 +899,6 @@ async function downloadFile(context) {
     setFileStatus("error", error.message || "下载失败");
   }
 }
-
 function markdownInline(value) {
   let text = esc(value);
   text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -362,7 +908,6 @@ function markdownInline(value) {
   text = text.replace(/_([^_]+)_/g, "<em>$1</em>");
   return text;
 }
-
 function renderMarkdown(value) {
   const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
   const out = [];
@@ -417,25 +962,26 @@ function renderMarkdown(value) {
   if (inCode) out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
   return out.join("\n");
 }
-
 function toggleMarkdownPreview() {
   const editor = document.querySelector("[data-file-editor]");
   const preview = document.querySelector("[data-markdown-preview]");
   const button = document.querySelector("[data-file-markdown-preview]");
   if (!editor || !preview || !button) return;
   const opening = preview.classList.contains("hidden");
+  const tab = activeFileTab();
   if (opening) {
     preview.innerHTML = renderMarkdown(editor.value);
     preview.classList.remove("hidden");
     editor.classList.add("hidden");
     button.textContent = "Edit";
+    if (tab) tab.previewMode = true;
   } else {
     preview.classList.add("hidden");
     editor.classList.remove("hidden");
     button.textContent = "Preview";
+    if (tab) tab.previewMode = false;
   }
 }
-
 function lineDiff(serverText, localText) {
   const server = String(serverText || "").split("\n");
   const local = String(localText || "").split("\n");
@@ -450,15 +996,15 @@ function lineDiff(serverText, localText) {
   }
   return `<div class="diff-grid"><section class="diff-pane"><h3>Server</h3><pre>${serverLines.join("\n")}</pre></section><section class="diff-pane"><h3>Your changes</h3><pre>${localLines.join("\n")}</pre></section></div>`;
 }
-
 function showFileConflict(serverContent) {
   const editor = document.querySelector("[data-file-editor]");
   const target = document.querySelector("[data-file-status]");
   if (!editor || !target) return;
+  const tab = activeFileTab();
   state.fileConflict = serverContent;
-  target.innerHTML = `<div class="conflict-panel"><div class="error">文件已被外部修改。请选择重新加载、覆盖服务器版本或查看差异。</div><div class="actions"><button class="button" data-file-conflict-reload>Reload server</button><button class="button danger" data-file-conflict-overwrite>Overwrite</button><button class="button" data-file-conflict-diff>Show diff</button></div><div class="hidden" data-file-conflict-diff-view></div></div>`;
+  if (tab) tab.conflict = serverContent;
+  target.innerHTML = fileConflictPanel();
 }
-
 function reloadConflictFile() {
   const editor = document.querySelector("[data-file-editor]");
   const server = state.fileConflict;
@@ -466,13 +1012,22 @@ function reloadConflictFile() {
   if (!confirm("重新加载会丢弃当前未保存修改，确定继续？")) return;
   editor.value = server.content;
   editor.dataset.etag = server.etag;
+  const tab = activeFileTab();
+  if (tab) {
+    tab.content = server.content;
+    tab.savedContent = server.content;
+    tab.etag = server.etag;
+    tab.language = server.language;
+    tab.size = server.size;
+    tab.modTime = server.mod_time;
+    tab.conflict = null;
+  }
   setFileDirty(false);
   state.fileConflict = null;
   setFileStatus("notice", "已加载服务器最新版本");
   const preview = document.querySelector("[data-markdown-preview]");
   if (preview && !preview.classList.contains("hidden")) preview.innerHTML = renderMarkdown(editor.value);
 }
-
 function showConflictDiff() {
   const editor = document.querySelector("[data-file-editor]");
   const server = state.fileConflict;
@@ -481,31 +1036,67 @@ function showConflictDiff() {
   target.innerHTML = lineDiff(server.content, editor.value);
   target.classList.remove("hidden");
 }
-
 function setFileStatus(kind, message) {
   const target = document.querySelector("[data-file-status]");
   if (!target) return;
   const cls = kind === "error" ? "error" : "notice";
   target.innerHTML = `<div class="${cls}">${esc(message)}</div>`;
 }
-
 function setFileDirty(dirty) {
   state.fileDirty = Boolean(dirty);
-  const badge = document.querySelector("[data-file-dirty]");
-  if (!badge) return;
-  badge.classList.toggle("hidden", !dirty);
+  const tab = activeFileTab();
+  if (tab) tab.dirty = state.fileDirty;
+  const badge2 = document.querySelector("[data-file-dirty]");
+  if (badge2) badge2.classList.toggle("hidden", !dirty);
+  if (!tab) return;
+  const tabElement = Array.from(document.querySelectorAll("[data-file-tab]")).find((item) => item.dataset.fileTab === tab.key)?.closest(".file-tab");
+  if (!tabElement) return;
+  tabElement.classList.toggle("dirty", state.fileDirty);
+  let marker = tabElement.querySelector(".file-tab-dirty");
+  if (state.fileDirty && !marker) {
+    marker = document.createElement("span");
+    marker.className = "file-tab-dirty";
+    marker.setAttribute("aria-label", "Unsaved");
+    marker.textContent = "●";
+    tabElement.querySelector(".file-tab-open")?.appendChild(marker);
+  } else if (!state.fileDirty) {
+    marker?.remove();
+  }
 }
-
-function reloadFiles(message="当前文件有未保存修改。重新加载会丢弃这些修改，确定继续？") {
-  if (!confirmDiscardFileChanges(message)) return false;
-  setFileDirty(false);
-  render();
-  return true;
+async function reloadActiveFile() {
+  syncActiveFileTabFromDOM();
+  const tab = activeFileTab();
+  if (!tab) return render();
+  if (tab.dirty && !confirm(`重新加载会丢弃 ${tab.path} 的未保存修改，确定继续？`)) return false;
+  if (tab.imageFile) {
+    tab.conflict = null;
+    state.fileConflict = null;
+    return render();
+  }
+  try {
+    const content = await request(`/file-browser/files/content?${fileBrowserQuery({ workspaceID: tab.workspaceID, rootID: tab.rootID, path: tab.path })}`);
+    Object.assign(tab, {
+      error: "",
+      content: content.content,
+      savedContent: content.content,
+      etag: content.etag,
+      language: content.language,
+      size: content.size,
+      modTime: content.mod_time,
+      dirty: false,
+      conflict: null
+    });
+    state.fileConflict = null;
+    state.notice = "文件已重新加载";
+    return render();
+  } catch (error) {
+    setFileStatus("error", error.message || "重新加载失败");
+    return false;
+  }
 }
-
 async function uploadFileToCurrentDirectory(file) {
   if (!file) return;
-  if (!confirmDiscardFileChanges("当前文件有未保存修改。上传完成后页面会重新加载，确定丢弃这些修改？")) return;
+  syncActiveFileTabFromDOM();
   const ctx = currentFileContext();
   const target = joinFilePath(ctx.path, file.name);
   const form = new FormData();
@@ -515,20 +1106,19 @@ async function uploadFileToCurrentDirectory(file) {
   form.set("create", "true");
   form.set("file", file, file.name);
   try {
-    const result = await request("/file-browser/files/upload", {method:"POST", body: form});
+    const result = await request("/file-browser/files/upload", { method: "POST", body: form });
     if (result.approval?.id) {
       state.notice = `上传等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = "文件已上传";
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:target}), {force:true});
+    return navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: target }), { force: true });
   } catch (error) {
     alert(error.message || "上传失败");
   }
 }
-
 async function createFileInCurrentDirectory() {
-  if (!confirmDiscardFileChanges("当前文件有未保存修改。新建文件后会离开当前编辑内容，确定继续？")) return;
+  syncActiveFileTabFromDOM();
   const name = prompt("New file name");
   if (name === null) return;
   const clean = name.trim();
@@ -536,20 +1126,19 @@ async function createFileInCurrentDirectory() {
   const ctx = currentFileContext();
   const newPath = joinFilePath(ctx.path, clean);
   try {
-    const result = await request("/file-browser/files/content", {method:"PUT", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path:newPath, content:"", create:true})});
+    const result = await request("/file-browser/files/content", { method: "PUT", body: JSON.stringify({ workspace_id: ctx.workspaceID, root_id: ctx.rootID, path: newPath, content: "", create: true }) });
     if (result.approval?.id) {
       state.notice = `新建文件等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = "文件已创建";
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:newPath}), {force:true});
+    return navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: newPath }), { force: true });
   } catch (error) {
     alert(error.message || "新建文件失败");
   }
 }
-
 async function createFolderInCurrentDirectory() {
-  if (!confirmDiscardFileChanges("当前文件有未保存修改。创建目录后页面会重新加载，确定丢弃这些修改？")) return;
+  syncActiveFileTabFromDOM();
   const name = prompt("New folder name");
   if (name === null) return;
   const clean = name.trim();
@@ -557,47 +1146,46 @@ async function createFolderInCurrentDirectory() {
   const ctx = currentFileContext();
   const newPath = joinFilePath(ctx.path, clean);
   try {
-    const result = await request("/file-browser/files/mkdir", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path:newPath})});
+    const result = await request("/file-browser/files/mkdir", { method: "POST", body: JSON.stringify({ workspace_id: ctx.workspaceID, root_id: ctx.rootID, path: newPath }) });
     if (result.approval?.id) {
       state.notice = `新建目录等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = "目录已创建";
-    setFileDirty(false);
     return render();
   } catch (error) {
     alert(error.message || "新建目录失败");
   }
 }
-
-async function deleteFileEntry(path, type="file") {
+async function deleteFileEntry(path, type = "file") {
   if (!path) return;
-  if (!confirmDiscardFileChanges("当前文件有未保存修改。删除操作完成后页面会重新加载，确定丢弃这些修改？")) return;
   const recursive = type === "directory";
-  if (!confirm(recursive ? `确认递归删除目录 ${path} 及其中全部内容？` : `确认删除 ${path}？`)) return;
+  syncActiveFileTabFromDOM();
   const ctx = currentFileContext();
+  const affectedDirty = state.fileTabs.matching(ctx.workspaceID, ctx.rootID, path, recursive).filter((tab) => tab.dirty);
+  if (affectedDirty.length && !confirm(`删除会同时关闭 ${affectedDirty.length} 个有未保存修改的标签，确定继续？`)) return;
+  if (!confirm(recursive ? `确认递归删除目录 ${path} 及其中全部内容？` : `确认删除 ${path}？`)) return;
   try {
-    const result = await request("/file-browser/files/delete", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, path, recursive, confirmation:recursive?`delete ${path}`:""})});
+    const result = await request("/file-browser/files/delete", { method: "POST", body: JSON.stringify({ workspace_id: ctx.workspaceID, root_id: ctx.rootID, path, recursive, confirmation: recursive ? `delete ${path}` : "" }) });
     if (result.approval?.id) {
       state.notice = `删除等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = recursive ? "目录已删除" : "文件已删除";
-    const selectedFile = ctx.file === path || ctx.file.startsWith(`${path}/`) ? "" : ctx.file;
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:selectedFile}), {force:true});
+    state.fileTabs.removeMatching(ctx.workspaceID, ctx.rootID, path, recursive);
+    const active = activeFileTab();
+    return navigate(active ? fileTabURL(active) : fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: "" }), { force: true });
   } catch (error) {
     setFileStatus("error", error.message || "删除失败");
   }
 }
-
 async function deleteCurrentFile() {
   const editor = document.querySelector("[data-file-editor]");
   if (editor) return deleteFileEntry(editor.dataset.path, "file");
 }
-
-async function renameFileEntry(path, type="file") {
+async function renameFileEntry(path, type = "file") {
   if (!path) return;
-  if (!confirmDiscardFileChanges("当前文件有未保存修改。重命名完成后页面会重新加载，确定丢弃这些修改？")) return;
+  syncActiveFileTabFromDOM();
   const next = prompt("New path", path);
   if (next === null) return;
   const clean = next.trim().replace(/^\/+|\/+$/g, "");
@@ -605,32 +1193,29 @@ async function renameFileEntry(path, type="file") {
   if (clean === path) return;
   const ctx = currentFileContext();
   try {
-    const result = await request("/file-browser/files/rename", {method:"POST", body: JSON.stringify({workspace_id:ctx.workspaceID, root_id:ctx.rootID, from_path:path, to_path:clean})});
+    const result = await request("/file-browser/files/rename", { method: "POST", body: JSON.stringify({ workspace_id: ctx.workspaceID, root_id: ctx.rootID, from_path: path, to_path: clean }) });
     if (result.approval?.id) {
       state.notice = `重命名等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = type === "directory" ? "目录已重命名" : "文件已重命名";
-    let selectedFile = ctx.file;
-    if (ctx.file === path) {
-      selectedFile = clean;
-    } else if (type === "directory" && ctx.file.startsWith(`${path}/`)) {
-      selectedFile = `${clean}${ctx.file.slice(path.length)}`;
-    }
-    return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:ctx.path, file:selectedFile}), {force:true});
+    state.fileTabs.renameMatching(ctx.workspaceID, ctx.rootID, path, clean, type === "directory");
+    const active = activeFileTab();
+    return navigate(active ? fileTabURL(active) : fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: "" }), { force: true });
   } catch (error) {
     setFileStatus("error", error.message || "重命名失败");
   }
 }
-
 async function renameCurrentFile() {
   const editor = document.querySelector("[data-file-editor]");
   if (editor) return renameFileEntry(editor.dataset.path, "file");
 }
-
-async function saveCurrentFile(options={}) {
+async function saveCurrentFile(options = {}) {
   const editor = document.querySelector("[data-file-editor]");
   if (!editor) return;
+  syncActiveFileTabFromDOM();
+  const tab = activeFileTab();
+  if (!tab) return;
   const overwrite = Boolean(options.overwrite);
   setFileStatus("notice", overwrite ? "正在覆盖服务器版本…" : "正在保存…");
   try {
@@ -648,16 +1233,24 @@ async function saveCurrentFile(options={}) {
     });
     if (result.approval?.id) {
       state.notice = `${overwrite ? "覆盖保存" : "保存"}等待审批：${result.approval.summary || result.approval.id}`;
-      return navigate(`/admin/approvals/${encodeURIComponent(result.approval.id)}`, {force:true});
+      return navigate(approvalReturnURL(result.approval.id, currentURL()), { force: true, preserveFileTabs: true });
     }
     state.notice = overwrite ? "文件已覆盖保存" : "文件已保存";
     state.fileConflict = null;
-    const ctx = currentFileContext();
-    return navigate(fileBrowserURL(ctx), {force:true});
+    Object.assign(tab, {
+      content: editor.value,
+      savedContent: editor.value,
+      etag: result.etag,
+      size: result.size,
+      modTime: result.mod_time,
+      dirty: false,
+      conflict: null
+    });
+    return render();
   } catch (error) {
     if (error.code === "file_changed" && !overwrite) {
       try {
-        const serverContent = await request(`/file-browser/files/content?${fileBrowserQuery({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path})}`);
+        const serverContent = await request(`/file-browser/files/content?${fileBrowserQuery({ workspaceID: editor.dataset.workspaceId, rootID: editor.dataset.rootId, path: editor.dataset.path })}`);
         showFileConflict(serverContent);
       } catch (reloadError) {
         setFileStatus("error", `文件已被外部修改，且无法读取服务器最新版本：${reloadError.message || "读取失败"}`);
@@ -667,74 +1260,168 @@ async function saveCurrentFile(options={}) {
     setFileStatus("error", error.message || "保存失败");
   }
 }
-
 function overwriteCurrentFile() {
-  if (!state.fileConflict) return;
+  if (!activeFileTab()?.conflict) return;
   if (!confirm("覆盖会用当前编辑内容替换服务器最新版本，并可能触发审批。确定继续？")) return;
-  return saveCurrentFile({overwrite:true});
+  return saveCurrentFile({ overwrite: true });
 }
-
 async function renderDeployments() {
   const data = await request("/deployments");
-  const rows = (data.items||[]).map(item=>`<tr><td><strong>${esc(item.Site||item.site)}</strong><div class="mono">${esc(item.Type||item.type)}</div></td><td>${badge(item.Status||item.status)}</td><td>${badge(item.Access||item.access||"public")}</td><td>${esc(item.Health||item.health||"—")}</td><td><a class="link" href="${esc(item.URL||item.url)}" target="_blank" rel="noopener">Open</a><div class="mono">${esc(item.Hostname||item.hostname||"")}</div></td><td>${esc(item.ReleaseID||item.release_id||"—")}</td><td>${deploymentActions(item)}</td></tr>`).join("");
-  app.innerHTML = layout("Deployments", table("<tr><th>Name</th><th>Status</th><th>Access</th><th>Health</th><th>URL</th><th>Release</th><th>Actions</th></tr>",rows));
+  const rows = (data.items || []).map((item) => `<tr><td><strong>${esc(item.Site || item.site)}</strong><div class="mono">${esc(item.Type || item.type)}</div></td><td>${badge(item.Status || item.status)}</td><td>${badge(item.Access || item.access || "public")}</td><td>${esc(item.Health || item.health || "—")}</td><td><a class="link" href="${esc(item.URL || item.url)}" target="_blank" rel="noopener">Open</a><div class="mono">${esc(item.Hostname || item.hostname || "")}</div></td><td>${esc(item.ReleaseID || item.release_id || "—")}</td><td>${deploymentActions(item)}</td></tr>`).join("");
+  app.innerHTML = layout("Deployments", table("<tr><th>Name</th><th>Status</th><th>Access</th><th>Health</th><th>URL</th><th>Release</th><th>Actions</th></tr>", rows));
 }
-function deploymentActions(item){const type=item.Type||item.type,name=item.Site||item.site,status=item.Status||item.status,access=item.Access||item.access||"public";let buttons=`<button class="button" data-deploy-action="${access==="private"?"set-public":"set-private"}" data-type="${esc(type)}" data-name="${esc(name)}">${access==="private"?"Make public":"Make private"}</button>`;if(type==="dynamic"){if(["stopped","failed"].includes(status))buttons+=`<button class="button success" data-deploy-action="start" data-type="${esc(type)}" data-name="${esc(name)}">Start</button>`;else buttons+=`<button class="button" data-deploy-action="stop" data-type="${esc(type)}" data-name="${esc(name)}">Stop</button>`;buttons+=`<button class="button" data-deploy-action="restart" data-type="${esc(type)}" data-name="${esc(name)}">Restart</button>`}return `<div class="actions">${buttons}<button class="button danger" data-deploy-action="delete" data-type="${esc(type)}" data-name="${esc(name)}">Delete</button></div>`}
-
+function deploymentActions(item) {
+  const type = item.Type || item.type, name = item.Site || item.site, status = item.Status || item.status, access = item.Access || item.access || "public";
+  let buttons = `<button class="button" data-deploy-action="${access === "private" ? "set-public" : "set-private"}" data-type="${esc(type)}" data-name="${esc(name)}">${access === "private" ? "Make public" : "Make private"}</button>`;
+  if (type === "dynamic") {
+    if (["stopped", "failed"].includes(status)) buttons += `<button class="button success" data-deploy-action="start" data-type="${esc(type)}" data-name="${esc(name)}">Start</button>`;
+    else buttons += `<button class="button" data-deploy-action="stop" data-type="${esc(type)}" data-name="${esc(name)}">Stop</button>`;
+    buttons += `<button class="button" data-deploy-action="restart" data-type="${esc(type)}" data-name="${esc(name)}">Restart</button>`;
+  }
+  return `<div class="actions">${buttons}<button class="button danger" data-deploy-action="delete" data-type="${esc(type)}" data-name="${esc(name)}">Delete</button></div>`;
+}
 async function renderApprovals() {
   const query = new URLSearchParams(location.search);
-  if(!query.has("status")) query.set("status","pending");
+  if (!query.has("status")) query.set("status", "pending");
   const data = await request(`/approvals?${query}`);
-  const rows=(data.items||[]).map(item=>`<tr><td>${fmtTime(item.created_at)}</td><td><button class="link" data-nav="/admin/approvals/${esc(item.id)}">${esc(item.summary||item.tool)}</button><div class="mono">${esc(item.id)}</div></td><td>${esc(item.tool)}</td><td>${badge(item.risk_level||"unknown")}</td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td></tr>`).join("");
-  app.innerHTML=layout("Approvals",`<form class="filters" id="approval-filters"><select name="status">${["pending","approved","rejected","canceled","expired",""] .map(v=>`<option value="${v}" ${query.get("status")===v?"selected":""}>${v||"all"}</option>`).join("")}</select><input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id")||"")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool")||"")}"><button class="button primary">Filter</button></form>${table("<tr><th>Created</th><th>Request</th><th>Tool</th><th>Risk</th><th>Status</th><th>Session</th></tr>",rows)}`);
+  const rows = (data.items || []).map((item) => `<tr><td>${fmtTime(item.created_at)}</td><td><button class="link" data-nav="/admin/approvals/${esc(item.id)}">${esc(item.summary || item.tool)}</button><div class="mono">${esc(item.id)}</div></td><td>${esc(item.tool)}</td><td>${badge(item.risk_level || "unknown")}</td><td>${badge(item.status)}</td><td>${sessionBadge(item)}</td></tr>`).join("");
+  app.innerHTML = layout("Approvals", `<form class="filters" id="approval-filters"><select name="status">${["pending", "approved", "rejected", "canceled", "expired", ""].map((v) => `<option value="${v}" ${query.get("status") === v ? "selected" : ""}>${v || "all"}</option>`).join("")}</select><input name="session_id" placeholder="Session ID" value="${esc(query.get("session_id") || "")}"><input name="tool" placeholder="Tool" value="${esc(query.get("tool") || "")}"><button class="button primary">Filter</button></form>${table("<tr><th>Created</th><th>Request</th><th>Tool</th><th>Risk</th><th>Status</th><th>Session</th></tr>", rows)}`);
 }
-
 async function renderApproval(id) {
-  const data=await request(`/approvals/${id}`), item=data.approval;
-  const actions=item.status==="pending"?`<button class="button success" data-approval-action="approve" data-id="${esc(id)}">Approve</button><button class="button danger" data-approval-action="reject" data-id="${esc(id)}">Reject</button><button class="button" data-approval-action="cancel" data-id="${esc(id)}">Cancel</button>`:"";
-  app.innerHTML=layout(`Approval ${short(id,12)}`,`<section class="card detail-grid">${kv("Status",badge(item.status))}${kv("Summary",item.summary||"—")}${kv("Tool",item.tool)}${kv("Risk",item.risk_level||"—")}${kv("Requester",item.requester||"—")}${kv("Session",item.session_id||"No session")}${kv("Created",fmtTime(item.created_at))}${kv("Expires",fmtTime(item.expires_at))}</section><section class="section"><div class="actions">${actions}${item.task_id?`<button class="button" data-nav="/admin/history/${esc(item.task_id)}">Open task</button>`:""}</div></section><section class="section card"><h2>Arguments</h2><pre>${esc(JSON.stringify(item.args||{},null,2))}</pre></section><section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(data.audits||[],null,2))}</pre></section>`);
+  const data = await request(`/approvals/${id}`), item = data.approval;
+  const returnTo = safeAdminReturnTo(new URLSearchParams(location.search).get("return_to"));
+  const actions = item.status === "pending" ? `<button class="button success" data-approval-action="approve" data-id="${esc(id)}">Approve</button><button class="button danger" data-approval-action="reject" data-id="${esc(id)}">Reject</button><button class="button" data-approval-action="cancel" data-id="${esc(id)}">Cancel</button>` : "";
+  app.innerHTML = layout(`Approval ${short(id, 12)}`, `<section class="card detail-grid">${kv("Status", badge(item.status))}${kv("Summary", item.summary || "—")}${kv("Tool", item.tool)}${kv("Risk", item.risk_level || "—")}${kv("Requester", item.requester || "—")}${kv("Session", item.session_id || "No session")}${kv("Created", fmtTime(item.created_at))}${kv("Expires", fmtTime(item.expires_at))}</section><section class="section"><div class="actions">${actions}${item.task_id ? `<button class="button" data-nav="/admin/history/${esc(item.task_id)}">Open task</button>` : ""}${returnTo ? `<button class="button" data-nav="${esc(returnTo)}">Return to Files</button>` : ""}</div></section><section class="section card"><h2>Arguments</h2><pre>${esc(JSON.stringify(item.args || {}, null, 2))}</pre></section><section class="section card"><h2>Audit</h2><pre>${esc(JSON.stringify(data.audits || [], null, 2))}</pre></section>`);
 }
-
-async function mutate(path, options={}) {state.error="";const result=await request(path,options);if(result.approval?.id){state.notice=`操作等待审批：${result.approval.summary||result.approval.id}`;history.pushState({},"",`/admin/approvals/${encodeURIComponent(result.approval.id)}`)}else{state.notice="操作已提交"}await render()}
-
-document.addEventListener("click", async event => {
-  const nav=event.target.closest("[data-nav]");if(nav){event.preventDefault();return navigate(nav.dataset.nav)}
-  const action=event.target.closest("[data-action]")?.dataset.action;
-  if(action==="toggle-sidebar") return setSidebarCollapsed(!state.sidebarCollapsed);
-  if(action==="token"){if(!confirmDiscardFileChanges())return;setFileDirty(false);return loginView()}
-  if(action==="save-token"){state.token=document.querySelector("#token-input")?.value.trim()||"";sessionStorage.setItem("localgate_admin_token",state.token);return navigate(location.pathname)}
-  if(action==="clear-history"){history.replaceState({},"","/admin/history");return render()}
-  if(action==="next-history"){const q=new URLSearchParams(location.search);q.set("cursor",event.target.dataset.cursor);history.replaceState({},"",`${location.pathname}?${q}`);return render()}
-  const fileDir=event.target.closest("[data-file-dir]");if(fileDir){const ctx=currentFileContext();return navigate(fileBrowserURL({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:fileDir.dataset.fileDir,file:""}))}
-  const fileOpen=event.target.closest("[data-file-open]");if(fileOpen){const ctx=currentFileContext();return navigate(fileBrowserURL({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:ctx.path,file:fileOpen.dataset.fileOpen}))}
-  const fileEntryRename=event.target.closest("[data-file-entry-rename]");if(fileEntryRename)return renameFileEntry(fileEntryRename.dataset.entryPath,fileEntryRename.dataset.entryType);
-  const fileEntryDelete=event.target.closest("[data-file-entry-delete]");if(fileEntryDelete)return deleteFileEntry(fileEntryDelete.dataset.entryPath,fileEntryDelete.dataset.entryType);
-  if(event.target.closest("[data-file-new-file]")) return createFileInCurrentDirectory();
-  if(event.target.closest("[data-file-new-folder]")) return createFolderInCurrentDirectory();
-  if(event.target.closest("[data-file-upload]")){document.querySelector("[data-file-upload-input]")?.click(); return;}
-  if(event.target.closest("[data-file-markdown-preview]")) return toggleMarkdownPreview();
-  if(event.target.closest("[data-file-save]")) return saveCurrentFile();
-  if(event.target.closest("[data-file-rename]")) return renameCurrentFile();
-  if(event.target.closest("[data-file-download]")){const editor=document.querySelector("[data-file-editor]"); if(editor) return downloadFile({workspaceID:editor.dataset.workspaceId, rootID:editor.dataset.rootId, path:editor.dataset.path}); return;}
-  const fileDownload=event.target.closest("[data-file-download-path]");if(fileDownload){const ctx=currentFileContext();return downloadFile({workspaceID:ctx.workspaceID,rootID:ctx.rootID,path:fileDownload.dataset.fileDownloadPath})}
-  if(event.target.closest("[data-file-delete]")) return deleteCurrentFile();
-  if(event.target.closest("[data-file-conflict-reload]")) return reloadConflictFile();
-  if(event.target.closest("[data-file-conflict-overwrite]")) return overwriteCurrentFile();
-  if(event.target.closest("[data-file-conflict-diff]")) return showConflictDiff();
-  if(event.target.closest("[data-file-reload]")) return reloadFiles();
-  if(event.target.closest("[data-file-refresh]")) return reloadFiles("当前文件有未保存修改。刷新目录会丢弃这些修改，确定继续？");
-  if(action==="cancel-task"&&confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`,{method:"POST"});
-  const approval=event.target.closest("[data-approval-action]");if(approval&&confirm(`确认 ${approval.dataset.approvalAction}？`))return mutate(`/approvals/${approval.dataset.id}/${approval.dataset.approvalAction}`,{method:"POST"});
-  const deploy=event.target.closest("[data-deploy-action]");if(deploy){const act=deploy.dataset.deployAction;if(!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`))return;const encoded=`/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;return mutate(act==="delete"?encoded:`${encoded}/${act}`,{method:act==="delete"?"DELETE":"POST",body:act==="delete"?JSON.stringify({confirmation:"delete"}):undefined})}
+async function mutate(path, options = {}) {
+  state.error = "";
+  const { returnTo = "", ...requestOptions } = options;
+  const result = await request(path, requestOptions);
+  if (result.approval?.id && result.status === "awaiting_approval") {
+    state.notice = `操作等待审批：${result.approval.summary || result.approval.id}`;
+    history.pushState({}, "", approvalReturnURL(result.approval.id, returnTo));
+    await render();
+    return;
+  }
+  state.notice = "操作已提交";
+  const safeReturn = safeAdminReturnTo(returnTo);
+  if (safeReturn) {
+    navigate(safeReturn, { force: true, preserveFileTabs: true });
+    return;
+  }
+  await render();
+}
+document.addEventListener("click", async (event) => {
+  const nav = event.target.closest("[data-nav]");
+  if (nav) {
+    event.preventDefault();
+    return navigate(nav.dataset.nav);
+  }
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (action === "toggle-sidebar") return setSidebarCollapsed(!state.sidebarCollapsed);
+  if (action === "token") {
+    if (!confirmDiscardFileChanges()) return;
+    resetFileTabs();
+    return loginView();
+  }
+  if (action === "save-token") {
+    state.token = document.querySelector("#token-input")?.value.trim() || "";
+    sessionStorage.setItem("localgate_admin_token", state.token);
+    return navigate(location.pathname);
+  }
+  if (action === "clear-history") {
+    history.replaceState({}, "", "/admin/history");
+    return render();
+  }
+  if (action === "next-history") {
+    const q = new URLSearchParams(location.search);
+    q.set("cursor", event.target.dataset.cursor);
+    history.replaceState({}, "", `${location.pathname}?${q}`);
+    return render();
+  }
+  const fileDir = event.target.closest("[data-file-dir]");
+  if (fileDir) {
+    const ctx = currentFileContext();
+    return navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: fileDir.dataset.fileDir, file: "" }));
+  }
+  const fileOpen = event.target.closest("[data-file-open]");
+  if (fileOpen) {
+    const ctx = currentFileContext();
+    return navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: ctx.path, file: fileOpen.dataset.fileOpen }));
+  }
+  const fileTab = event.target.closest("[data-file-tab]");
+  if (fileTab) {
+    syncActiveFileTabFromDOM();
+    const tab = state.fileTabs.activate(fileTab.dataset.fileTab);
+    if (tab) return navigate(fileTabURL(tab), { force: true });
+    return;
+  }
+  const fileTabClose = event.target.closest("[data-file-tab-close]");
+  if (fileTabClose) return closeFileTab(fileTabClose.dataset.fileTabClose);
+  const fileEntryRename = event.target.closest("[data-file-entry-rename]");
+  if (fileEntryRename) return renameFileEntry(fileEntryRename.dataset.entryPath, fileEntryRename.dataset.entryType);
+  const fileEntryDelete = event.target.closest("[data-file-entry-delete]");
+  if (fileEntryDelete) return deleteFileEntry(fileEntryDelete.dataset.entryPath, fileEntryDelete.dataset.entryType);
+  if (event.target.closest("[data-file-new-file]")) return createFileInCurrentDirectory();
+  if (event.target.closest("[data-file-new-folder]")) return createFolderInCurrentDirectory();
+  if (event.target.closest("[data-file-upload]")) {
+    document.querySelector("[data-file-upload-input]")?.click();
+    return;
+  }
+  if (event.target.closest("[data-file-terminal-open]")) {
+    const panel = document.querySelector("[data-terminal-mode]");
+    panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (panel?.dataset.terminalMode === "start") setTimeout(() => document.querySelector("[data-file-terminal-command]")?.focus(), 200);
+    return;
+  }
+  if (event.target.closest("[data-file-terminal-start]")) return startFileTerminal();
+  if (event.target.closest("[data-file-terminal-send]")) return sendFileTerminalLine();
+  if (event.target.closest("[data-file-terminal-interrupt]")) return sendFileTerminalInput("");
+  if (event.target.closest("[data-file-terminal-close]")) return closeFileTerminal();
+  if (event.target.closest("[data-file-terminal-reset]")) return resetFileTerminalPanel();
+  if (event.target.closest("[data-file-markdown-preview]")) return toggleMarkdownPreview();
+  if (event.target.closest("[data-file-save]")) return saveCurrentFile();
+  if (event.target.closest("[data-file-rename]")) return renameCurrentFile();
+  if (event.target.closest("[data-file-download]")) {
+    const editor = document.querySelector("[data-file-editor]");
+    if (editor) return downloadFile({ workspaceID: editor.dataset.workspaceId, rootID: editor.dataset.rootId, path: editor.dataset.path });
+    return;
+  }
+  const fileDownload = event.target.closest("[data-file-download-path]");
+  if (fileDownload) {
+    const ctx = currentFileContext();
+    return downloadFile({ workspaceID: ctx.workspaceID, rootID: ctx.rootID, path: fileDownload.dataset.fileDownloadPath });
+  }
+  if (event.target.closest("[data-file-delete]")) return deleteCurrentFile();
+  if (event.target.closest("[data-file-conflict-reload]")) return reloadConflictFile();
+  if (event.target.closest("[data-file-conflict-overwrite]")) return overwriteCurrentFile();
+  if (event.target.closest("[data-file-conflict-diff]")) return showConflictDiff();
+  if (event.target.closest("[data-file-reload]")) return reloadActiveFile();
+  if (event.target.closest("[data-file-refresh]")) {
+    syncActiveFileTabFromDOM();
+    return render();
+  }
+  if (action === "cancel-task" && confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`, { method: "POST" });
+  const approval = event.target.closest("[data-approval-action]");
+  if (approval && confirm(`确认 ${approval.dataset.approvalAction}？`)) return mutate(`/approvals/${approval.dataset.id}/${approval.dataset.approvalAction}`, { method: "POST", returnTo: safeAdminReturnTo(new URLSearchParams(location.search).get("return_to")) });
+  const deploy = event.target.closest("[data-deploy-action]");
+  if (deploy) {
+    const act = deploy.dataset.deployAction;
+    if (!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`)) return;
+    const encoded = `/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;
+    return mutate(act === "delete" ? encoded : `${encoded}/${act}`, { method: act === "delete" ? "DELETE" : "POST", body: act === "delete" ? JSON.stringify({ confirmation: "delete" }) : void 0 });
+  }
 });
-document.addEventListener("input", event => {
+document.addEventListener("input", (event) => {
   if (event.target.closest("[data-file-editor]")) {
-    setFileDirty(true);
+    const tab = state.fileTabs.get(event.target.dataset.tabKey);
+    if (tab) tab.content = event.target.value;
+    setFileDirty(tab ? event.target.value !== tab.savedContent : true);
     const preview = document.querySelector("[data-markdown-preview]");
     if (preview && !preview.classList.contains("hidden")) preview.innerHTML = renderMarkdown(event.target.value);
   }
 });
-document.addEventListener("change", event => {
+document.addEventListener("change", (event) => {
   const uploadInput = event.target.closest("[data-file-upload-input]");
   if (uploadInput) {
     const file = uploadInput.files?.[0];
@@ -745,26 +1432,44 @@ document.addEventListener("change", event => {
   if (!selector) return;
   const ctx = currentFileContext();
   if (selector.dataset.fileSelect === "workspace_id") {
-    if (!navigate(fileBrowserURL({workspaceID: selector.value, rootID: "", path: "", file: ""}))) selector.value = selector.dataset.currentValue || "";
+    if (!navigate(fileBrowserURL({ workspaceID: selector.value, rootID: "", path: "", file: "" }))) selector.value = selector.dataset.currentValue || "";
     return;
   }
   if (selector.dataset.fileSelect === "root_id") {
-    if (!navigate(fileBrowserURL({workspaceID: ctx.workspaceID, rootID: selector.value, path: "", file: ""}))) selector.value = selector.dataset.currentValue || "";
+    if (!navigate(fileBrowserURL({ workspaceID: ctx.workspaceID, rootID: selector.value, path: "", file: "" }))) selector.value = selector.dataset.currentValue || "";
     return;
   }
 });
-document.addEventListener("submit",event=>{event.preventDefault();const form=new FormData(event.target),q=new URLSearchParams();for(const [k,v] of form)if(v)q.set(k,v);history.replaceState({},"",`${location.pathname}?${q}`);render()});
-window.addEventListener("beforeunload", event => {
+document.addEventListener("keydown", (event) => {
+  const terminalInput = event.target.closest("[data-file-terminal-stdin]");
+  if (terminalInput && event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendFileTerminalLine();
+  }
+});
+document.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target), q = new URLSearchParams();
+  for (const [k, v] of form) if (v) q.set(k, v);
+  history.replaceState({}, "", `${location.pathname}?${q}`);
+  render();
+});
+window.addEventListener("beforeunload", (event) => {
   if (!hasUnsavedFileChanges()) return;
   event.preventDefault();
   event.returnValue = "";
 });
 window.addEventListener("popstate", () => {
+  syncActiveFileTabFromDOM();
+  if (location.pathname.replace(/\/$/, "") === "/admin/files") {
+    render();
+    return;
+  }
   if (!confirmDiscardFileChanges()) {
     history.pushState({}, "", state.fileURL || "/admin/files");
     return;
   }
-  setFileDirty(false);
+  resetFileTabs();
   render();
 });
 render();

@@ -88,6 +88,53 @@ func TestApplyPatchAtomicOnMismatch(t *testing.T) {
 	}
 }
 
+func TestApplyPatchPreservesExecutableMode(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(target, []byte("echo old\n"), 0o751); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	_, err := mustApplyPatchTool(t, dir).Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: script.sh",
+			"@@",
+			"-echo old",
+			"+echo new",
+			"*** End Patch",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o751 {
+		t.Fatalf("executable mode changed: %o", info.Mode().Perm())
+	}
+}
+
+func TestApplyPatchAddDoesNotOverwriteConcurrentCreate(t *testing.T) {
+	dir := t.TempDir()
+	tool := applyPatchTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}, CWD: dir}}}
+	staged, err := tool.prepare([]patchOp{{action: "add", path: "new.txt", lines: []string{"ours"}}})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	target := filepath.Join(dir, "new.txt")
+	if err := os.WriteFile(target, []byte("racer"), 0o600); err != nil {
+		t.Fatalf("write concurrent target: %v", err)
+	}
+	if err := commitStagedFiles(staged); err == nil {
+		t.Fatal("expected concurrent create conflict")
+	}
+	if got := readFileText(t, target); got != "racer" {
+		t.Fatalf("concurrent target overwritten: %q", got)
+	}
+}
+
 func TestApplyPatchRejectsPathEscape(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "escape.txt")
@@ -142,8 +189,8 @@ func TestApplyPatchToolSchemaDocumentsPatchFormat(t *testing.T) {
 	if !strings.Contains(desc, "*** Begin Patch") || !strings.Contains(desc, "*** Update File:") {
 		t.Fatalf("patch schema description should explain patch format: %q", desc)
 	}
-	if !strings.Contains(desc, "Multiple file ops may appear in one patch and are applied atomically.") {
-		t.Fatalf("patch schema description should mention multi-file atomic behavior: %q", desc)
+	if !strings.Contains(desc, "best-effort in-process rollback") || !strings.Contains(desc, "not crash-atomic") {
+		t.Fatalf("patch schema description should state transaction limits: %q", desc)
 	}
 }
 

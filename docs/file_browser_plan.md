@@ -35,8 +35,8 @@ code-server 可以作为后续可选的 dynamic deployment 模板存在，但不
 - Phase 2 安全写入、审批与审计已完成。
 - Files 页面已经具备基础文本编辑、语言元数据、上传、下载、创建、重命名、删除、ETag 冲突提示和未保存导航保护。
 - 管理侧栏可折叠，桌面端可为文件工作区释放更多横向空间。
-- 当前前端仍是无 Node 构建链的原生 JavaScript 和嵌入式静态资源；引入 Monaco 前需要先明确依赖管理、构建和产物提交方式。
-- Markdown / 图片预览、多标签页、Diff 合并、终端面板和 Git 联动尚未完成。
+- 前端源码已迁入 `web/admin/src/`，使用固定版本 esbuild 和 npm lockfile 生成提交到仓库的 `dist/`；默认 Go 构建仍直接 embed 产物，不要求 Node。
+- Markdown / 图片预览、冲突 Diff 和多标签编辑已完成；终端接入前需先完成 `CH-SEC-001` 工具与 Session 安全加固，通用 Diff、终端面板和 Git 联动尚未完成。
 
 ## 用户体验
 
@@ -306,19 +306,20 @@ Upload file screenshot.png to LocalGate/docs/
 
 ## Terminal 集成
 
-首版终端可复用现有 Session API：
+Admin 与控制面使用独立监听端口，因此 Files 页面不直接跨端口调用控制面的 `/sessions/*`，而是使用同源 Admin API 代理并复用同一个 SessionManager：
 
-- `POST /sessions/exec`
-- `POST /sessions/{id}/stdin`
-- `GET /sessions/{id}/terminal`
-- `POST /sessions/{id}/close`
+- `POST /api/admin/v1/file-browser/terminals`
+- `GET /api/admin/v1/file-browser/terminals/{id}`
+- `POST /api/admin/v1/file-browser/terminals/{id}/stdin`
+- `POST /api/admin/v1/file-browser/terminals/{id}/close`
 
-文件浏览器从当前目录打开终端时，传入对应 workdir。首版可轮询 terminal buffer，后续增加 Admin Console 专用 SSE / WebSocket：
+文件浏览器从当前目录打开终端时，后端先用 `workspace_id + root_id + relative path` 经过 file-browser sandbox 解析为绝对 workdir，再提交审批型 `exec_command` Task。首版使用绝对 cursor 轮询 terminal buffer，后续增加 Admin Console 专用 SSE / WebSocket：
 
 ```text
-GET /api/admin/v1/terminals/{id}/stream
-POST /api/admin/v1/terminals/{id}/stdin
+GET /api/admin/v1/file-browser/terminals/{id}/stream
 ```
+
+Files URL 使用 `terminal_task`、`terminal_session` 和 `terminal_path` 保留关联上下文。需要审批时，审批页通过受限的 `return_to` 返回原 workspace/root/path；Task 产生 `session_id` 后，页面自动接入 Session。轮询只更新终端面板，不重新渲染编辑器，因此不会覆盖未保存内容。
 
 ## code-server 集成定位
 
@@ -402,14 +403,31 @@ Status: basic editing experience partially implemented; advanced editor integrat
 - [x] 支持 PNG、JPEG、GIF 和 WebP 图片预览；使用带管理鉴权的 Blob 请求，失败时降级下载。
 - [x] 支持 ETag 冲突后的 Reload / Overwrite / 并排 Diff 选择界面。
 - [ ] 明确前端依赖管理和构建产物策略后接入 Monaco Editor。
-- [ ] 支持多标签页和每个标签独立 dirty 状态。
+- [x] 支持多标签页和每个标签独立内容、ETag、dirty、预览与冲突状态。
 - [ ] 支持通用 Diff 视图。
 
-### Phase 4: 终端与任务联动
+### Phase 3.5: 工具与 Session 安全加固（已完成）
 
-- 从目录打开终端。
-- 集成 Session 输出面板。
-- 显示相关 Task / Approval 状态。
+该阶段对应 `CH-SEC-001`，是终端 UI 的强制前置条件。现有实现审查已确认：命令在省略 `env` 时会继承 LocalGate 全部进程环境；自定义 Shell 仅按 basename 判断；Session 读写缺少 workspace 所有权校验；终端 offset 与缓冲裁剪会重复或跳过输出；超长单行可能被 Scanner 静默丢弃；`upload_file` 缺少 SSRF 防护；部分文件写入不是原子操作；`apply_patch` 会丢失已有权限；读取和遍历缺少资源限制与错误传播。
+
+进入 Phase 4 前必须满足：
+
+- 子进程环境严格由 workspace `env_allowlist` 构造。
+- Shell 使用配置允许的可信 canonical path，不能由 workspace 文件伪装。
+- Session 的 read、stdin、close 和 REST 路由统一校验 workspace 所有权，并保存调用主体元数据。
+- 终端使用客户端 cursor、绝对 offset 和明确的截断 / cursor 过期协议。
+- 输出以受限字节块或等价分片读取，长行和读取错误不会静默丢失。
+- 远程上传拒绝本地和私有网络目标、重定向绕过，并具有完整超时。
+- 文件工具共享失败安全的原子写入流程；Patch 保留权限并准确说明事务边界。
+- 读取、列目录和搜索具有大小 / 数量限制、context cancellation 和错误传播。
+- 每个已确认缺陷都有永久回归测试，相关并发路径执行 race 测试。
+
+### Phase 4: 终端与任务联动（已完成）
+
+- [x] 从当前目录解析受控 workdir 并启动终端。
+- [x] 集成绝对 cursor 轮询、stdin、Ctrl-C 和关闭操作。
+- [x] 显示相关 Task / Approval 状态，并支持审批后返回原 Files 上下文。
+- [x] 轮询期间保留文件标签、编辑内容和 dirty 状态。
 - 后续改造为 SSE / WebSocket 实时流。
 
 ### Phase 5: 高级 IDE 能力
@@ -429,26 +447,41 @@ Status: basic editing experience partially implemented; advanced editor integrat
 
 实现结果：Markdown 预览只渲染受控结构并转义原始 HTML；图片通过受限预览 API 和带鉴权 Blob 加载；ETag 冲突保留本地编辑内容并提供 Reload、Overwrite 和并排 Diff。显式覆盖继续走既有审批任务和审计记录。
 
-### CH-ADMIN-003：前端构建链与 Monaco 决策
+### CH-ADMIN-003：前端构建链与 Monaco 决策（已完成）
 
 - 明确是否引入 Node、包管理器和 TypeScript。
 - 明确构建产物是否提交仓库，以及 Go embed 如何消费产物。
 - 评估 Monaco 体积、Web Worker、CSP 和离线部署影响。
 - 完成最小构建链后再接入 Monaco，避免直接手工 vendoring 大型依赖。
 
-这是下一项。先确定依赖和构建产物策略，再决定是否引入 Monaco，避免继续扩大当前手写 `dist/app.js` 的维护成本。
+实现结果：`web/admin/src/` 是源码入口，esbuild 通过 npm lockfile 生成提交的 `dist/`，Go embed 和默认 Go build 不依赖 Node。Monaco 暂不接入；先在 `CH-FB-003` 中完成多标签状态模块化和编辑器 adapter，再验证同源 Worker、现有 CSP、离线产物、体积和启动成本。CDN、`unsafe-eval` 和默认放宽 Admin CSP 不作为可接受方案。
 
-### CH-FB-003：多标签编辑状态
+### CH-FB-003：多标签编辑状态（已完成）
 
 - 多标签页。
 - 每标签独立内容、ETag、dirty 和冲突状态。
 - 关闭标签、切换 workspace 和浏览器导航时统一保护未保存内容。
 
-### CH-FB-004：终端与任务联动
+实现结果：新增独立标签状态模块，已打开文件在标签切换时直接恢复内存内容，不重复读取；每标签独立维护保存基线、ETag、dirty、Markdown 预览和冲突状态。Files 内部导航保留标签，离开页面和关闭 dirty 标签时统一确认；直接重命名、移动和删除会同步标签，等待审批时保留编辑上下文。
 
+### CH-SEC-001：工具与 Session 安全加固（已完成）
+
+- `CH-SEC-001A`：执行环境与可信 Shell。
+- `CH-SEC-001B`：Session 所有权、游标与输出可靠性。
+- `CH-SEC-001C`：`upload_file` SSRF 防护。
+- `CH-SEC-001D`：原子写入、权限保留与 Patch 事务语义。
+- `CH-SEC-001E`：读取和目录遍历资源限制。
+
+五个子项均已完成并通过全量、静态与相关竞态测试，Files 终端 UI 已解除阻塞。
+
+### CH-FB-004：终端与任务联动（已完成）
+
+- 前置条件：`CH-SEC-001` 全部验收通过。
 - 从当前目录创建 Session。
 - 首版轮询终端缓冲，后续再升级 SSE / WebSocket。
 - 在 Files 页面展示相关 Task 和 Approval 状态，并支持审批完成后返回原上下文。
+
+实现结果：新增 Admin 同源终端 API，当前目录经 file-browser sandbox 解析后提交 `exec_command` Task；前端通过 `terminal_task` 轮询 Task，取得 `session_id` 后切换到绝对 cursor Session 轮询，并支持 stdin、Ctrl-C 和关闭。待审批操作使用受限 `return_to` 返回原文件上下文，轮询不重渲染文件编辑器。实时流、多终端标签和浏览器重启恢复继续作为后续独立增强。
 
 ### CH-FB-005：高级工作区能力
 
