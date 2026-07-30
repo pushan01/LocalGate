@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "node ./scripts/build.mjs",
-    "check": "node --test ./src/file-tabs.test.js ./src/file-terminal.test.js && node --check ./src/app.js && npm run build && node --check ./dist/app.js"
+    "check": "node --test ./src/file-tabs.test.js ./src/file-terminal.test.js ./src/file-git.test.js && node --check ./src/app.js && npm run build && node --check ./dist/app.js"
   },
   "devDependencies": {
     "esbuild": "0.28.1"

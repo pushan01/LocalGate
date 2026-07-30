@@ -635,7 +635,7 @@ Authorization: Bearer <token>
 
 <p align="center"><sub>管理后台集中查看任务、审批、部署与审计记录</sub></p>
 
-管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览，以及从当前 workspace 目录启动受控终端。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
+管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览、只读 Git status / staged 与 unstaged diff，以及从当前 workspace 目录启动受控终端。Git 查询要求 worktree 根、Git dir 和 common dir 都位于选中的 file-browser root 内，并禁用 external diff、textconv、pager、fsmonitor 和用户 / 系统 Git 配置。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
 
 ### Deployments 配置
 

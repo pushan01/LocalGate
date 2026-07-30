@@ -32,6 +32,12 @@ The Files page keeps open tabs in memory for the lifetime of the Admin applicati
 
 Tabs are intentionally not restored after a full page reload or browser restart yet. Pending approval navigation preserves the in-memory tabs while the current Admin application remains loaded; direct rename, move, and delete operations update the matching tabs after success.
 
+## Files Git view
+
+The Files page provides a read-only Git panel for the selected directory. It shows branch and upstream metadata, ahead/behind counts, porcelain-v2 status entries, and staged or unstaged diff for the current directory or an individual status item. Status paths are returned relative to the selected file-browser root so an entry can open the matching file without exposing absolute paths.
+
+Git execution is intentionally separate from the workspace command allowlist because the panel does not submit arbitrary commands. The backend resolves only a trusted system Git executable, requires the worktree root, Git dir, and common dir to remain inside the selected file-browser root, uses a minimal environment, disables pager, external diff, textconv, fsmonitor, optional locks, and user/system config, and applies command timeout and output limits. Stage, commit, checkout, reset, clean, pull, push, and other repository mutations are not exposed.
+
 ## Files terminal
 
 The Files page can start an `exec_command` Session in the currently selected workspace root and directory. The browser only calls same-origin Admin endpoints under `/api/admin/v1/file-browser/terminals`; the backend resolves the relative directory through the file-browser sandbox before passing an absolute workdir to the existing Task, approval, command-policy, and Session layers.

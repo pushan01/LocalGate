@@ -36,6 +36,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc(Prefix+"/file-browser/files/download", a.wrap(a.handleFileDownload))
 	mux.HandleFunc(Prefix+"/file-browser/files/preview", a.wrap(a.handleFilePreview))
 	mux.HandleFunc(Prefix+"/file-browser/files/upload", a.wrap(a.handleFileUpload))
+	mux.HandleFunc(Prefix+"/file-browser/git/status", a.wrap(a.handleFileGitStatus))
+	mux.HandleFunc(Prefix+"/file-browser/git/diff", a.wrap(a.handleFileGitDiff))
 	mux.HandleFunc(Prefix+"/file-browser/terminals", a.wrap(a.handleFileTerminalCreate))
 	mux.HandleFunc(Prefix+"/file-browser/terminals/", a.wrap(a.handleFileTerminalRoutes))
 }

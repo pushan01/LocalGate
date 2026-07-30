@@ -376,6 +376,56 @@ pre {
   margin-left: auto;
   color: #475467;
 }
+.file-git-card {
+  display: grid;
+  gap: 14px;
+}
+.git-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.git-status-list {
+  display: grid;
+  gap: 5px;
+}
+.git-status-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #e4e7ec;
+  border-radius: 9px;
+  padding: 9px 10px;
+}
+.git-status-code {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 6px;
+  background: #f2f4f7;
+  padding: 5px 7px;
+  font-weight: 700;
+}
+.git-status-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.git-diff {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #e4e7ec;
+  padding-top: 14px;
+}
+.git-diff h3 {
+  margin: 0;
+}
+.git-diff pre {
+  max-height: 64vh;
+  white-space: pre;
+  overflow: auto;
+}
 .file-browser {
   display: grid;
   grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
@@ -595,6 +645,13 @@ pre {
   .file-row-actions {
     opacity: 1;
   }
+  .git-status-row {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+  .git-status-row .actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
   .file-terminal-start {
     grid-template-columns: 1fr 1fr;
   }
@@ -641,6 +698,13 @@ pre {
   }
   .file-tab-close {
     color: #98a2b3;
+  }
+  .git-status-row,
+  .git-diff {
+    border-color: #344054;
+  }
+  .git-status-code {
+    background: #1d2636;
   }
   .file-terminal-start label {
     color: #98a2b3;

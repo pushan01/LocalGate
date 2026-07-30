@@ -153,3 +153,37 @@ type PathRequest struct {
 	RootID      string
 	Path        string
 }
+
+type GitStatusEntry struct {
+	Path           string `json:"path"`
+	OriginalPath   string `json:"original_path,omitempty"`
+	IndexStatus    string `json:"index_status"`
+	WorktreeStatus string `json:"worktree_status"`
+	Kind           string `json:"kind"`
+}
+
+type GitStatusResult struct {
+	WorkspaceID    string           `json:"workspace_id"`
+	RootID         string           `json:"root_id"`
+	Path           string           `json:"path"`
+	Repository     bool             `json:"repository"`
+	RepositoryPath string           `json:"repository_path,omitempty"`
+	OID            string           `json:"oid,omitempty"`
+	Branch         string           `json:"branch,omitempty"`
+	Detached       bool             `json:"detached"`
+	Upstream       string           `json:"upstream,omitempty"`
+	Ahead          int              `json:"ahead"`
+	Behind         int              `json:"behind"`
+	Entries        []GitStatusEntry `json:"entries"`
+	Truncated      bool             `json:"truncated"`
+}
+
+type GitDiffResult struct {
+	WorkspaceID    string `json:"workspace_id"`
+	RootID         string `json:"root_id"`
+	Path           string `json:"path"`
+	RepositoryPath string `json:"repository_path"`
+	Staged         bool   `json:"staged"`
+	Diff           string `json:"diff"`
+	Bytes          int    `json:"bytes"`
+}

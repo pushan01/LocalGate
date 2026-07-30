@@ -263,6 +263,49 @@ func (a *API) handleFilePreview(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, file.Name, file.ModTime, f)
 }
 
+func (a *API) handleFileGitStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+		return
+	}
+	svc, ok := a.fileBrowserService(w)
+	if !ok {
+		return
+	}
+	result, err := svc.GitStatus(r.Context(), a.fileBrowserPathRequest(r))
+	if err != nil {
+		a.writeFileBrowserError(w, err)
+		return
+	}
+	server.WriteJSON(w, http.StatusOK, result)
+}
+
+func (a *API) handleFileGitDiff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+		return
+	}
+	staged := false
+	if value := r.URL.Query().Get("staged"); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			server.WriteError(w, http.StatusBadRequest, "invalid_staged", "staged must be a boolean", nil)
+			return
+		}
+		staged = parsed
+	}
+	svc, ok := a.fileBrowserService(w)
+	if !ok {
+		return
+	}
+	result, err := svc.GitDiff(r.Context(), a.fileBrowserPathRequest(r), staged)
+	if err != nil {
+		a.writeFileBrowserError(w, err)
+		return
+	}
+	server.WriteJSON(w, http.StatusOK, result)
+}
+
 func (a *API) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
@@ -427,6 +470,16 @@ func (a *API) writeFileBrowserError(w http.ResponseWriter, err error) {
 		server.WriteError(w, http.StatusConflict, "file_changed", "file changed; reload before saving or set overwrite=true", nil)
 	case errors.Is(err, filebrowser.ErrFileExists):
 		server.WriteError(w, http.StatusConflict, "file_exists", "file already exists", nil)
+	case errors.Is(err, filebrowser.ErrGitUnavailable):
+		server.WriteError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not available on this host", nil)
+	case errors.Is(err, filebrowser.ErrGitRepositoryNotFound):
+		server.WriteError(w, http.StatusNotFound, "git_repository_not_found", "current path is not inside a Git repository", nil)
+	case errors.Is(err, filebrowser.ErrGitRepositoryOutsideRoot):
+		server.WriteError(w, http.StatusForbidden, "git_repository_outside_root", "Git repository root is outside the selected file browser root", nil)
+	case errors.Is(err, filebrowser.ErrGitOutputTooLarge):
+		server.WriteError(w, http.StatusRequestEntityTooLarge, "git_output_too_large", "Git output exceeded the configured safety limit", nil)
+	case errors.Is(err, filebrowser.ErrGitTimeout):
+		server.WriteError(w, http.StatusGatewayTimeout, "git_timeout", "Git command timed out", nil)
 	default:
 		server.WriteError(w, http.StatusInternalServerError, "file_browser_failed", err.Error(), nil)
 	}

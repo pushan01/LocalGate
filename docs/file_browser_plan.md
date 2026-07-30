@@ -29,14 +29,14 @@ code-server 可以作为后续可选的 dynamic deployment 模板存在，但不
 
 ## 当前状态
 
-截至 2026-07-29：
+截至 2026-07-30：
 
 - Phase 1 只读浏览已完成。
 - Phase 2 安全写入、审批与审计已完成。
 - Files 页面已经具备基础文本编辑、语言元数据、上传、下载、创建、重命名、删除、ETag 冲突提示和未保存导航保护。
 - 管理侧栏可折叠，桌面端可为文件工作区释放更多横向空间。
 - 前端源码已迁入 `web/admin/src/`，使用固定版本 esbuild 和 npm lockfile 生成提交到仓库的 `dist/`；默认 Go 构建仍直接 embed 产物，不要求 Node。
-- Markdown / 图片预览、冲突 Diff 和多标签编辑已完成；终端接入前需先完成 `CH-SEC-001` 工具与 Session 安全加固，通用 Diff、终端面板和 Git 联动尚未完成。
+- Markdown / 图片预览、冲突 Diff、多标签编辑、受控终端以及只读 Git status / staged 与 unstaged diff 已完成。实时终端流、多终端、通用非 Git Diff、code-server 模板和 LSP 仍属于后续增强。
 
 ## 用户体验
 
@@ -158,6 +158,10 @@ mux.HandleFunc(Prefix+"/file-browser/files/rename", a.wrap(a.handleFileRename))
 mux.HandleFunc(Prefix+"/file-browser/files/upload", a.wrap(a.handleFileUpload))
 mux.HandleFunc(Prefix+"/file-browser/files/download", a.wrap(a.handleFileDownload))
 mux.HandleFunc(Prefix+"/file-browser/files/preview", a.wrap(a.handleFilePreview))
+mux.HandleFunc(Prefix+"/file-browser/git/status", a.wrap(a.handleFileGitStatus))
+mux.HandleFunc(Prefix+"/file-browser/git/diff", a.wrap(a.handleFileGitDiff))
+mux.HandleFunc(Prefix+"/file-browser/terminals", a.wrap(a.handleFileTerminalCreate))
+mux.HandleFunc(Prefix+"/file-browser/terminals/", a.wrap(a.handleFileTerminalRoutes))
 ```
 
 接口草案：
@@ -234,6 +238,16 @@ mux.HandleFunc(Prefix+"/file-browser/files/preview", a.wrap(a.handleFilePreview)
 ### `GET /api/admin/v1/file-browser/files/preview`
 
 以内联响应预览受支持的图片。当前只接受经内容嗅探确认的 PNG、JPEG、GIF 和 WebP，继续遵守 workspace sandbox、隐藏和排除路径、symlink 以及 `file_browser.max_file_bytes` 限制。SVG 和其他二进制格式不进入内联预览，前端降级为下载。
+
+### `GET /api/admin/v1/file-browser/git/status`
+
+查询当前目录的只读 Git 状态。返回仓库根的 root 相对路径、分支、upstream、ahead / behind 和 porcelain v2 状态项；状态项路径同样相对选中的 file-browser root。当前目录不在仓库中时返回 `repository=false`，仓库根位于所选 root 外时拒绝。
+
+### `GET /api/admin/v1/file-browser/git/diff`
+
+查询当前目录或文件的 staged / unstaged unified diff，使用 `staged=true|false` 选择索引或工作区。已删除文件通过现存父目录进行 sandbox 校验后仍可查看 Diff。接口不提供 stage、commit、checkout、reset、clean、pull 或 push。
+
+Git 子进程只接受可信系统路径；worktree 根、Git dir 和 common dir 都必须位于选中的 file-browser root 内。执行使用最小环境，并显式禁用 pager、external diff、textconv、fsmonitor、optional locks 以及用户 / 系统配置。status 最多读取 4 MiB 并展示 5000 项，diff 最多 2 MiB，命令最长运行 10 秒；超限或取消返回明确错误。
 
 ## 配置
 
@@ -432,7 +446,7 @@ Status: basic editing experience partially implemented; advanced editor integrat
 
 ### Phase 5: 高级 IDE 能力
 
-- Git status / diff。
+- [x] 只读 Git status / staged 与 unstaged diff。
 - 可选 code-server dynamic deployment 模板。
 - 可选 LSP / 语言服务研究。
 
@@ -485,9 +499,11 @@ Status: basic editing experience partially implemented; advanced editor integrat
 
 ### CH-FB-005：高级工作区能力
 
-- Git status / diff。
+- [x] `CH-FB-005A`：只读 Git status / staged 与 unstaged diff。
 - 可选 code-server private dynamic deployment 模板。
 - LSP / 语言服务只作为后续研究项，不阻塞轻量工作台交付。
+
+`CH-FB-005A` 实现结果：新增 sandbox-bound Git 服务和 Admin 同源 status / diff API。worktree 根、Git dir 和 common dir 都必须位于选中 root 内；Git 使用可信系统路径、最小环境、超时和输出上限，并禁用 external diff、textconv、pager、fsmonitor、optional locks 与用户 / 系统配置。Files Git 面板可刷新状态、查看当前目录或单文件 staged / working diff，并从状态项打开文件；导航期间保留其他 dirty 标签。
 
 ## 测试计划
 

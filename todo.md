@@ -31,6 +31,7 @@
 - [x] **Editor UX.** Dirty navigation protection, list-level rename/delete, collapsible sidebar, safe Markdown/image preview, actionable ETag conflict handling, frontend build-chain/Monaco decision, and per-tab content/ETag/dirty/conflict state are implemented through `CH-FB-003`. Search remains intentionally out of scope.
 - [x] **Tool and Session hardening.** `CH-SEC-001` completed environment / trusted Shell isolation, Session ownership / absolute cursor reliability, upload SSRF protection, atomic file I/O, and read / traversal limits.
 - [x] **Terminal integration.** `CH-FB-004` added current-directory Session creation, absolute-cursor polling, stdin/close, Task / Approval linkage, and approval return to the original Files context.
+- [x] **Read-only Git workspace view.** `CH-FB-005A` added sandbox-bound Git status plus staged/unstaged diff, trusted Git execution and worktree/Git-metadata root checks without repository mutation operations.
 - [ ] **Real-time and multi-terminal UX.** Replace polling with an Admin SSE / WebSocket stream, add multiple terminal tabs, and define browser-restart restoration after measuring retained Session and output limits.
 - [ ] **Optional code-server template.** Provide a private dynamic deployment template for code-server with explicit warnings that code-server internals bypass LocalGate's fine-grained file approvals.
 

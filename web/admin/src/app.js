@@ -1,5 +1,6 @@
 import { FileTabStore, fileTabKey } from "./file-tabs.js";
 import { FileTerminalState } from "./file-terminal.js";
+import { FileGitState, gitEntryHasStagedChanges, gitEntryHasWorktreeChanges } from "./file-git.js";
 
 const API = "/api/admin/v1";
 const app = document.querySelector("#app");
@@ -11,7 +12,7 @@ function loadSidebarCollapsed() {
     return false;
   }
 }
-const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), terminalPollTimer: 0, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
+const state = { token: sessionStorage.getItem("localgate_admin_token") || "", error: "", notice: "", fileDirty: false, fileURL: "", fileConflict: null, fileTabs: new FileTabStore(), fileTerminal: new FileTerminalState(), fileGit: new FileGitState(), terminalPollTimer: 0, imageObjectURL: "", sidebarCollapsed: loadSidebarCollapsed() };
 
 const esc = (value) => String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const short = (value, n=18) => value ? (value.length > n ? `${value.slice(0,n)}…` : value) : "—";
@@ -246,6 +247,7 @@ async function renderFiles() {
   if (!roots.some(root => root.id === rootID)) rootID = roots[0].id;
   const dirPath = query.get("path") || "";
   const filePath = query.get("file") || "";
+  state.fileGit.setContext(workspaceID, rootID, dirPath);
   await hydrateFileTerminal({
     workspaceID,
     rootID,
@@ -273,8 +275,9 @@ async function renderFiles() {
     <label>Workspace <select data-file-select="workspace_id" data-current-value="${esc(workspaceID)}">${workspaceOptions}</select></label>
     <label>Root <select data-file-select="root_id" data-current-value="${esc(rootID)}">${rootOptions}</select></label>
     <div class="file-path mono">${esc(currentLabel)}</div>
-    <button class="button" data-file-new-file="1">New file</button><button class="button" data-file-new-folder="1">New folder</button><button class="button" data-file-upload="1">Upload</button><input class="hidden" type="file" data-file-upload-input><button class="button" data-file-terminal-open="1">Terminal</button><button class="button" data-file-refresh="1">Refresh</button>
+    <button class="button" data-file-new-file="1">New file</button><button class="button" data-file-new-folder="1">New folder</button><button class="button" data-file-upload="1">Upload</button><input class="hidden" type="file" data-file-upload-input><button class="button${state.fileGit.open?" primary":""}" data-file-git-toggle="1">Git</button><button class="button" data-file-terminal-open="1">Terminal</button><button class="button" data-file-refresh="1">Refresh</button>
   </section>
+  ${fileGitPanel()}
   <section class="file-browser section">
     <div class="file-panel card">
       <div class="section-head"><h2>Files</h2>${dirPath?`<button class="link" data-file-dir="${esc(parentPath(dirPath))}">Up</button>`:""}</div>
@@ -290,6 +293,7 @@ async function renderFiles() {
   state.fileURL = currentURL();
   if (tab?.imageFile) loadImagePreview({workspaceID, rootID, path:filePath});
   scheduleFileTerminalPoll();
+  if (state.fileGit.open && !state.fileGit.status && !state.fileGit.loading) loadFileGitStatus();
 }
 
 async function openFileTab({workspaceID, rootID, dirPath, filePath, entry}) {
@@ -425,6 +429,95 @@ function fileBrowserQuery({workspaceID, rootID, path}) {
   if (rootID) q.set("root_id", rootID);
   if (path) q.set("path", path);
   return q.toString();
+}
+
+function fileGitPanel() {
+  const git = state.fileGit;
+  if (!git.open) return "";
+  let body = "";
+  if (git.loading) {
+    body = `<div class="notice">正在读取 Git 状态…</div>`;
+  } else if (git.error && !git.status) {
+    body = `<div class="error">${esc(git.error)}</div>`;
+  } else if (!git.status) {
+    body = `<div class="empty">尚未读取 Git 状态</div>`;
+  } else if (!git.status.repository) {
+    body = `<div class="empty">当前目录不在 Git 仓库中</div>`;
+  } else {
+    const status = git.status;
+    const entries = status.entries || [];
+    const branch = status.detached ? `detached · ${short(status.oid,12)}` : (status.branch || "unknown branch");
+    const tracking = status.upstream ? `${status.upstream} · ahead ${status.ahead || 0} · behind ${status.behind || 0}` : "No upstream";
+    body = `<div class="git-summary"><div><strong>${esc(branch)}</strong><div class="muted mono">${esc(status.repository_path || "/")} · ${esc(tracking)}</div></div><div class="actions"><button class="button" data-file-git-diff data-git-path="${esc(git.path)}" data-git-staged="false">Working diff</button><button class="button" data-file-git-diff data-git-path="${esc(git.path)}" data-git-staged="true">Staged diff</button></div></div>
+      ${status.truncated?`<div class="notice">状态项超过显示上限，仅展示前 ${entries.length} 项。</div>`:""}
+      <div class="git-status-list">${entries.length?entries.map(fileGitStatusEntry).join(""):`<div class="empty">工作区干净</div>`}</div>`;
+  }
+  const diff = git.diff;
+  const diffBody = git.loadingDiff
+    ? `<div class="notice">正在读取 Diff…</div>`
+    : diff
+      ? `<section class="git-diff"><div class="section-head"><div><h3>${diff.staged?"Staged":"Working tree"} diff</h3><div class="muted mono">${esc(diff.path || "/")} · ${formatBytes(diff.bytes || 0)}</div></div><button class="button" data-file-git-diff-close>Close diff</button></div>${diff.diff?`<pre data-file-git-diff-output>${esc(diff.diff)}</pre>`:`<div class="empty">没有匹配的差异</div>`}</section>`
+      : "";
+  return `<section class="section card file-git-card" data-file-git-panel><div class="section-head"><div><h2>Git</h2><div class="muted mono">${esc(git.workspaceID || "—")} · ${esc(git.path || "/")}</div></div><div class="actions"><button class="button" data-file-git-refresh>Refresh</button><button class="button" data-file-git-toggle>Close</button></div></div>${body}${git.error&&git.status?`<div class="error">${esc(git.error)}</div>`:""}${diffBody}</section>`;
+}
+
+function fileGitStatusEntry(entry) {
+  const staged = gitEntryHasStagedChanges(entry);
+  const worktree = gitEntryHasWorktreeChanges(entry);
+  const canOpen = entry.kind !== "deleted";
+  const statusLabel = `${entry.index_status || "."}${entry.worktree_status || "."}`;
+  return `<div class="git-status-row"><div class="git-status-code mono" title="index / worktree">${esc(statusLabel)}</div><div class="git-status-path"><strong>${esc(entry.path)}</strong>${entry.original_path?`<div class="muted mono">from ${esc(entry.original_path)}</div>`:""}<div class="muted">${esc(entry.kind || "changed")}</div></div><div class="actions">${staged?`<button class="button" data-file-git-diff data-git-path="${esc(entry.path)}" data-git-staged="true">Staged</button>`:""}${worktree?`<button class="button" data-file-git-diff data-git-path="${esc(entry.path)}" data-git-staged="false">Working</button>`:""}${canOpen?`<button class="button" data-file-git-open="${esc(entry.path)}">Open</button>`:""}</div></div>`;
+}
+
+function refreshFileGitPanel() {
+  const panel = document.querySelector("[data-file-git-panel]");
+  if (!panel) return;
+  panel.outerHTML = fileGitPanel();
+}
+
+async function toggleFileGitPanel() {
+  syncActiveFileTabFromDOM();
+  const ctx = currentFileContext();
+  state.fileGit.setContext(ctx.workspaceID, ctx.rootID, ctx.path);
+  state.fileGit.open = !state.fileGit.open;
+  await render();
+}
+
+async function loadFileGitStatus() {
+  const git = state.fileGit;
+  if (!git.open || git.loading) return;
+  git.loading = true;
+  git.error = "";
+  refreshFileGitPanel();
+  try {
+    const result = await request(`/file-browser/git/status?${fileBrowserQuery({workspaceID:git.workspaceID, rootID:git.rootID, path:git.path})}`);
+    git.applyStatus(result);
+  } catch (error) {
+    git.fail(error);
+  }
+  refreshFileGitPanel();
+}
+
+async function loadFileGitDiff(path, staged) {
+  const git = state.fileGit;
+  git.loadingDiff = true;
+  git.diff = null;
+  git.error = "";
+  refreshFileGitPanel();
+  try {
+    const query = new URLSearchParams(fileBrowserQuery({workspaceID:git.workspaceID, rootID:git.rootID, path:path || git.path}));
+    query.set("staged", String(Boolean(staged)));
+    git.applyDiff(await request(`/file-browser/git/diff?${query}`));
+  } catch (error) {
+    git.fail(error);
+  }
+  refreshFileGitPanel();
+  document.querySelector("[data-file-git-diff-output]")?.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+function openFileFromGit(path) {
+  const ctx = currentFileContext();
+  return navigate(fileBrowserURL({workspaceID:ctx.workspaceID, rootID:ctx.rootID, path:parentPath(path), file:path}));
 }
 
 function joinFilePath(base, name) {
@@ -1175,6 +1268,11 @@ document.addEventListener("click", async event => {
   if(event.target.closest("[data-file-new-file]")) return createFileInCurrentDirectory();
   if(event.target.closest("[data-file-new-folder]")) return createFolderInCurrentDirectory();
   if(event.target.closest("[data-file-upload]")){document.querySelector("[data-file-upload-input]")?.click(); return;}
+  if(event.target.closest("[data-file-git-toggle]")) return toggleFileGitPanel();
+  if(event.target.closest("[data-file-git-refresh]")){state.fileGit.status=null;state.fileGit.diff=null;return loadFileGitStatus();}
+  if(event.target.closest("[data-file-git-diff-close]")){state.fileGit.clearDiff();refreshFileGitPanel();return;}
+  const gitDiff=event.target.closest("[data-file-git-diff]");if(gitDiff)return loadFileGitDiff(gitDiff.dataset.gitPath,gitDiff.dataset.gitStaged==="true");
+  const gitOpen=event.target.closest("[data-file-git-open]");if(gitOpen)return openFileFromGit(gitOpen.dataset.fileGitOpen);
   if(event.target.closest("[data-file-terminal-open]")){const panel=document.querySelector("[data-terminal-mode]");panel?.scrollIntoView({behavior:"smooth",block:"start"});if(panel?.dataset.terminalMode==="start")setTimeout(()=>document.querySelector("[data-file-terminal-command]")?.focus(),200);return;}
   if(event.target.closest("[data-file-terminal-start]")) return startFileTerminal();
   if(event.target.closest("[data-file-terminal-send]")) return sendFileTerminalLine();
@@ -1191,7 +1289,7 @@ document.addEventListener("click", async event => {
   if(event.target.closest("[data-file-conflict-overwrite]")) return overwriteCurrentFile();
   if(event.target.closest("[data-file-conflict-diff]")) return showConflictDiff();
   if(event.target.closest("[data-file-reload]")) return reloadActiveFile();
-  if(event.target.closest("[data-file-refresh]")){syncActiveFileTabFromDOM();return render();}
+  if(event.target.closest("[data-file-refresh]")){syncActiveFileTabFromDOM();if(state.fileGit.open){state.fileGit.status=null;state.fileGit.diff=null;}return render();}
   if(action==="cancel-task"&&confirm("确认取消这个 Task？")) return mutate(`/tasks/${event.target.dataset.id}/cancel`,{method:"POST"});
   const approval=event.target.closest("[data-approval-action]");if(approval&&confirm(`确认 ${approval.dataset.approvalAction}？`))return mutate(`/approvals/${approval.dataset.id}/${approval.dataset.approvalAction}`,{method:"POST",returnTo:safeAdminReturnTo(new URLSearchParams(location.search).get("return_to"))});
   const deploy=event.target.closest("[data-deploy-action]");if(deploy){const act=deploy.dataset.deployAction;if(!confirm(`确认对 ${deploy.dataset.name} 执行 ${act}？`))return;const encoded=`/deployments/${encodeURIComponent(deploy.dataset.type)}/${encodeURIComponent(deploy.dataset.name)}`;return mutate(act==="delete"?encoded:`${encoded}/${act}`,{method:act==="delete"?"DELETE":"POST",body:act==="delete"?JSON.stringify({confirmation:"delete"}):undefined})}

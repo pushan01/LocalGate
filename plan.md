@@ -122,7 +122,39 @@
   - `go test ./...`、`go vet ./...`、`go test -race ./internal/core ./internal/capabilities/shell ./internal/adminapi ./internal/filebrowser ./internal/app` 和 `git diff --check` 均通过。
 - **范围说明**：工作树同时包含尚未提交的 `CH-FB-003` 和 `CH-SEC-001` 改动，因此未伪造单独的实际 diff 行数；实时 SSE/WebSocket、多终端标签和浏览器重启后的完整状态持久化已拆出后续事项。
 
-下一项：评估 `CH-FB-005` 高级工作区能力，优先拆分 Git status / diff 与实时终端流。
+## CH-FB-005A：只读 Git status / diff
+
+- **状态**：已完成
+- **开始日期**：2026-07-30
+- **完成日期**：2026-07-30
+- **优先级**：P1
+- **目标**：在 Files 当前目录中展示受控的 Git 分支、ahead/behind、工作区状态以及 staged / unstaged diff，并允许从状态项返回对应文件。
+- **非目标**：本轮不提供 stage、commit、checkout、reset、clean、pull、push 等写操作，不实现实时终端流、多终端、code-server、LSP 或 Monaco。
+- **涉及范围**：`internal/filebrowser` 只读 Git 服务、`internal/adminapi` 同源查询接口、Files Git 面板、前端构建产物、测试和文档。
+- **安全边界**：worktree 根、Git dir 和 common dir 必须位于选中的 file-browser root 内；Git 使用受限环境和固定参数，禁用 pager、external diff、textconv、fsmonitor、可选锁和用户/系统配置；命令有超时、输出大小及状态项数量上限。
+- **验收条件**：
+  - 当前目录位于 Git 仓库内时返回分支、upstream、ahead/behind 和 porcelain v2 状态；非仓库返回明确状态而不是 500。
+  - 仓库根位于选中 root 之外时拒绝，不能借由父仓库读取 root 外信息。
+  - staged 与 unstaged diff 可按当前目录或单文件查询，路径继续经过 file-browser sandbox 校验。
+  - 仓库配置中的 external diff、textconv、pager 和 fsmonitor 不会执行。
+  - 大输出、超时和 context cancellation 返回明确错误，不静默截断为完整成功。
+  - Files Git 面板展示状态、刷新、工作区/staged diff 和打开文件入口，不破坏现有标签与 dirty 状态。
+  - 定向 Go/Node 测试、Admin 构建、全量测试、vet、相关 race 测试和 diff 校验通过。
+- **验证方式**：`go test ./internal/filebrowser ./internal/adminapi ./web/admin`、前端 Node 测试与 `npm run check`、无头浏览器冒烟、`go test -race ./internal/filebrowser ./internal/adminapi`、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：
+  - 新增 `internal/filebrowser` 只读 Git 服务，使用 porcelain v2 `-z` 解析分支、upstream、ahead/behind、普通、rename/copy、conflict 和 untracked 状态，并将结果统一转换为 file-browser root 相对路径。
+  - staged / unstaged diff 支持当前目录、现存文件和已删除文件；删除目标仅在现存父目录通过 sandbox 校验后生成 pathspec，不放宽通用文件解析规则。
+  - Git worktree 根、Git dir 和 common dir 都必须位于所选 root 内；父仓库、外置 `.git` 和 linked worktree metadata 越界均拒绝。
+  - Git 只从受信任系统目录解析，使用最小环境，禁用 pager、external diff、textconv、fsmonitor、optional locks 以及用户/系统配置；命令限制 10 秒，status 4 MiB/5000 项，diff 2 MiB。
+  - 新增 Admin 同源 status / diff API 和 Files Git 面板，支持刷新、当前目录或单文件 working/staged diff、状态项打开文件；Git 面板状态独立于文件标签，导航不丢失 dirty 编辑内容。
+- **验证结果**：
+  - File Browser 测试覆盖 staged/unstaged、已删除文件、目录作用域、嵌套仓库路径、非仓库、父仓库越界、外置 Git metadata、external diff/fsmonitor 禁用、取消、rename 解析和输出上限。
+  - Admin API 测试覆盖 status、diff、非仓库和参数校验；前端 Git 状态模块与既有文件/终端模块共 13 个 Node 测试通过。
+  - 无头 Chrome 真实工作树冒烟通过：显示 `plan.md` working diff，打开 `internal/filebrowser/git.go` 后原 `plan.md` dirty 标签仍保留，未发现运行时异常。
+  - Admin `dist` 连续两次构建 SHA-256 一致。
+  - `go test ./...`、`go vet ./...`、`go test -race ./internal/filebrowser ./internal/adminapi ./web/admin`、`npm run check` 和 `git diff --check` 均通过。
+
+下一项：独立评估实时终端流、多终端 UX 和 code-server private dynamic deployment 模板。
 
 ## CH-FB-003：多标签编辑状态
 
