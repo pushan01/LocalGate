@@ -265,7 +265,7 @@ func (a *API) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, "session_exec_failed", err.Error(), nil)
 		return
 	}
-	a.writeSubmissionResult(w, submission, http.StatusCreated)
+	a.writeSubmissionResult(r.Context(), w, submission, http.StatusCreated)
 }
 
 func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
@@ -476,21 +476,26 @@ func (a *API) handleToolCall(w http.ResponseWriter, r *http.Request, name string
 		server.WriteError(w, http.StatusBadRequest, "tool_call_failed", err.Error(), map[string]any{"tool": name})
 		return
 	}
-	a.writeSubmissionResult(w, submission, http.StatusOK)
+	a.writeSubmissionResult(r.Context(), w, submission, http.StatusOK)
 }
 
-func (a *API) writeSubmissionResult(w http.ResponseWriter, submission app.Submission, successStatus int) {
+func (a *API) writeSubmissionResult(ctx context.Context, w http.ResponseWriter, submission app.Submission, successStatus int) {
 	if submission.Approval != nil {
-		server.WriteJSON(w, http.StatusAccepted, map[string]any{
-			"status":       "pending_approval",
-			"approval_id":  submission.Approval.ID,
-			"approval_url": submission.Approval.ApprovalURL,
-			"task_id":      submission.Approval.TaskID,
-			"expires_at":   submission.Approval.ExpiresAt,
-			"summary":      submission.Approval.Summary,
-			"risk_level":   submission.Approval.RiskLevel,
-		})
-		return
+		if _, resolved, err := a.App.WaitForApprovalDecision(ctx, submission); err != nil {
+			server.WriteError(w, http.StatusRequestTimeout, "approval_wait_interrupted", err.Error(), map[string]any{"task_id": submission.Task.ID})
+			return
+		} else if !resolved {
+			server.WriteJSON(w, http.StatusAccepted, map[string]any{
+				"status":       "pending_approval",
+				"approval_id":  submission.Approval.ID,
+				"approval_url": submission.Approval.ApprovalURL,
+				"task_id":      submission.Approval.TaskID,
+				"expires_at":   submission.Approval.ExpiresAt,
+				"summary":      submission.Approval.Summary,
+				"risk_level":   submission.Approval.RiskLevel,
+			})
+			return
+		}
 	}
 	if submission.Task == nil {
 		server.WriteError(w, http.StatusInternalServerError, "task_missing", "task was not created", nil)

@@ -268,3 +268,24 @@ func TestCancelExpireAndStartupReconcileWriteAudit(t *testing.T) {
 		t.Fatalf("missing terminal audit events: %#v", actions)
 	}
 }
+
+func TestApprovalObserverReceivesBoundAndResolvedRequests(t *testing.T) {
+	svc := NewService(NewStore(t.TempDir()))
+	observed := make([]Status, 0, 2)
+	svc.SetObserver(func(req Request) {
+		observed = append(observed, req.Status)
+	})
+	req, err := svc.Create(Request{Tool: "run_command", WorkspaceID: "ws", Requester: "tester"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.BindTask(req.ID, "task-1"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := svc.RejectBy(req.ID, Actor{ID: "reviewer", AuthMethod: "test"}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if len(observed) != 2 || observed[0] != StatusPending || observed[1] != StatusRejected {
+		t.Fatalf("unexpected observed statuses: %#v", observed)
+	}
+}

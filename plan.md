@@ -1,5 +1,25 @@
 # Plan
 
+## CH-NOTIFY-002：收敛系统通知触发策略
+
+- **状态**：已完成
+- **规划日期**：2026-08-03
+- **开始日期**：2026-08-03
+- **完成日期**：2026-08-03
+- **优先级**：P1
+- **目标**：审批仅在待处理、拒绝、取消和过期时发送 Bark 系统通知；批准不发送；任何工具 Task 失败或超时均不发送系统通知。
+- **非目标**：不改变模型主动调用 `send_notification` 的行为，不取消动态部署监管自身的错误通知，不调整 Bark 传输、加密或配置结构。
+- **涉及范围**：`internal/app` 通知事件筛选、相关单元测试和 README。
+- **预计规模**：约 30–80 行有效 diff。
+- **验收条件**：
+  - pending、rejected、canceled、expired 审批状态会进入通知发送路径。
+  - approved 审批状态不会进入通知发送路径。
+  - `EventTaskFailed` 和 `EventTaskTimeout` 不再挂接 Bark 系统通知观察器。
+  - 动态部署错误通知和 `send_notification` 工具保持原行为。
+- **验证方式**：`go test ./internal/app ./internal/approval`、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：App 的审批观察器增加状态筛选，仅允许 pending、rejected、canceled 和 expired；删除 Task failed/timeout 的 Bark 观察器及相关消息构造逻辑；同步更新 README 和单元测试。
+- **验证结果**：定向测试、`go test ./...`、`go vet ./...` 和 `git diff --check` 均通过。
+
 ## CH-SEC-001：工具与 Session 安全加固
 
 - **状态**：已完成

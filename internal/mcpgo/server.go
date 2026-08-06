@@ -160,7 +160,26 @@ func (s *Server) makeInvokeHandler(toolName string) func(ctx context.Context, re
 		if submitErr != nil {
 			return mcp.NewToolResultError(submitErr.Error()), nil
 		}
-		if submission.Approval != nil {
+		if submission.Approval != nil && !async {
+			if _, resolved, waitErr := s.App.WaitForApprovalDecision(ctx, submission); waitErr != nil {
+				return mcp.NewToolResultError(waitErr.Error()), nil
+			} else if resolved {
+				// Continue below and return the result of the same gated task.
+			} else {
+				return newStructuredToolResult(map[string]any{
+					"status":       "pending_approval",
+					"approval_id":  submission.Approval.ID,
+					"approval_url": submission.Approval.ApprovalURL,
+					"task_id":      submission.Approval.TaskID,
+					"expires_at":   submission.Approval.ExpiresAt,
+					"summary":      submission.Approval.Summary,
+					"risk_level":   submission.Approval.RiskLevel,
+					"tool":         toolName,
+					"workspace_id": s.WSID,
+				}, false), nil
+			}
+		}
+		if submission.Approval != nil && async {
 			return newStructuredToolResult(map[string]any{
 				"status":       "pending_approval",
 				"approval_id":  submission.Approval.ID,

@@ -30,25 +30,26 @@ type Workspace struct {
 }
 
 type Config struct {
-	Bind             string            `yaml:"bind"`
-	MaxConcurrency   int               `yaml:"max_concurrency"`
-	DefaultTimeoutMs int64             `yaml:"default_timeout_ms"`
-	MaxOutputBytes   int64             `yaml:"max_output_bytes"`
-	LogStore         string            `yaml:"log_store"`
-	Admin            AdminConfig       `yaml:"admin"`
-	SessionCleanup   SessionCleanup    `yaml:"session_cleanup"`
-	HTTP             HTTP              `yaml:"http"`
-	MCPHTTP          MCPHTTP           `yaml:"mcp_http"`
-	FileExports      FileExports       `yaml:"file_exports"`
-	FileBrowser      FileBrowserConfig `yaml:"file_browser"`
-	Deployments      DeploymentsConfig `yaml:"deployments"`
-	HTTPAuth         HTTPAuth          `yaml:"http_auth"`
-	ToolArguments    ToolArguments     `yaml:"tool_arguments"`
-	ToolHTTPMode     ToolHTTPMode      `yaml:"tool_http_mode"`
-	MCPServers       []MCPServer       `yaml:"mcp_servers"`
-	Upgrade          Upgrade           `yaml:"-"`
-	Runtime          Runtime           `yaml:"-"`
-	Workspaces       []Workspace       `yaml:"workspaces"`
+	Bind             string              `yaml:"bind"`
+	MaxConcurrency   int                 `yaml:"max_concurrency"`
+	DefaultTimeoutMs int64               `yaml:"default_timeout_ms"`
+	MaxOutputBytes   int64               `yaml:"max_output_bytes"`
+	LogStore         string              `yaml:"log_store"`
+	Admin            AdminConfig         `yaml:"admin"`
+	SessionCleanup   SessionCleanup      `yaml:"session_cleanup"`
+	HTTP             HTTP                `yaml:"http"`
+	MCPHTTP          MCPHTTP             `yaml:"mcp_http"`
+	FileExports      FileExports         `yaml:"file_exports"`
+	FileBrowser      FileBrowserConfig   `yaml:"file_browser"`
+	Notifications    NotificationsConfig `yaml:"notifications"`
+	Deployments      DeploymentsConfig   `yaml:"deployments"`
+	HTTPAuth         HTTPAuth            `yaml:"http_auth"`
+	ToolArguments    ToolArguments       `yaml:"tool_arguments"`
+	ToolHTTPMode     ToolHTTPMode        `yaml:"tool_http_mode"`
+	MCPServers       []MCPServer         `yaml:"mcp_servers"`
+	Upgrade          Upgrade             `yaml:"-"`
+	Runtime          Runtime             `yaml:"-"`
+	Workspaces       []Workspace         `yaml:"workspaces"`
 }
 
 type LoadOptions struct {
@@ -68,6 +69,7 @@ type ApprovalPolicy struct {
 type ApprovalConfig struct {
 	Enabled            bool           `yaml:"enabled"`
 	DefaultTTLSeconds  int            `yaml:"default_ttl_seconds"`
+	PendingWaitSeconds int            `yaml:"pending_wait_seconds"`
 	MaxSyncWaitSeconds int            `yaml:"max_sync_wait_seconds"`
 	Rules              []ApprovalRule `yaml:"rules"`
 }
@@ -121,6 +123,20 @@ type FileBrowserConfig struct {
 	Exclude                  []string `yaml:"exclude"`
 	RequireApprovalForWrite  bool     `yaml:"require_approval_for_write"`
 	RequireApprovalForDelete bool     `yaml:"require_approval_for_delete"`
+}
+
+type NotificationsConfig struct {
+	Enabled       bool                   `yaml:"enabled"`
+	SystemEnabled bool                   `yaml:"system_enabled"`
+	ToolEnabled   bool                   `yaml:"tool_enabled"`
+	Bark          BarkNotificationConfig `yaml:"bark"`
+}
+
+type BarkNotificationConfig struct {
+	BaseURL       string `yaml:"base_url"`
+	DeviceKey     string `yaml:"device_key"`
+	EncryptionKey string `yaml:"encryption_key"`
+	EncryptionIV  string `yaml:"encryption_iv"`
 }
 
 type DeploymentsConfig struct {
@@ -251,6 +267,13 @@ func Default() Config {
 			RequireApprovalForWrite:  true,
 			RequireApprovalForDelete: true,
 		},
+		Notifications: NotificationsConfig{
+			SystemEnabled: true,
+			ToolEnabled:   true,
+			Bark: BarkNotificationConfig{
+				BaseURL: "https://api.day.app",
+			},
+		},
 		Deployments: DeploymentsConfig{
 			PublicBind:    "127.0.0.1:3738",
 			PrivateBind:   "127.0.0.1:3740",
@@ -296,6 +319,7 @@ func DefaultApprovalConfig() ApprovalConfig {
 	return ApprovalConfig{
 		Enabled:            true,
 		DefaultTTLSeconds:  10 * 60,
+		PendingWaitSeconds: 5,
 		MaxSyncWaitSeconds: 30,
 	}
 }
@@ -313,7 +337,7 @@ func DefaultAdminConfig() AdminConfig {
 // programmatic AdminConfig literals. YAML configurations inherit defaults before
 // unmarshalling.
 func NormalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
-	if !cfg.Enabled && cfg.DefaultTTLSeconds == 0 && cfg.MaxSyncWaitSeconds == 0 && len(cfg.Rules) == 0 {
+	if !cfg.Enabled && cfg.DefaultTTLSeconds == 0 && cfg.PendingWaitSeconds == 0 && cfg.MaxSyncWaitSeconds == 0 && len(cfg.Rules) == 0 {
 		return DefaultApprovalConfig()
 	}
 	if cfg.DefaultTTLSeconds == 0 {
@@ -327,7 +351,7 @@ func NormalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
 func NormalizeAdminConfig(cfg AdminConfig, httpConfig HTTP) AdminConfig {
 	if !cfg.Enabled && strings.TrimSpace(cfg.BaseURL) == "" &&
 		!cfg.Approval.Enabled && cfg.Approval.DefaultTTLSeconds == 0 &&
-		cfg.Approval.MaxSyncWaitSeconds == 0 && len(cfg.Approval.Rules) == 0 {
+		cfg.Approval.PendingWaitSeconds == 0 && cfg.Approval.MaxSyncWaitSeconds == 0 && len(cfg.Approval.Rules) == 0 {
 		cfg = DefaultAdminConfig()
 	}
 	cfg.Approval = NormalizeApprovalConfig(cfg.Approval)
@@ -343,6 +367,19 @@ func NormalizeAdminConfig(cfg AdminConfig, httpConfig HTTP) AdminConfig {
 	if strings.TrimSpace(cfg.Bind) == "" {
 		cfg.Bind = DefaultAdminConfig().Bind
 	}
+	return cfg
+}
+
+func NormalizeNotificationsConfig(cfg NotificationsConfig) NotificationsConfig {
+	if !cfg.Enabled && !cfg.SystemEnabled && !cfg.ToolEnabled &&
+		strings.TrimSpace(cfg.Bark.BaseURL) == "" && strings.TrimSpace(cfg.Bark.DeviceKey) == "" &&
+		strings.TrimSpace(cfg.Bark.EncryptionKey) == "" && strings.TrimSpace(cfg.Bark.EncryptionIV) == "" {
+		cfg = Default().Notifications
+	}
+	if strings.TrimSpace(cfg.Bark.BaseURL) == "" {
+		cfg.Bark.BaseURL = "https://api.day.app"
+	}
+	cfg.Bark.BaseURL = normalizeBaseURL(cfg.Bark.BaseURL)
 	return cfg
 }
 
@@ -410,6 +447,11 @@ func Load(opts LoadOptions) (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_APPROVAL_DEFAULT_TTL_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
 			cfg.Admin.Approval.DefaultTTLSeconds = iv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_APPROVAL_PENDING_WAIT_SECONDS")); v != "" {
+		if iv, err := atoi(v); err == nil {
+			cfg.Admin.Approval.PendingWaitSeconds = iv
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_APPROVAL_MAX_SYNC_WAIT_SECONDS")); v != "" {
@@ -743,6 +785,7 @@ func Load(opts LoadOptions) (Config, error) {
 	cfg.HTTP.BaseURL = normalizeBaseURL(cfg.HTTP.BaseURL)
 	cfg.Admin.BaseURL = normalizeBaseURL(cfg.Admin.BaseURL)
 	cfg.FileExports = NormalizeFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL)
+	cfg.Notifications = NormalizeNotificationsConfig(cfg.Notifications)
 	if !cfg.Admin.Enabled {
 		cfg.Admin.Approval.Enabled = false
 	}
@@ -773,6 +816,9 @@ func Load(opts LoadOptions) (Config, error) {
 		return Config{}, err
 	}
 	if err := validateFileBrowserConfig(cfg.FileBrowser); err != nil {
+		return Config{}, err
+	}
+	if err := validateNotificationsConfig(cfg.Notifications); err != nil {
 		return Config{}, err
 	}
 	if err := validateListenerBinds(cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
@@ -869,6 +915,7 @@ func (c Config) SafeSummary() map[string]any {
 			"approval": map[string]any{
 				"enabled":               c.Admin.Approval.Enabled,
 				"default_ttl_seconds":   c.Admin.Approval.DefaultTTLSeconds,
+				"pending_wait_seconds":  c.Admin.Approval.PendingWaitSeconds,
 				"max_sync_wait_seconds": c.Admin.Approval.MaxSyncWaitSeconds,
 				"rules":                 c.Admin.Approval.Rules,
 			},
@@ -908,6 +955,13 @@ func (c Config) SafeSummary() map[string]any {
 			"exclude":                     c.FileBrowser.Exclude,
 			"require_approval_for_write":  c.FileBrowser.RequireApprovalForWrite,
 			"require_approval_for_delete": c.FileBrowser.RequireApprovalForDelete,
+		},
+		"notifications": map[string]any{
+			"enabled":            c.Notifications.Enabled,
+			"system_enabled":     c.Notifications.SystemEnabled,
+			"tool_enabled":       c.Notifications.ToolEnabled,
+			"base_url":           c.Notifications.Bark.BaseURL,
+			"encryption_enabled": strings.TrimSpace(c.Notifications.Bark.EncryptionKey) != "",
 		},
 		"deployments": map[string]any{
 			"public_bind":      c.Deployments.PublicBind,
@@ -976,6 +1030,9 @@ func (c Config) SafeSummary() map[string]any {
 func validateApprovalConfig(cfg ApprovalConfig) error {
 	if cfg.DefaultTTLSeconds <= 0 {
 		return errors.New("admin.approval.default_ttl_seconds must be positive")
+	}
+	if cfg.PendingWaitSeconds < 0 {
+		return errors.New("admin.approval.pending_wait_seconds must not be negative")
 	}
 	if cfg.MaxSyncWaitSeconds < 0 {
 		return errors.New("admin.approval.max_sync_wait_seconds must not be negative")
@@ -1084,6 +1141,31 @@ func applyDeploymentShared(cfg *DeploymentsConfig, controlBaseURL string) {
 	cfg.Dynamic.PrivateBaseURL = cfg.PrivateBaseURL
 	cfg.Dynamic.DefaultAccess = cfg.DefaultAccess
 	cfg.Dynamic.ReservedNames = append([]string(nil), cfg.ReservedNames...)
+}
+
+func validateNotificationsConfig(cfg NotificationsConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(cfg.Bark.BaseURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("notifications.bark.base_url must be a valid http or https base URL")
+	}
+	if strings.TrimSpace(cfg.Bark.DeviceKey) == "" {
+		return errors.New("notifications.bark.device_key is required when notifications are enabled")
+	}
+	key := []byte(cfg.Bark.EncryptionKey)
+	iv := []byte(cfg.Bark.EncryptionIV)
+	if len(key) == 0 && len(iv) == 0 {
+		return nil
+	}
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return errors.New("notifications.bark.encryption_key must be 16, 24, or 32 bytes")
+	}
+	if len(iv) != 16 {
+		return errors.New("notifications.bark.encryption_iv must be 16 bytes for AES-CBC")
+	}
+	return nil
 }
 
 func validateListenerBinds(controlBind, adminBind, publicDeploymentBind, privateDeploymentBind string, adminEnabled bool) error {

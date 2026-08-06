@@ -38,6 +38,7 @@ type EventSink struct {
 	maxPerTask int
 	writer     EventWriter
 	subs       map[string]map[chan Event]struct{}
+	observer   func(Event)
 }
 
 func NewEventSink() *EventSink {
@@ -57,9 +58,14 @@ func (s *EventSink) SetWriter(w EventWriter) {
 	s.writer = w
 }
 
-func (s *EventSink) Append(ev Event) {
+func (s *EventSink) SetObserver(observer func(Event)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.observer = observer
+}
+
+func (s *EventSink) Append(ev Event) {
+	s.mu.Lock()
 	buf := append(s.events[ev.TaskID], ev)
 	if s.maxPerTask > 0 && len(buf) > s.maxPerTask {
 		buf = buf[len(buf)-s.maxPerTask:]
@@ -75,6 +81,11 @@ func (s *EventSink) Append(ev Event) {
 			default:
 			}
 		}
+	}
+	observer := s.observer
+	s.mu.Unlock()
+	if observer != nil {
+		observer(ev)
 	}
 }
 

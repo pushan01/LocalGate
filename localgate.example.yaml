@@ -23,6 +23,9 @@ admin:
   approval:
     enabled: true
     default_ttl_seconds: 600
+    # 同步工具调用产生审批后，先等待该时长。窗口内批准会继续执行原 Task 并直接返回结果。
+    # 设为 0 可恢复立即返回 pending_approval 的行为。
+    pending_wait_seconds: 5
     max_sync_wait_seconds: 30
     rules:
       - id: allow-read-only
@@ -142,6 +145,23 @@ file_browser:
     - ".localgate"
   require_approval_for_write: true
   require_approval_for_delete: true
+
+# Bark 旁路通知和模型 send_notification 工具。
+# 所有消息固定使用 active 通知级别。启用加密时，完整 Bark JSON 会先使用
+# AES-128/192/256-CBC + PKCS#7 加密，再把 ciphertext 和 iv 发给 Bark。
+# device_key、encryption_key 和 encryption_iv 直接写在本地 localgate.yaml 中；
+# localgate.yaml 不应提交到版本库。
+notifications:
+  enabled: false
+  system_enabled: true
+  tool_enabled: true
+  bark:
+    base_url: "https://api.day.app"
+    device_key: ""
+    # 留空表示发送明文 Bark 参数。Key 必须是 16、24 或 32 字节。
+    encryption_key: ""
+    # AES-CBC IV 固定为 16 字节，并需与 Bark App 中的加密配置一致。
+    encryption_iv: ""
 
 deployments:
   # public/private 应用面使用独立 listener。

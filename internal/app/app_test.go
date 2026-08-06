@@ -21,6 +21,29 @@ import (
 	"localgate/internal/persist"
 )
 
+func TestShouldSendApprovalNotification(t *testing.T) {
+	tests := []struct {
+		name   string
+		status approval.Status
+		want   bool
+	}{
+		{name: "pending", status: approval.StatusPending, want: true},
+		{name: "approved", status: approval.StatusApproved, want: false},
+		{name: "rejected", status: approval.StatusRejected, want: true},
+		{name: "canceled", status: approval.StatusCanceled, want: true},
+		{name: "expired", status: approval.StatusExpired, want: true},
+		{name: "unknown", status: approval.Status("unknown"), want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldSendApprovalNotification(approval.Request{Status: test.status}); got != test.want {
+				t.Fatalf("shouldSendApprovalNotification(%q) = %v, want %v", test.status, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAppDynamicHelperProcess(t *testing.T) {
 	if os.Getenv("LOCALGATE_APP_DYNAMIC_HELPER") != "1" {
 		return

@@ -16,6 +16,7 @@ import (
 	"localgate/internal/approval"
 	"localgate/internal/capabilities/filesystem"
 	"localgate/internal/capabilities/meta"
+	notificationcap "localgate/internal/capabilities/notification"
 	"localgate/internal/capabilities/shell"
 	toolcap "localgate/internal/capabilities/toolaccess"
 	"localgate/internal/config"
@@ -28,6 +29,7 @@ import (
 	"localgate/internal/invocation"
 	mcptools "localgate/internal/mcp/tools"
 	"localgate/internal/mcprelay"
+	notify "localgate/internal/notification"
 	"localgate/internal/persist"
 	"localgate/internal/static"
 	"localgate/internal/toolaccess"
@@ -58,6 +60,8 @@ type App struct {
 	FileExports        config.FileExports
 	FileBrowser        config.FileBrowserConfig
 	FileBrowserService *filebrowser.Service
+	Notifications      *notify.Service
+	NotificationConfig config.NotificationsConfig
 	ToolAccess         *toolaccess.Service
 	ToolArguments      config.ToolArguments
 	ToolHTTPMode       config.ToolHTTPMode
@@ -81,6 +85,7 @@ type App struct {
 func New(cfg config.Config) (*App, error) {
 	cfg.Deployments = config.NormalizeDeploymentsConfig(cfg.Deployments, cfg.HTTP.BaseURL)
 	cfg.FileExports = config.NormalizeFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL)
+	cfg.Notifications = config.NormalizeNotificationsConfig(cfg.Notifications)
 	adminConfig := config.NormalizeAdminConfig(cfg.Admin, cfg.HTTP)
 	approvalConfig := adminConfig.Approval
 	sink := core.NewEventSink()
@@ -142,6 +147,17 @@ func New(cfg config.Config) (*App, error) {
 	}
 	toolAccessSvc := toolaccess.NewService()
 	upgradeSvc := upgrade.NewService(filepath.Join(storeBase, "upgrades"), cfg.Upgrade.Token, cfg.Runtime)
+	notificationSvc, err := notify.NewService(cfg.Notifications)
+	if err != nil {
+		return nil, fmt.Errorf("init notifications: %w", err)
+	}
+	if notificationSvc.SystemEnabled() {
+		approvalSvc.SetObserver(func(req approval.Request) {
+			if shouldSendApprovalNotification(req) {
+				notificationSvc.SendAsync(approvalNotification(req))
+			}
+		})
+	}
 
 	wss := make(map[string]config.Workspace, len(cfg.Workspaces))
 	defaultWS := ""
@@ -192,6 +208,13 @@ func New(cfg config.Config) (*App, error) {
 			RequestID: event.Operation.RequestID,
 			Error:     event.Error, Details: details, CreatedAt: event.CreatedAt,
 		})
+		if event.Error != "" && notificationSvc.SystemEnabled() {
+			notificationSvc.SendAsync(notify.Message{
+				Title: "LocalGate deployment event",
+				Body:  fmt.Sprintf("%s: %s\n%s", event.Name, event.Action, event.Error),
+				Group: "localgate-deployment",
+			})
+		}
 	})
 	deploymentManager := deployment.NewManager(staticSvc, dynamicSvc, "")
 	dynamicRoutingConfig := dynamicSvc.Config()
@@ -225,6 +248,9 @@ func New(cfg config.Config) (*App, error) {
 		reg.Register(shell.NewExecCommandTool(ws, sessions))
 		reg.Register(shell.NewWriteStdinTool(ws, sessions))
 		reg.Register(shell.NewReadThreadTerminalTool(ws, sessions))
+		if notificationSvc.ToolEnabled() {
+			reg.Register(notificationcap.NewTool(notificationSvc))
+		}
 		reg.Register(toolcap.NewGetToolSchemaTool(reg))
 		deployRequiresApproval := approvalConfig.Enabled && (cfg.Deployments.Static.RequireApproval || cfg.Deployments.Dynamic.RequireApproval)
 		reg.Register(mcptools.NewCoreDeployToolWithManager(deploymentManager, ws, approvalSvc, deployRequiresApproval))
@@ -276,6 +302,8 @@ func New(cfg config.Config) (*App, error) {
 		FileExports:        cfg.FileExports,
 		FileBrowser:        cfg.FileBrowser,
 		FileBrowserService: fileBrowserSvc,
+		Notifications:      notificationSvc,
+		NotificationConfig: cfg.Notifications,
 		ToolAccess:         toolAccessSvc,
 		ToolArguments:      cfg.ToolArguments,
 		ToolHTTPMode:       cfg.ToolHTTPMode,
@@ -302,6 +330,44 @@ func New(cfg config.Config) (*App, error) {
 		go app.runLogStoreJanitor(ctx, logStoreSweepInterval, logStoreRetention)
 	}
 	return app, nil
+}
+
+func approvalNotification(req approval.Request) notify.Message {
+	title := "LocalGate approval required"
+	if req.Status != approval.StatusPending {
+		title = "LocalGate approval " + string(req.Status)
+	}
+	bodyParts := []string{}
+	if strings.TrimSpace(req.Summary) != "" {
+		bodyParts = append(bodyParts, req.Summary)
+	}
+	if strings.TrimSpace(req.Tool) != "" {
+		bodyParts = append(bodyParts, "Tool: "+req.Tool)
+	}
+	if strings.TrimSpace(req.WorkspaceID) != "" {
+		bodyParts = append(bodyParts, "Workspace: "+req.WorkspaceID)
+	}
+	if strings.TrimSpace(req.RiskLevel) != "" {
+		bodyParts = append(bodyParts, "Risk: "+req.RiskLevel)
+	}
+	if len(bodyParts) == 0 {
+		bodyParts = append(bodyParts, "Approval status changed")
+	}
+	return notify.Message{
+		Title: title,
+		Body:  strings.Join(bodyParts, "\n"),
+		Group: "localgate-approval",
+		URL:   req.ApprovalURL,
+	}
+}
+
+func shouldSendApprovalNotification(req approval.Request) bool {
+	switch req.Status {
+	case approval.StatusPending, approval.StatusRejected, approval.StatusCanceled, approval.StatusExpired:
+		return true
+	default:
+		return false
+	}
 }
 
 type Submission struct {

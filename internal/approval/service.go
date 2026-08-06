@@ -243,6 +243,8 @@ type Service struct {
 	baseURL      string
 	approvalPath string
 	ttl          time.Duration
+	observerMu   sync.RWMutex
+	observer     func(Request)
 }
 
 type Options struct {
@@ -279,6 +281,21 @@ func NewServiceWithOptions(store *Store, options Options) *Service {
 
 func (s *Service) Store() *Store {
 	return s.store
+}
+
+func (s *Service) SetObserver(observer func(Request)) {
+	s.observerMu.Lock()
+	defer s.observerMu.Unlock()
+	s.observer = observer
+}
+
+func (s *Service) notify(req Request) {
+	s.observerMu.RLock()
+	observer := s.observer
+	s.observerMu.RUnlock()
+	if observer != nil {
+		observer(redactRequest(req))
+	}
 }
 
 func (s *Service) RecordAudit(rec AuditRecord) (AuditRecord, error) {
@@ -368,7 +385,7 @@ func (s *Service) BindTask(id, taskID string) (Request, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return Request{}, ErrTaskIDRequired
 	}
-	return s.store.UpdateRequest(id, func(req *Request) error {
+	req, err := s.store.UpdateRequest(id, func(req *Request) error {
 		if req.Status != StatusPending {
 			return ErrApprovalResolved
 		}
@@ -378,6 +395,10 @@ func (s *Service) BindTask(id, taskID string) (Request, error) {
 		req.TaskID = taskID
 		return nil
 	})
+	if err == nil {
+		s.notify(req)
+	}
+	return req, err
 }
 
 var ErrApprovalNotFound = errors.New("approval not found")
@@ -452,11 +473,13 @@ func (s *Service) ApproveBound(id string, actor Actor, binding Binding) (Request
 		if err := s.appendDecisionAudit(req, "expired", Actor{ID: "system", AuthMethod: "system"}); err != nil {
 			return Request{}, err
 		}
+		s.notify(req)
 		return redactRequest(req), ErrApprovalExpired
 	}
 	if err := s.appendDecisionAudit(req, "approved", normalizeActor(actor)); err != nil {
 		return Request{}, err
 	}
+	s.notify(req)
 	return redactRequest(req), nil
 }
 
@@ -485,6 +508,7 @@ func (s *Service) RejectBy(id string, actor Actor) (Request, error) {
 	if err := s.appendDecisionAudit(req, "rejected", actor); err != nil {
 		return Request{}, err
 	}
+	s.notify(req)
 	return redactRequest(req), nil
 }
 
@@ -513,6 +537,7 @@ func (s *Service) CancelBy(id string, actor Actor) (Request, error) {
 	if err := s.appendDecisionAudit(req, "canceled", actor); err != nil {
 		return Request{}, err
 	}
+	s.notify(req)
 	return redactRequest(req), nil
 }
 
@@ -541,6 +566,7 @@ func (s *Service) expireWithActor(id, actor string) (Request, error) {
 	if err := s.appendDecisionAudit(req, "expired", resolvedActor); err != nil {
 		return Request{}, err
 	}
+	s.notify(req)
 	return redactRequest(req), nil
 }
 

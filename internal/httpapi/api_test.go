@@ -1138,7 +1138,7 @@ func TestWriteSubmissionResultReturnsApprovalCancellationCode(t *testing.T) {
 
 	api := &API{App: application, DefaultWSID: application.DefaultWSID}
 	w := httptest.NewRecorder()
-	api.writeSubmissionResult(w, app.Submission{Task: task}, http.StatusOK)
+	api.writeSubmissionResult(context.Background(), w, app.Submission{Task: task}, http.StatusOK)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d body=%s", w.Code, w.Body.String())
 	}

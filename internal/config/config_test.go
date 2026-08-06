@@ -674,6 +674,9 @@ func TestDefaultApprovalConfig(t *testing.T) {
 	if cfg.Admin.Approval.DefaultTTLSeconds != 600 {
 		t.Fatalf("unexpected approval ttl: %d", cfg.Admin.Approval.DefaultTTLSeconds)
 	}
+	if cfg.Admin.Approval.PendingWaitSeconds != 5 {
+		t.Fatalf("unexpected pending approval wait: %d", cfg.Admin.Approval.PendingWaitSeconds)
+	}
 	if cfg.Admin.Approval.MaxSyncWaitSeconds != 30 {
 		t.Fatalf("unexpected approval sync wait: %d", cfg.Admin.Approval.MaxSyncWaitSeconds)
 	}
@@ -682,7 +685,7 @@ func TestDefaultApprovalConfig(t *testing.T) {
 func TestLoadApprovalConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "admin:\n  base_url: https://admin.example.com/root///\n  approval:\n    enabled: false\n    default_ttl_seconds: 120\n    max_sync_wait_seconds: 7\nworkspaces:\n  - id: ws\n"
+	content := "admin:\n  base_url: https://admin.example.com/root///\n  approval:\n    enabled: false\n    default_ttl_seconds: 120\n    pending_wait_seconds: 3\n    max_sync_wait_seconds: 7\nworkspaces:\n  - id: ws\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -690,12 +693,12 @@ func TestLoadApprovalConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Admin.BaseURL != "https://admin.example.com/root" || cfg.Admin.Approval.Enabled || cfg.Admin.Approval.DefaultTTLSeconds != 120 || cfg.Admin.Approval.MaxSyncWaitSeconds != 7 {
+	if cfg.Admin.BaseURL != "https://admin.example.com/root" || cfg.Admin.Approval.Enabled || cfg.Admin.Approval.DefaultTTLSeconds != 120 || cfg.Admin.Approval.PendingWaitSeconds != 3 || cfg.Admin.Approval.MaxSyncWaitSeconds != 7 {
 		t.Fatalf("unexpected approval config: %#v", cfg.Admin.Approval)
 	}
 	adminSummary, _ := cfg.SafeSummary()["admin"].(map[string]any)
 	approvalSummary, _ := adminSummary["approval"].(map[string]any)
-	if adminSummary["base_url"] != "https://admin.example.com/root" || approvalSummary["enabled"] != false || approvalSummary["default_ttl_seconds"] != 120 || approvalSummary["max_sync_wait_seconds"] != 7 {
+	if adminSummary["base_url"] != "https://admin.example.com/root" || approvalSummary["enabled"] != false || approvalSummary["default_ttl_seconds"] != 120 || approvalSummary["pending_wait_seconds"] != 3 || approvalSummary["max_sync_wait_seconds"] != 7 {
 		t.Fatalf("unexpected admin approval summary: %#v", adminSummary)
 	}
 }
@@ -704,12 +707,13 @@ func TestLoadApprovalConfigFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_ADMIN_BASE_URL", "https://admin.example.com/path/")
 	withEnv(t, "LOCALGATE_APPROVAL_ENABLED", "false")
 	withEnv(t, "LOCALGATE_APPROVAL_DEFAULT_TTL_SECONDS", "90")
+	withEnv(t, "LOCALGATE_APPROVAL_PENDING_WAIT_SECONDS", "4")
 	withEnv(t, "LOCALGATE_APPROVAL_MAX_SYNC_WAIT_SECONDS", "5")
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Admin.BaseURL != "https://admin.example.com/path" || cfg.Admin.Approval.Enabled || cfg.Admin.Approval.DefaultTTLSeconds != 90 || cfg.Admin.Approval.MaxSyncWaitSeconds != 5 {
+	if cfg.Admin.BaseURL != "https://admin.example.com/path" || cfg.Admin.Approval.Enabled || cfg.Admin.Approval.DefaultTTLSeconds != 90 || cfg.Admin.Approval.PendingWaitSeconds != 4 || cfg.Admin.Approval.MaxSyncWaitSeconds != 5 {
 		t.Fatalf("unexpected approval env config: %#v", cfg.Admin.Approval)
 	}
 }
@@ -724,6 +728,11 @@ func TestLoadApprovalConfigRejectsInvalidValues(t *testing.T) {
 			name:    "non-positive ttl",
 			content: "admin:\n  approval:\n    default_ttl_seconds: 0\nworkspaces:\n  - id: ws\n",
 			want:    "admin.approval.default_ttl_seconds",
+		},
+		{
+			name:    "negative pending wait",
+			content: "admin:\n  approval:\n    pending_wait_seconds: -1\nworkspaces:\n  - id: ws\n",
+			want:    "admin.approval.pending_wait_seconds",
 		},
 		{
 			name:    "negative sync wait",
@@ -1188,5 +1197,62 @@ func TestRejectLegacyDeploymentConfigShape(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", test.want, err)
 			}
 		})
+	}
+}
+
+func TestLoadNotificationsConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+notifications:
+  enabled: true
+  system_enabled: true
+  tool_enabled: true
+  bark:
+    base_url: https://api.day.app/
+    device_key: device-secret
+    encryption_key: "1234567890123456"
+    encryption_iv: "1111111111111111"
+workspaces:
+  - id: ws
+    roots: ["."]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Notifications.Enabled || !cfg.Notifications.SystemEnabled || !cfg.Notifications.ToolEnabled {
+		t.Fatalf("unexpected notification config: %#v", cfg.Notifications)
+	}
+	if cfg.Notifications.Bark.BaseURL != "https://api.day.app" {
+		t.Fatalf("unexpected normalized base URL: %q", cfg.Notifications.Bark.BaseURL)
+	}
+	summary := cfg.SafeSummary()
+	text := toString(summary["notifications"])
+	if strings.Contains(text, "device-secret") || strings.Contains(text, "1234567890123456") || strings.Contains(text, "1111111111111111") {
+		t.Fatalf("safe summary exposed Bark secrets: %#v", summary["notifications"])
+	}
+}
+
+func TestLoadNotificationsRejectsInvalidEncryption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+notifications:
+  enabled: true
+  bark:
+    device_key: device-secret
+    encryption_key: short
+    encryption_iv: "1111111111111111"
+workspaces:
+  - id: ws
+    roots: ["."]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: path, PathProvided: true}); err == nil || !strings.Contains(err.Error(), "encryption_key") {
+		t.Fatalf("expected encryption key validation error, got %v", err)
 	}
 }

@@ -186,6 +186,7 @@ LocalGate 下载并校验目标路径
 | 长进程 | 可交互 Session、终端缓冲、stdin 和生命周期管理 |
 | 风险控制 | 工具级审批规则、审批绑定、拒绝与过期状态 |
 | 可观察性 | Task 状态、增量日志、SSE 事件、审计记录 |
+| Bark 通知 | 待处理与异常审批、部署错误旁路通知、模型主动推送、AES-CBC 加密 |
 | MCP 接入 | stdio MCP、Streamable HTTP MCP、下游 MCP 转发 |
 | 标准 Skills | 动态发现、全局与 workspace 作用域、渐进式披露、按需读取 |
 | 应用发布 | 静态托管、动态进程监督、健康检查和回滚 |
@@ -541,6 +542,7 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `upload_file`：接收 ChatGPT/MCP 宿主文件对象，并保存到本地 workspace
 - `export_file`：把 workspace 文件作为短期 MCP `resource_link` 返回给 ChatGPT/Agent
 - `apply_patch`
+- `send_notification`：启用通知后，由模型明确请求向配置的 Bark 设备发送消息
 
 `apply_patch` 会先验证和准备整个 patch，再依次提交文件；提交失败时执行进程内回滚。它会保留被更新文件的权限，并拒绝已被并发替换的目标，但不承诺进程崩溃或多个 LocalGate 进程之间的事务原子性。
 
@@ -627,6 +629,10 @@ Authorization: Bearer <token>
 - `deny`
 - `require_approval`
 
+同步工具调用命中 `require_approval` 后，会先按 `admin.approval.pending_wait_seconds` 等待审批决定。若在窗口内批准，LocalGate 会释放并执行原来的 gated Task，并在同一次工具调用中返回执行结果；不会重新创建或提交第二个 Task。窗口结束时仍未批准，则保持原有行为，返回 `pending_approval`，审批和 Task 继续有效，可稍后在管理后台处理。设为 `0` 可关闭等待。
+
+`admin.approval.max_sync_wait_seconds` 仍只控制 Task 已经可运行后，同步 HTTP/MCP runtime 等待执行结果的最长时间，与审批等待窗口相互独立。
+
 管理监听地址由 `admin.bind` 决定，审批链接和管理后台公开地址由 `admin.base_url` 决定。管理路由不会挂载到控制面或 deployment 端口。生产环境建议同时使用 LocalGate Bearer 鉴权和可信反向代理身份验证。
 
 <p align="center">
@@ -636,6 +642,24 @@ Authorization: Bearer <token>
 <p align="center"><sub>管理后台集中查看任务、审批、部署与审计记录</sub></p>
 
 管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览、只读 Git status / staged 与 unstaged diff，以及从当前 workspace 目录启动受控终端。Git 查询要求 worktree 根、Git dir 和 common dir 都位于选中的 file-browser root 内，并禁用 external diff、textconv、pager、fsmonitor 和用户 / 系统 Git 配置。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
+
+### Bark 通知
+
+LocalGate 会在审批待处理、拒绝、取消或过期时，以及动态部署监管发生错误时发送 Bark 旁路通知；正常批准和工具 Task 失败或超时不会发送系统通知。LocalGate 也可以向模型暴露 `send_notification` 工具。通知失败不会回滚审批或部署状态；模型主动调用时，Bark 返回错误会作为工具错误返回。
+
+```yaml
+notifications:
+  enabled: true
+  system_enabled: true
+  tool_enabled: true
+  bark:
+    base_url: "https://api.day.app"
+    device_key: "your-device-key"
+    encryption_key: "1234567890123456"
+    encryption_iv: "1111111111111111"
+```
+
+所有消息固定使用 Bark `active` 级别。加密使用 Bark 支持的 AES-128/192/256-CBC 与 PKCS#7；Key 长度决定 AES 规格，IV 必须为 16 字节，并与 Bark App 的加密设置保持一致。启用加密后，标题、正文、分组和跳转地址都包含在密文中。`localgate.yaml` 默认不纳入版本控制，不要把含真实 Key 的配置提交到仓库。
 
 ### Deployments 配置
 
@@ -705,6 +729,7 @@ mcp_servers:
 | `LOCALGATE_HTTP_BEARER_TOKEN` | HTTP Bearer Token |
 | `LOCALGATE_ADMIN_ENABLED` | 开关管理后台 |
 | `LOCALGATE_ADMIN_BASE_URL` | 管理后台公开地址 |
+| `LOCALGATE_APPROVAL_PENDING_WAIT_SECONDS` | 同步工具调用等待审批决定的秒数；设为 0 立即返回待审批 |
 | `LOCALGATE_DEPLOYMENTS_DYNAMIC_ENABLED` | 开关动态托管 |
 | `LOCALGATE_DEPLOYMENTS_PUBLIC_BASE_URL` | public 应用入口 base URL |
 | `LOCALGATE_DEPLOYMENTS_PRIVATE_BASE_URL` | private 应用入口 base URL |

@@ -20,8 +20,16 @@ func newMCPRuntimeTestAPI(t *testing.T) (*API, *http.ServeMux, string, string) {
 	workspaceRoot := t.TempDir()
 	storeRoot := t.TempDir()
 	cfg := config.Config{
-		LogStore:    storeRoot,
-		HTTP:        config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		LogStore: storeRoot,
+		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		Admin: config.AdminConfig{
+			Enabled: true,
+			Approval: config.ApprovalConfig{
+				Enabled:            true,
+				PendingWaitSeconds: 0,
+				MaxSyncWaitSeconds: 2,
+			},
+		},
 		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public"},
 		Workspaces: []config.Workspace{
 			{
@@ -215,7 +223,10 @@ func TestMCPRuntimeDeploymentApprovalAndAuditFlow(t *testing.T) {
 	cfg := config.Config{
 		LogStore: storeRoot,
 		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Admin:    config.AdminConfig{Enabled: true, BaseURL: "http://admin.test", Approval: config.ApprovalConfig{Enabled: true}},
+		Admin: config.AdminConfig{Enabled: true, BaseURL: "http://admin.test", Approval: config.ApprovalConfig{
+			Enabled:            true,
+			PendingWaitSeconds: 0,
+		}},
 		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public",
 			Static: config.StaticHosting{
 				MaxFiles:        100,
@@ -510,6 +521,7 @@ func TestMCPRuntimeUsesUnifiedApprovalRules(t *testing.T) {
 		cfg.Admin.Approval = config.ApprovalConfig{
 			Enabled:            true,
 			DefaultTTLSeconds:  600,
+			PendingWaitSeconds: 0,
 			MaxSyncWaitSeconds: 2,
 			Rules:              rules,
 		}

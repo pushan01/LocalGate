@@ -171,20 +171,25 @@ func (rt *mcpRuntime) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if submission.Approval != nil {
-		server.WriteJSON(w, http.StatusAccepted, mcpRuntimeResponse{
-			Success: false,
-			Code:    "approval_required",
-			Data: map[string]any{
-				"status":       "pending_approval",
-				"approval_id":  submission.Approval.ID,
-				"approval_url": submission.Approval.ApprovalURL,
-				"task_id":      submission.Approval.TaskID,
-				"expires_at":   submission.Approval.ExpiresAt,
-				"summary":      submission.Approval.Summary,
-				"risk_level":   submission.Approval.RiskLevel,
-			},
-		})
-		return
+		if _, resolved, waitErr := rt.api.App.WaitForApprovalDecision(r.Context(), submission); waitErr != nil {
+			writeMCPRuntimeError(w, http.StatusRequestTimeout, "approval_wait_interrupted", waitErr.Error())
+			return
+		} else if !resolved {
+			server.WriteJSON(w, http.StatusAccepted, mcpRuntimeResponse{
+				Success: false,
+				Code:    "approval_required",
+				Data: map[string]any{
+					"status":       "pending_approval",
+					"approval_id":  submission.Approval.ID,
+					"approval_url": submission.Approval.ApprovalURL,
+					"task_id":      submission.Approval.TaskID,
+					"expires_at":   submission.Approval.ExpiresAt,
+					"summary":      submission.Approval.Summary,
+					"risk_level":   submission.Approval.RiskLevel,
+				},
+			})
+			return
+		}
 	}
 	if submission.Task == nil {
 		writeMCPRuntimeError(w, http.StatusInternalServerError, "task_create_failed", "tool submission did not create a task")

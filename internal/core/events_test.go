@@ -56,3 +56,21 @@ func TestEventSinkRemoveTasks(t *testing.T) {
 		t.Fatalf("expected unrelated events to remain, got %d", len(events))
 	}
 }
+
+func TestEventSinkObserver(t *testing.T) {
+	sink := NewEventSink()
+	observed := make(chan Event, 1)
+	sink.SetObserver(func(event Event) {
+		observed <- event
+	})
+	want := Event{TaskID: "task-1", Type: EventTaskFailed}
+	sink.Append(want)
+	select {
+	case got := <-observed:
+		if got.TaskID != want.TaskID || got.Type != want.Type {
+			t.Fatalf("unexpected event: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("observer was not called")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"localgate/internal/app"
+	"localgate/internal/approval"
 	"localgate/internal/config"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -906,7 +907,17 @@ func TestDeployToolReturnsPendingApprovalInMCPGo(t *testing.T) {
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore: storeRoot,
 		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		Admin: config.AdminConfig{
+			Enabled: true,
+			Approval: config.ApprovalConfig{
+				Enabled:            true,
+				PendingWaitSeconds: 0,
+			},
+		},
 		Deployments: config.DeploymentsConfig{
+			PublicBaseURL:  "https://apps.test",
+			PrivateBaseURL: "https://private.apps.test",
+			DefaultAccess:  "public",
 			Static: config.StaticHosting{
 				MaxFiles:        100,
 				MaxTotalBytes:   1 << 20,
@@ -954,5 +965,100 @@ func TestDeployToolReturnsPendingApprovalInMCPGo(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(storeRoot, "static", "pending-site")); !os.IsNotExist(err) {
 		t.Fatalf("site must not deploy before approval: %v", err)
+	}
+}
+
+func TestDeployToolWaitsForApprovalAndReturnsResultInMCPGo(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	storeRoot := t.TempDir()
+	s := newTestServerWithConfig(t, config.Config{
+		LogStore: storeRoot,
+		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		Admin: config.AdminConfig{
+			Enabled: true,
+			BaseURL: "http://admin.test",
+			Approval: config.ApprovalConfig{
+				Enabled:            true,
+				PendingWaitSeconds: 1,
+			},
+		},
+		Deployments: config.DeploymentsConfig{
+			PublicBaseURL:  "https://apps.test",
+			PrivateBaseURL: "https://private.apps.test",
+			DefaultAccess:  "public",
+			Static: config.StaticHosting{
+				MaxFiles:        100,
+				MaxTotalBytes:   1 << 20,
+				MaxFileBytes:    1 << 20,
+				RequireApproval: true,
+			},
+		},
+		Workspaces: []config.Workspace{{
+			ID:    "ws",
+			Roots: []string{workspaceRoot},
+			CWD:   workspaceRoot,
+		}},
+	})
+
+	source := filepath.Join(workspaceRoot, "dist")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("approved-inline"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	type invokeResult struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	resultCh := make(chan invokeResult, 1)
+	go func() {
+		result, err := s.makeInvokeHandler("deploy_tool")(context.Background(), callReq(map[string]any{
+			"type":   "static",
+			"name":   "inline-approved-site",
+			"source": source,
+		}))
+		resultCh <- invokeResult{result: result, err: err}
+	}()
+
+	var request approval.Request
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pending, err := s.App.Approvals.List("pending")
+		if err != nil {
+			t.Fatalf("list approvals: %v", err)
+		}
+		if len(pending) > 0 {
+			request = pending[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if request.ID == "" {
+		t.Fatal("approval was not created within the synchronous wait window")
+	}
+	if _, err := s.App.ApproveApproval(request.ID, approval.Actor{ID: "tester", AuthMethod: "test"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	select {
+	case invoked := <-resultCh:
+		if invoked.err != nil {
+			t.Fatalf("invoke deploy_tool: %v", invoked.err)
+		}
+		payload := payloadFromResult(t, invoked.result)
+		if got := statusFromPayload(payload); got != "succeeded" {
+			t.Fatalf("expected direct succeeded result, got %s payload=%#v", got, payload)
+		}
+		if payload["task_id"] != request.TaskID {
+			t.Fatalf("expected original gated task %s, got %#v", request.TaskID, payload["task_id"])
+		}
+		result, _ := payload["result"].(map[string]any)
+		if result["site"] != "inline-approved-site" {
+			t.Fatalf("unexpected deployment result: %#v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("tool invocation did not return after approval")
 	}
 }
