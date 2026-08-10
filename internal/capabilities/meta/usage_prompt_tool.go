@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -51,6 +52,7 @@ func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeCont
 
 	tools := t.visibleTools()
 	hasTools := visibleToolFlags(tools)
+	hasRG := executableAvailable("rg")
 	now := time.Now()
 	shell := os.Getenv("SHELL")
 	date := now.Format("2006-01-02")
@@ -78,6 +80,8 @@ func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeCont
 		"shell":            shell,
 		"date":             date,
 		"timezone":         timezone,
+		"has_rg":           hasRG,
+		"missing_rg":       !hasRG,
 		"tool_http_mode":   t.Options.ToolHTTPMode,
 		"legacy_mode":      !t.Options.ToolHTTPMode,
 		"enable_base64":    t.Options.EnableBase64,
@@ -154,6 +158,11 @@ func displayTimezone(now time.Time) string {
 		}
 	}
 	return formatUTCOffset(now)
+}
+
+func executableAvailable(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 func formatUTCOffset(now time.Time) string {

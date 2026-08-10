@@ -55,6 +55,22 @@ func TestReadWriteList(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolDescriptionsExplainSelectionBoundaries(t *testing.T) {
+	ws := config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}
+	descriptions := map[string]string{}
+	for _, tool := range NewTools(ws) {
+		descriptions[tool.Name()] = tool.Description()
+	}
+	for name, want := range map[string]string{
+		"read_file":  "regular text file",
+		"write_file": "prefer apply_patch for partial edits",
+	} {
+		if !strings.Contains(descriptions[name], want) {
+			t.Fatalf("%s description missing %q: %q", name, want, descriptions[name])
+		}
+	}
+}
+
 func TestWriteFilePreservesExistingMode(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "script.sh")
@@ -133,10 +149,10 @@ func TestUploadFileDescriptionAndSchema(t *testing.T) {
 
 	description := tool.Description()
 	for _, want := range []string{
-		"Upload a conversation or host-provided file",
-		"/mnt/data/file.png",
-		"Parent directories are created automatically",
-		"source file is not modified",
+		"Copy a host-provided file",
+		"absolute workspace path",
+		"parent directories are created",
+		"source is not modified",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("upload_file description missing %q: %q", want, description)

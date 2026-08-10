@@ -5,10 +5,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"localgate/internal/static"
 )
+
+func TestListDeploymentsDescriptionIncludesAccessMode(t *testing.T) {
+	tool := &ListDeploymentsTool{}
+	if got := tool.Description(); !strings.Contains(got, "access mode") || strings.Contains(got, "public URLs") {
+		t.Fatalf("unexpected list_deployments description: %q", got)
+	}
+}
 
 func TestListDeploymentsToolReturnsSortedDeployments(t *testing.T) {
 	service := static.NewServiceAt(filepath.Join(t.TempDir(), "managed"))

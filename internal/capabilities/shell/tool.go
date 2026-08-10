@@ -20,7 +20,7 @@ func NewTool(ws config.Workspace, defaultTimeoutMs int64) core.Tool {
 
 func (t Tool) Name() string { return "run_command" }
 func (t Tool) Description() string {
-	return "Run one shell command with an optional absolute cwd inside the workspace"
+	return "Run a one-shot, non-interactive shell command inside the workspace. Use exec_command instead for interactive programs, dev servers, watch processes, or commands that need stdin after startup."
 }
 func (t Tool) Schema() any {
 	return map[string]any{

@@ -33,6 +33,7 @@ func (t dummyTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("TZ", "Asia/Singapore")
+	t.Setenv("PATH", "/usr/bin:/bin")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -61,7 +62,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	}
 
 	prompt, _ := res["prompt"].(string)
-	if !strings.Contains(prompt, "LocalGate使用说明") {
+	if !strings.Contains(prompt, "LocalGate 使用说明") {
 		t.Fatalf("missing service title in prompt: %q", prompt)
 	}
 	if !strings.Contains(prompt, workspace) {
@@ -73,8 +74,11 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if !strings.Contains(prompt, "/bin/zsh") {
 		t.Fatalf("missing shell in rendered prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Asia/Singapore") {
-		t.Fatalf("missing timezone in rendered prompt: %q", prompt)
+	if !strings.Contains(prompt, "宿主执行环境时区：`Asia/Singapore`") {
+		t.Fatalf("missing host timezone label in rendered prompt: %q", prompt)
+	}
+	if !strings.Contains(prompt, "当前执行环境未检测到 `rg`") || !strings.Contains(prompt, "不要反复尝试 `rg`") {
+		t.Fatalf("missing rg fallback guidance in rendered prompt: %q", prompt)
 	}
 	if strings.Contains(prompt, "GPT-5") || !strings.Contains(prompt, "受控工作区") {
 		t.Fatalf("prompt should be model-neutral: %q", prompt)
@@ -166,6 +170,7 @@ func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
 	}
 	for _, visible := range []string{
 		"`apply_patch` 必须传一个完整的 patch 字符串",
+		"不提供 crash-atomic 或跨进程事务保证",
 		"*** Update File: /abs/path/to/file.txt",
 		"使用 `upload_file`",
 		"优先调用 `export_file`",
@@ -265,6 +270,9 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Gamma skill") {
 		t.Fatalf("missing dynamic skill description in rendered prompt: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Registry 当前可见工具的摘要") || !strings.Contains(prompt, "task lifecycle helper") {
+		t.Fatalf("missing registry/host tool boundary guidance: %q", prompt)
 	}
 }
 
@@ -377,6 +385,22 @@ func TestLoadAllSkillsSupportsGlobalAndLocalLayouts(t *testing.T) {
 	}
 	if visible[1]["description"] != "From global dir" {
 		t.Fatalf("global skill should win on duplicate names: %#v", visible)
+	}
+}
+
+func TestSummarizeSkillDescriptionForStartup(t *testing.T) {
+	short := "  Use this skill   for focused work.  "
+	if got := summarizeSkillDescription(short); got != "Use this skill for focused work." {
+		t.Fatalf("unexpected normalized summary: %q", got)
+	}
+
+	long := strings.Repeat("界", skillPromptDescriptionMaxRunes+20)
+	got := summarizeSkillDescription(long)
+	if len([]rune(got)) != skillPromptDescriptionMaxRunes {
+		t.Fatalf("summary should be capped at %d runes, got %d", skillPromptDescriptionMaxRunes, len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated summary should end with ellipsis: %q", got)
 	}
 }
 

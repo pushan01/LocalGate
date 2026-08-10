@@ -12,6 +12,18 @@ import (
 	"localgate/internal/core"
 )
 
+func TestShellToolDescriptionsExplainSelectionBoundary(t *testing.T) {
+	ws := config.Workspace{ID: "ws"}
+	run := NewTool(ws, 0)
+	exec := NewExecCommandTool(ws, core.NewSessionManager())
+	if !strings.Contains(run.Description(), "one-shot, non-interactive") || !strings.Contains(run.Description(), "Use exec_command instead") {
+		t.Fatalf("run_command description does not explain selection boundary: %q", run.Description())
+	}
+	if !strings.Contains(exec.Description(), "interactive or long-running") || !strings.Contains(exec.Description(), "Use run_command instead") {
+		t.Fatalf("exec_command description does not explain selection boundary: %q", exec.Description())
+	}
+}
+
 func TestRunEcho(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",

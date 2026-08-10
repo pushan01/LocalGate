@@ -22,7 +22,7 @@ func NewExecCommandTool(ws config.Workspace, sessions *core.SessionManager) core
 func (t ExecCommandTool) Name() string { return "exec_command" }
 
 func (t ExecCommandTool) Description() string {
-	return "Start an interactive or long-running command session with an optional absolute workdir inside the workspace"
+	return "Start an interactive or long-running command session inside the workspace. Use run_command instead for one-shot commands that only need a final result."
 }
 
 func (t ExecCommandTool) Schema() any {

@@ -54,7 +54,7 @@ type readFileTool struct{ fsToolBase }
 
 func (t readFileTool) Name() string { return "read_file" }
 func (t readFileTool) Description() string {
-	return "Read a file by absolute path from the workspace, or from the shared ~/.agents/skills directory"
+	return "Read a regular text file by absolute path from the workspace or shared ~/.agents/skills directory. Binary files and files over the read limit are rejected."
 }
 func (t readFileTool) Schema() any {
 	return map[string]any{
@@ -114,7 +114,7 @@ type writeFileTool struct{ fsToolBase }
 
 func (t writeFileTool) Name() string { return "write_file" }
 func (t writeFileTool) Description() string {
-	return "Write text content to a file by absolute path inside the workspace; creates parent directories when needed"
+	return "Create or completely replace a text file by absolute path inside the workspace. Creates parent directories when needed; prefer apply_patch for partial edits to an existing file."
 }
 func (t writeFileTool) Schema() any {
 	return map[string]any{
@@ -154,7 +154,7 @@ type uploadFileTool struct {
 
 func (t uploadFileTool) Name() string { return "upload_file" }
 func (t uploadFileTool) Description() string {
-	return "Upload a conversation or host-provided file to an absolute path inside the LocalGate workspace. The file input is delivered as a downloadable file reference; compatible runtimes may also accept a local mounted path such as /mnt/data/file.png and convert it before invocation. The destination path must include the filename. Parent directories are created automatically, and the source file is not modified."
+	return "Copy a host-provided file into an absolute workspace path. The destination must include the filename; parent directories are created as needed and the source is not modified."
 }
 func (t uploadFileTool) ToolMetadata() map[string]any {
 	return map[string]any{

@@ -16,6 +16,8 @@ type skillFrontmatter struct {
 	DisableModelInvocation bool   `yaml:"disable-model-invocation"`
 }
 
+const skillPromptDescriptionMaxRunes = 180
+
 type skill struct {
 	Name                   string
 	Description            string
@@ -144,7 +146,7 @@ func visibleSkillsForPrompt(cwd string) ([]string, []map[string]any) {
 		}
 		visible = append(visible, map[string]any{
 			"name":        s.Name,
-			"description": s.Description,
+			"description": summarizeSkillDescription(s.Description),
 			"location":    s.FilePath,
 		})
 	}
@@ -152,4 +154,15 @@ func visibleSkillsForPrompt(cwd string) ([]string, []map[string]any) {
 		return strings.Compare(fmtString(a["name"]), fmtString(b["name"]))
 	})
 	return roots, visible
+}
+
+func summarizeSkillDescription(description string) string {
+	summary := strings.Join(strings.Fields(description), " ")
+	runes := []rune(summary)
+	if len(runes) <= skillPromptDescriptionMaxRunes {
+		return summary
+	}
+	const suffix = "..."
+	limit := skillPromptDescriptionMaxRunes - len([]rune(suffix))
+	return strings.TrimSpace(string(runes[:limit])) + suffix
 }

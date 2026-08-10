@@ -28,7 +28,7 @@ func (t *ListDeploymentsTool) Name() string {
 }
 
 func (t *ListDeploymentsTool) Description() string {
-	return "List managed static and dynamic deployments and their public URLs."
+	return "List managed static and dynamic deployments with their status, access mode, and deployment URLs."
 }
 
 func (t *ListDeploymentsTool) InputSchema() any {
