@@ -851,7 +851,7 @@ func TestStdioSessionTools(t *testing.T) {
 	_ = readResp()
 	writeLine(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 	r2 := readResp()
-	if !bytes.Contains(mustJSON(r2), []byte("exec_command")) || !bytes.Contains(mustJSON(r2), []byte("write_stdin")) || !bytes.Contains(mustJSON(r2), []byte("read_thread_terminal")) {
+	if !bytes.Contains(mustJSON(r2), []byte("exec_command")) || !bytes.Contains(mustJSON(r2), []byte("write_stdin")) || !bytes.Contains(mustJSON(r2), []byte("read_thread_terminal")) || !bytes.Contains(mustJSON(r2), []byte("close_session")) {
 		t.Fatalf("missing session tools: %v", r2)
 	}
 

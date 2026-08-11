@@ -257,3 +257,28 @@ func TestSessionManagerFinishDoesNotOverwriteExplicitClose(t *testing.T) {
 		t.Fatalf("explicit close was overwritten: %#v", got)
 	}
 }
+
+func TestSessionManagerCloseAllClosesActiveControllers(t *testing.T) {
+	m := NewSessionManager()
+	closed := 0
+	for i := 0; i < 2; i++ {
+		s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Close: func() error {
+			closed++
+			return nil
+		}})
+		if err := m.Start(s.ID); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+	}
+	if err := m.CloseAll(); err != nil {
+		t.Fatalf("close all: %v", err)
+	}
+	if closed != 2 {
+		t.Fatalf("closed controllers = %d, want 2", closed)
+	}
+	for _, st := range m.sessions {
+		if st.session.Status != SessionClosed {
+			t.Fatalf("session still active: %s", st.session.Status)
+		}
+	}
+}

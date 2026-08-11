@@ -130,12 +130,19 @@ func (t writeFileTool) Schema() any {
 func (t writeFileTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	p, _ := args["path"].(string)
 	content, _ := args["content"].(string)
-	dec := security.ValidatePath(p, t.ws, security.Options{FollowSymlink: true, AllowNonExist: true})
+	if strings.IndexByte(content, 0) >= 0 {
+		return nil, errors.New("binary content is not supported by write_file; use upload_file for binary files")
+	}
+	lexical := security.ValidatePath(p, t.ws, security.Options{AllowNonExist: true})
+	if !lexical.Allowed {
+		return nil, errors.New("path not allowed: " + lexical.Reason)
+	}
+	if fi, err := os.Lstat(lexical.Path); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
+		return nil, errors.New("path not allowed: symlink")
+	}
+	dec := security.ValidatePath(lexical.Path, t.ws, security.Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
-	}
-	if fi, err := os.Lstat(dec.Path); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
-		return nil, errors.New("path not allowed: symlink")
 	}
 	if _, err := fileio.WriteFileAtomic(dec.Path, []byte(content), fileio.AtomicWriteOptions{
 		Mode:          0o644,
@@ -189,12 +196,16 @@ func (t uploadFileTool) Schema() any {
 func (t uploadFileTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	_ = ic
 	p, _ := args["path"].(string)
-	dec := security.ValidatePath(p, t.ws, security.Options{FollowSymlink: true, AllowNonExist: true})
+	lexical := security.ValidatePath(p, t.ws, security.Options{AllowNonExist: true})
+	if !lexical.Allowed {
+		return nil, errors.New("path not allowed: " + lexical.Reason)
+	}
+	if fi, err := os.Lstat(lexical.Path); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
+		return nil, errors.New("path not allowed: symlink")
+	}
+	dec := security.ValidatePath(lexical.Path, t.ws, security.Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
-	}
-	if fi, err := os.Lstat(dec.Path); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
-		return nil, errors.New("path not allowed: symlink")
 	}
 
 	file, _ := args["file"].(map[string]any)

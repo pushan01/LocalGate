@@ -247,7 +247,7 @@ func builtinSkillRelevant(name string, hasTools map[string]any, opts StartupProm
 	case "localgate-file-transfer":
 		return hasAnyVisibleTool(hasTools, "upload_file", "export_file", "create_upload_token", "create_download_token")
 	case "localgate-task-session":
-		return hasAnyVisibleTool(hasTools, "run_command", "exec_command", "write_stdin", "read_thread_terminal") || !opts.ToolHTTPMode
+		return hasAnyVisibleTool(hasTools, "run_command", "exec_command", "write_stdin", "read_thread_terminal", "close_session") || !opts.ToolHTTPMode
 	case "localgate-tool-http":
 		return opts.ToolHTTPMode
 	case "localgate-mcp-relay":

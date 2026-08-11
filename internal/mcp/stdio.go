@@ -190,7 +190,7 @@ func (s *Server) handleToolsCall(req request) response {
 			return s.callTaskResult(req.ID, args)
 		case "wait_task_finish":
 			return s.callWaitTaskFinish(req.ID, args)
-		case "exec_command", "write_stdin", "read_thread_terminal":
+		case "exec_command", "write_stdin", "read_thread_terminal", "close_session":
 			if !s.App.IsToolVisible(wsid, params.Name) {
 				return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32601, Message: "tool not found"}}
 			}
@@ -363,19 +363,30 @@ func (s *Server) callSessionTool(id json.RawMessage, name string, args map[strin
 
 func collectStreams(sink *core.EventSink, taskID string, maxLines int) (string, string) {
 	evs, _ := sink.List(taskID, 0)
-	stdout := []string{}
-	stderr := []string{}
+	var stdout strings.Builder
+	var stderr strings.Builder
+	stdoutEvents := 0
+	stderrEvents := 0
 	for _, ev := range evs {
 		if ev.Type == core.EventTaskStdout {
-			stdout = append(stdout, ev.Data)
+			appendEventOutput(&stdout, ev)
+			stdoutEvents++
 		} else if ev.Type == core.EventTaskStderr {
-			stderr = append(stderr, ev.Data)
+			appendEventOutput(&stderr, ev)
+			stderrEvents++
 		}
-		if maxLines > 0 && (len(stdout)+len(stderr)) >= maxLines {
+		if maxLines > 0 && (stdoutEvents+stderrEvents) >= maxLines {
 			break
 		}
 	}
-	return strings.Join(stdout, "\n"), strings.Join(stderr, "\n")
+	return strings.TrimSuffix(stdout.String(), "\n"), strings.TrimSuffix(stderr.String(), "\n")
+}
+
+func appendEventOutput(out *strings.Builder, ev core.Event) {
+	out.WriteString(ev.Data)
+	if !ev.Continues {
+		out.WriteByte('\n')
+	}
 }
 
 func mcpAdminDescription(name string) string {

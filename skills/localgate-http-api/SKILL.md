@@ -254,6 +254,7 @@ Use `run_command` instead when guiding a model through tool discovery under defa
 - `exec_command`: start a background-capable shell session
 - `write_stdin`: send more input and read output from an explicit absolute `cursor`
 - `read_thread_terminal`: read buffered terminal output for a known `session_id` from an explicit absolute `cursor`
+- `close_session`: terminate and close a running session after `exec_command` has already returned
 
 Preserve the returned `next_offset` and pass it as the next `cursor`. A trimmed buffer is reported through `base_offset`, `truncated`, and `cursor_expired`. Session access must use the workspace that created the session.
 

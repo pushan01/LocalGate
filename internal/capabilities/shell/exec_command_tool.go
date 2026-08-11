@@ -156,6 +156,53 @@ type ReadThreadTerminalTool struct {
 	WSID     string
 }
 
+type CloseSessionTool struct {
+	Sessions *core.SessionManager
+	WSID     string
+}
+
+func NewCloseSessionTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
+	return CloseSessionTool{Sessions: sessions, WSID: ws.ID}
+}
+
+func (t CloseSessionTool) Name() string { return "close_session" }
+
+func (t CloseSessionTool) Description() string {
+	return "Terminate and close an existing interactive or long-running session in the current workspace."
+}
+
+func (t CloseSessionTool) Schema() any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"session_id": map[string]any{"type": "string"},
+		},
+		"required": []string{"session_id"},
+	}
+}
+
+func (t CloseSessionTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
+	_ = ctx
+	_ = ic
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id required")
+	}
+	session, err := t.Sessions.CloseForWorkspace(sessionID, t.WSID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"session_id":   session.ID,
+		"status":       session.Status,
+		"running":      false,
+		"completed":    true,
+		"exit_code":    session.ExitCode,
+		"workspace_id": session.WorkspaceID,
+	}, nil
+}
+
 func NewReadThreadTerminalTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
 	return ReadThreadTerminalTool{Sessions: sessions, WSID: ws.ID}
 }

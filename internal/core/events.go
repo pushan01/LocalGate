@@ -24,8 +24,9 @@ type Event struct {
 	Type   EventType `json:"type"`
 	Time   time.Time `json:"time"`
 	// Optional fields for logs
-	Stream string `json:"stream,omitempty"` // stdout/stderr
-	Data   string `json:"data,omitempty"`
+	Stream    string `json:"stream,omitempty"` // stdout/stderr
+	Data      string `json:"data,omitempty"`
+	Continues bool   `json:"continues,omitempty"` // output chunk continues the same logical line
 }
 
 type EventWriter interface {

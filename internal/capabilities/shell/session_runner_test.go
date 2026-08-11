@@ -169,6 +169,34 @@ func TestSessionRunnerWriteStdin(t *testing.T) {
 	}
 }
 
+func TestCloseSessionToolTerminatesRunningSession(t *testing.T) {
+	ws := config.Workspace{
+		ID:               "ws",
+		CommandAllowlist: []string{"sh"},
+	}
+	sessions := core.NewSessionManager()
+	r := SessionRunner{WS: ws, Sessions: sessions}
+	s, err := r.StartSession(context.Background(), "tester", "sh", "", nil, "", false, true)
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	tool := NewCloseSessionTool(ws, sessions)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"session_id": s.ID})
+	if err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	if res["status"] != core.SessionClosed || res["running"] != false {
+		t.Fatalf("unexpected close result: %#v", res)
+	}
+	current, err := sessions.GetForWorkspace(s.ID, ws.ID)
+	if err != nil {
+		t.Fatalf("get closed session: %v", err)
+	}
+	if current.Status != core.SessionClosed {
+		t.Fatalf("session still active: %s", current.Status)
+	}
+}
+
 func TestSessionRunnerTTY(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",

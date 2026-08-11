@@ -29,7 +29,7 @@ func (t ArgvTool) Schema() any {
 		"properties": map[string]any{
 			"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside workspace"},
-			"timeout_ms": map[string]any{"type": "integer"},
+			"timeout_ms": map[string]any{"type": "integer", "minimum": 0},
 			"env": map[string]any{
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "string"},
@@ -46,13 +46,20 @@ func (t ArgvTool) Execute(ctx context.Context, ic core.InvokeContext, args map[s
 	}
 	cwd, _ := args["cwd"].(string)
 	timeoutMs := intFromAny(args["timeout_ms"])
+	if timeoutMs < 0 {
+		return nil, fmt.Errorf("timeout_ms must be non-negative")
+	}
 	if timeoutMs == 0 && t.DefaultTimeoutMs > 0 {
 		timeoutMs = int(t.DefaultTimeoutMs)
+	}
+	timeout, err := durationFromMilliseconds(timeoutMs)
+	if err != nil {
+		return nil, err
 	}
 	env := mapFromAny(args["env"])
 	r := Runner{WS: t.WS}
 	start := time.Now()
-	exit, err := r.RunArgv(ctx, ic.TaskID, argv, cwd, env, time.Duration(timeoutMs)*time.Millisecond, ic.Sink)
+	exit, err := r.RunArgv(ctx, ic.TaskID, argv, cwd, env, timeout, ic.Sink)
 	dur := time.Since(start)
 	res := map[string]any{
 		"exit_code":   exit,

@@ -53,6 +53,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 - `exec_command`
 - `write_stdin`
 - `read_thread_terminal`
+- `close_session`
 
 ### 任务管理工具
 
@@ -148,6 +149,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 5. 进程需要交互、长时间运行或后续还要写 stdin 时用 `exec_command`。
 6. `write_stdin` 只能在 `exec_command` 成功之后使用。
 7. 想读 session 缓冲输出但不写 stdin 时用 `read_thread_terminal`。
+8. Session 不再需要时用 `close_session`；不要用已完成的 `exec_command` Task 的 `task_cancel` 代替 Session 关闭。
 
 ## `run_command` 使用指引
 

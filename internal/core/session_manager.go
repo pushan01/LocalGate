@@ -442,6 +442,35 @@ func (m *SessionManager) CloseForWorkspace(id, workspaceID string) (Session, err
 	return out, nil
 }
 
+func (m *SessionManager) CloseAll() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	closeFns := make([]func() error, 0, len(m.sessions))
+	now := time.Now().UTC()
+	for _, st := range m.sessions {
+		if isEnded(st.session.Status) {
+			continue
+		}
+		st.session.Status = SessionClosed
+		st.session.EndedAt = now
+		st.session.LastActiveAt = now
+		notifySessionWatchersLocked(st)
+		if st.ctrl.Close != nil {
+			closeFns = append(closeFns, st.ctrl.Close)
+		}
+	}
+	m.mu.Unlock()
+	var errs []error
+	for _, closeFn := range closeFns {
+		if err := closeFn(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func authorizeSessionWorkspace(session Session, workspaceID string) error {
 	if workspaceID != "" && session.WorkspaceID != workspaceID {
 		return ErrSessionWorkspaceMismatch

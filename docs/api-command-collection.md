@@ -93,6 +93,7 @@ session 直调工具包括：
 - `exec_command`
 - `write_stdin`
 - `read_thread_terminal`
+- `close_session`
 
 ### ChatGPT / Apps 文件入参
 
@@ -1492,6 +1493,14 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
   "session_id": "session-id",
   "max_output_tokens": 4000,
   "cursor": 120
+}
+```
+
+### `close_session`
+
+```json
+{
+  "session_id": "session-id"
 }
 ```
 

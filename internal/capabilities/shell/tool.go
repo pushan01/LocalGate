@@ -29,7 +29,7 @@ func (t Tool) Schema() any {
 		"properties": map[string]any{
 			"command":    map[string]any{"type": "string"},
 			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside workspace"},
-			"timeout_ms": map[string]any{"type": "integer"},
+			"timeout_ms": map[string]any{"type": "integer", "minimum": 0},
 			"env": map[string]any{
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "string"},
@@ -43,13 +43,20 @@ func (t Tool) Execute(ctx context.Context, ic core.InvokeContext, args map[strin
 	cmd, _ := args["command"].(string)
 	cwd, _ := args["cwd"].(string)
 	timeoutMs := intFromAny(args["timeout_ms"])
+	if timeoutMs < 0 {
+		return nil, fmt.Errorf("timeout_ms must be non-negative")
+	}
 	if timeoutMs == 0 && t.DefaultTimeoutMs > 0 {
 		timeoutMs = int(t.DefaultTimeoutMs)
+	}
+	timeout, err := durationFromMilliseconds(timeoutMs)
+	if err != nil {
+		return nil, err
 	}
 	env := mapFromAny(args["env"])
 	r := Runner{WS: t.WS}
 	start := time.Now()
-	exit, err := r.Run(ctx, ic.TaskID, cmd, cwd, env, time.Duration(timeoutMs)*time.Millisecond, ic.Sink)
+	exit, err := r.Run(ctx, ic.TaskID, cmd, cwd, env, timeout, ic.Sink)
 	dur := time.Since(start)
 	res := map[string]any{
 		"exit_code":   exit,
@@ -62,6 +69,18 @@ func (t Tool) Execute(ctx context.Context, ic core.InvokeContext, args map[strin
 		return res, fmt.Errorf("exit code %d", exit)
 	}
 	return res, nil
+}
+
+const maxDurationMilliseconds = int64(1<<63-1) / int64(time.Millisecond)
+
+func durationFromMilliseconds(ms int) (time.Duration, error) {
+	if ms < 0 {
+		return 0, fmt.Errorf("milliseconds must be non-negative")
+	}
+	if int64(ms) > maxDurationMilliseconds {
+		return 0, fmt.Errorf("milliseconds value is too large")
+	}
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 func intFromAny(v any) int {

@@ -87,6 +87,60 @@ func TestWriteFilePreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestWriteFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink not supported")
+	}
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": link, "content": "mutated"}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected final symlink rejection, got %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "original" {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+}
+
+func TestWriteFileRejectsBinaryContent(t *testing.T) {
+	dir := t.TempDir()
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"path":    filepath.Join(dir, "binary.txt"),
+		"content": "a\x00b",
+	}); err == nil || !strings.Contains(err.Error(), "binary content") {
+		t.Fatalf("expected binary content rejection, got %v", err)
+	}
+}
+
+func TestUploadFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.bin")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "link.bin")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink not supported")
+	}
+	tool := uploadFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"path": link,
+		"file": map[string]any{"download_url": "https://example.com/file"},
+	}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected final symlink rejection, got %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "original" {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+}
+
 func TestUploadFile(t *testing.T) {
 	dir := t.TempDir()
 	ws := config.Workspace{ID: "ws", Roots: []string{dir}}

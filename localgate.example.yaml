@@ -49,6 +49,7 @@ admin:
           - run_argv
           - exec_command
           - write_stdin
+          - close_session
           - upload_file
         risk: high
 

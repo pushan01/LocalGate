@@ -249,6 +249,7 @@ func New(cfg config.Config) (*App, error) {
 		reg.Register(shell.NewExecCommandTool(ws, sessions))
 		reg.Register(shell.NewWriteStdinTool(ws, sessions))
 		reg.Register(shell.NewReadThreadTerminalTool(ws, sessions))
+		reg.Register(shell.NewCloseSessionTool(ws, sessions))
 		if notificationSvc.ToolEnabled() {
 			reg.Register(notificationcap.NewTool(notificationSvc))
 		}
@@ -1275,6 +1276,11 @@ func (a *App) Close() error {
 		a.Tasks.Close()
 	}
 	var closeErrors []error
+	if a.Sessions != nil {
+		if err := a.Sessions.CloseAll(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close sessions: %w", err))
+		}
+	}
 	if a.DynamicService != nil {
 		if err := a.DynamicService.Close(); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("close dynamic runtime: %w", err))

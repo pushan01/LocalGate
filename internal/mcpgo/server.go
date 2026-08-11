@@ -366,19 +366,30 @@ func (s *Server) handleWaitTaskFinish(ctx context.Context, req mcp.CallToolReque
 // collectStreams mirrors internal/mcp/stdio.go behavior to provide a quick snapshot.
 func collectStreams(sink *core.EventSink, taskID string, maxLines int) (string, string) {
 	evs, _ := sink.List(taskID, 0)
-	stdout := []string{}
-	stderr := []string{}
+	var stdout strings.Builder
+	var stderr strings.Builder
+	stdoutEvents := 0
+	stderrEvents := 0
 	for _, ev := range evs {
 		if ev.Type == core.EventTaskStdout {
-			stdout = append(stdout, ev.Data)
+			appendEventOutput(&stdout, ev)
+			stdoutEvents++
 		} else if ev.Type == core.EventTaskStderr {
-			stderr = append(stderr, ev.Data)
+			appendEventOutput(&stderr, ev)
+			stderrEvents++
 		}
-		if maxLines > 0 && (len(stdout)+len(stderr)) >= maxLines {
+		if maxLines > 0 && (stdoutEvents+stderrEvents) >= maxLines {
 			break
 		}
 	}
-	return strings.Join(stdout, "\n"), strings.Join(stderr, "\n")
+	return strings.TrimSuffix(stdout.String(), "\n"), strings.TrimSuffix(stderr.String(), "\n")
+}
+
+func appendEventOutput(out *strings.Builder, ev core.Event) {
+	out.WriteString(ev.Data)
+	if !ev.Continues {
+		out.WriteByte('\n')
+	}
 }
 
 func appendTaskStreams(payload map[string]any, sink *core.EventSink, taskID string, include bool) {

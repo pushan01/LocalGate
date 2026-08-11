@@ -194,6 +194,35 @@ func TestRunTimeout(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsNegativeTimeout(t *testing.T) {
+	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"sleep"}}
+	tool := NewTool(ws, 12_000)
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"command":    "sleep 1",
+		"timeout_ms": -1,
+	}); err == nil || !strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("expected negative timeout rejection, got %v", err)
+	}
+}
+
+func TestStreamPreservesLongOutputWithoutScannerLimit(t *testing.T) {
+	want := strings.Repeat("x", 2*1024*1024)
+	sink := core.NewEventSink()
+	if err := stream(context.Background(), sink, "long-output", "stdout", strings.NewReader(want)); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, _ := sink.List("long-output", 0)
+	var got strings.Builder
+	for _, event := range events {
+		if event.Type == core.EventTaskStdout {
+			got.WriteString(event.Data)
+		}
+	}
+	if got.String() != want {
+		t.Fatalf("long output changed: got=%d want=%d", got.Len(), len(want))
+	}
+}
+
 func TestCancelKillsProcessGroup(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",

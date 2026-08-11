@@ -556,8 +556,9 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `exec_command`：启动交互式或长时间运行的 Session
 - `write_stdin`：向 Session 写入输入
 - `read_thread_terminal`：读取 Session 终端缓冲区
+- `close_session`：主动终止并关闭仍在运行的 Session
 
-Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；如果旧输出已被裁剪，响应会包含 `base_offset`、`truncated=true` 和 `cursor_expired=true`。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。
+Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；如果旧输出已被裁剪，响应会包含 `base_offset`、`truncated=true` 和 `cursor_expired=true`。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
 
 ### Task 管理
 

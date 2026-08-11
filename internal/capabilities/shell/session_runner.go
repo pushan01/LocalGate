@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,10 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext,
 		Stdin: ptyFile,
 		Close: func() error {
 			terminateProcess(pid)
-			return ptyFile.Close()
+			if err := ptyFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				return err
+			}
+			return nil
 		},
 	}); err != nil {
 		_ = ptyFile.Close()

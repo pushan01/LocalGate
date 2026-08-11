@@ -60,26 +60,26 @@ func (r Runner) Run(ctx context.Context, taskID string, command string, cwd stri
 	}
 
 	pgid := cmd.Process.Pid
-	go func() {
-		<-execCtx.Done()
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		time.Sleep(200 * time.Millisecond)
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}()
+	processDone := make(chan struct{})
+	go terminateProcessGroupOnContext(execCtx, pgid, processDone)
 
 	var wg sync.WaitGroup
+	streamErrs := make(chan error, 2)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		stream(execCtx, sink, taskID, "stdout", stdout)
+		streamErrs <- stream(execCtx, sink, taskID, "stdout", stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		stream(execCtx, sink, taskID, "stderr", stderr)
+		streamErrs <- stream(execCtx, sink, taskID, "stderr", stderr)
 	}()
 
 	waitErr := cmd.Wait()
+	close(processDone)
 	wg.Wait()
+	close(streamErrs)
+	streamErr := firstStreamError(streamErrs)
 
 	exit := exitCode(waitErr)
 	if waitErr != nil {
@@ -92,6 +92,9 @@ func (r Runner) Run(ctx context.Context, taskID string, command string, cwd stri
 		}
 		return exit, waitErr
 	}
+	if streamErr != nil {
+		return exit, streamErr
+	}
 	return exit, nil
 }
 
@@ -102,11 +105,6 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 	// Allowlist by first token
 	if d := security.ValidateCommand(argv[0], r.WS); !d.Allowed {
 		return -1, errors.New("command not allowed: " + d.Reason)
-	}
-	for _, s := range argv {
-		if strings.ContainsAny(s, ";\n\r`$|&") {
-			return -1, errors.New("argv contains shell meta")
-		}
 	}
 	resolvedCWD, err := resolveWorkdir(cwd, r.WS)
 	if err != nil {
@@ -136,24 +134,24 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 		return -1, err
 	}
 	pgid := cmd.Process.Pid
-	go func() {
-		<-execCtx.Done()
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		time.Sleep(200 * time.Millisecond)
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}()
+	processDone := make(chan struct{})
+	go terminateProcessGroupOnContext(execCtx, pgid, processDone)
 	var wg sync.WaitGroup
+	streamErrs := make(chan error, 2)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		stream(execCtx, sink, taskID, "stdout", stdout)
+		streamErrs <- stream(execCtx, sink, taskID, "stdout", stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		stream(execCtx, sink, taskID, "stderr", stderr)
+		streamErrs <- stream(execCtx, sink, taskID, "stderr", stderr)
 	}()
 	waitErr := cmd.Wait()
+	close(processDone)
 	wg.Wait()
+	close(streamErrs)
+	streamErr := firstStreamError(streamErrs)
 	exit := exitCode(waitErr)
 	if waitErr != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
@@ -164,31 +162,81 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 		}
 		return exit, waitErr
 	}
+	if streamErr != nil {
+		return exit, streamErr
+	}
 	return exit, nil
 }
-func stream(ctx context.Context, sink *core.EventSink, taskID, streamName string, r io.Reader) {
+func stream(ctx context.Context, sink *core.EventSink, taskID, streamName string, r io.Reader) error {
 	if sink == nil || taskID == "" {
-		io.Copy(io.Discard, r)
-		return
+		_, err := io.Copy(io.Discard, r)
+		return err
 	}
-	sc := bufio.NewScanner(r)
-	// allow longer lines
-	buf := make([]byte, 0, 64*1024)
-	sc.Buffer(buf, 1024*1024)
-	for sc.Scan() {
+	reader := bufio.NewReaderSize(r, 32*1024)
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		terminated := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
+		if terminated {
+			fragment = fragment[:len(fragment)-1]
+			if len(fragment) > 0 && fragment[len(fragment)-1] == '\r' {
+				fragment = fragment[:len(fragment)-1]
+			}
+		}
+		continues := errors.Is(err, bufio.ErrBufferFull)
+		if len(fragment) > 0 || terminated {
+			sink.Append(core.Event{
+				TaskID:    taskID,
+				Type:      core.EventType("Task" + capitalize(streamName)),
+				Time:      time.Now().UTC(),
+				Stream:    streamName,
+				Data:      string(fragment),
+				Continues: continues,
+			})
+		}
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		default:
 		}
-		sink.Append(core.Event{
-			TaskID: taskID,
-			Type:   core.EventType("Task" + capitalize(streamName)),
-			Time:   time.Now().UTC(),
-			Stream: streamName,
-			Data:   sc.Text(),
-		})
+		switch {
+		case err == nil, errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return nil
+		default:
+			return err
+		}
 	}
+}
+
+func terminateProcessGroupOnContext(ctx context.Context, pgid int, processDone <-chan struct{}) {
+	select {
+	case <-processDone:
+		return
+	case <-ctx.Done():
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	timer := time.NewTimer(200 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-processDone:
+		return
+	case <-timer.C:
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+}
+
+func firstStreamError(errs <-chan error) error {
+	for err := range errs {
+		if err != nil &&
+			!errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) &&
+			!errors.Is(err, os.ErrClosed) &&
+			!errors.Is(err, io.ErrClosedPipe) {
+			return err
+		}
+	}
+	return nil
 }
 
 func capitalize(s string) string {

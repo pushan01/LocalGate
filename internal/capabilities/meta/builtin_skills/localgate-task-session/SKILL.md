@@ -11,7 +11,8 @@ Use this skill when work spans more than a single immediate tool result.
 
 - Use `run_command` for one-shot, non-interactive commands that should produce a final result.
 - Use `exec_command` for dev servers, watch processes, REPL-like programs, commands that keep running, or work that needs later stdin.
-- Once a session exists, use the session follow-up tools actually exposed by the host, such as `write_stdin` and `read_thread_terminal`.
+- Once a session exists, use the session follow-up tools actually exposed by the host, such as `write_stdin`, `read_thread_terminal`, and `close_session`.
+- Use `close_session` to terminate a dev server, watcher, REPL, or other session that should no longer run. `task_cancel` cancels task execution; it is not a substitute for closing a session after `exec_command` has already returned successfully.
 
 Do not start an interactive session when a one-shot command is sufficient.
 
