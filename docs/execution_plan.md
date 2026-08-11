@@ -25,7 +25,7 @@
     - `workspaces[].path_denylist`：禁止路径（覆盖/补充全局 denylist）
     - `workspaces[].command_allowlist`：允许命令（或允许前缀/模板，后续 Step 08 才实现执行校验）
     - `workspaces[].cwd`：默认工作目录（`run_command` 默认 cwd）
-    - `workspaces[].env_allowlist`：允许透传的环境变量名（避免泄露）
+    - `workspaces[].env_allowlist`：允许透传/覆盖的环境变量名（避免泄露）；服务进程 `PATH` 作为执行基础环境始终继承，请求若要覆盖 `PATH` 仍需显式 allowlist
 - 统一错误：错误码、可读消息、可选 details（不含敏感信息）
 - 健康检查：`healthz`（或 CLI `--healthcheck`）
 

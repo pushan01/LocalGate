@@ -98,11 +98,11 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if strings.Contains(prompt, "`run_argv`") {
 		t.Fatalf("hidden tool guidance should be omitted from prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, "`server__tool` 形式出现在 `tools/list`") {
-		t.Fatalf("prompt should explain relay tool naming: %q", prompt)
+	if !strings.Contains(prompt, "`localgate-task-session`") || !strings.Contains(prompt, "loader: `get_skill`") {
+		t.Fatalf("prompt should expose matching built-in skill metadata: %q", prompt)
 	}
-	if !strings.Contains(prompt, "不要把它们当成本地 filesystem/shell 工具处理") {
-		t.Fatalf("prompt should explain relay tool boundaries: %q", prompt)
+	if strings.Contains(prompt, "# LocalGate Task and Session Lifecycle") {
+		t.Fatalf("startup should not inline built-in skill bodies: %q", prompt)
 	}
 	if schema := tool.Schema(); schema == nil {
 		t.Fatalf("startup instructions schema should be non-nil")
@@ -136,6 +136,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 }
 
 func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
 	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
 	reg := core.NewRegistry(nil)
@@ -169,21 +170,24 @@ func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
 		}
 	}
 	for _, visible := range []string{
-		"`apply_patch` 必须传一个完整的 patch 字符串",
-		"不提供 crash-atomic 或跨进程事务保证",
-		"*** Update File: /abs/path/to/file.txt",
-		"使用 `upload_file`",
-		"优先调用 `export_file`",
-		"`deploy_tool` 使用说明",
-		"使用 `restart_deployment`",
+		"局部修改已有文本文件优先使用 `apply_patch`",
+		"`localgate-deployment`",
+		"`localgate-file-transfer`",
+		"loader: `get_skill`",
 	} {
 		if !strings.Contains(prompt, visible) {
 			t.Fatalf("visible tool guidance %q is missing: %q", visible, prompt)
 		}
 	}
+	for _, movedToSkill := range []string{"options.preserve_source", "*** Update File: /abs/path/to/file.txt", "使用 `restart_deployment`"} {
+		if strings.Contains(prompt, movedToSkill) {
+			t.Fatalf("workflow detail %q should be loaded from a skill, not startup: %q", movedToSkill, prompt)
+		}
+	}
 }
 
 func TestStartupInstructionsToolRedactsMCPEnvironmentValues(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
 	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
 	reg := core.NewRegistry(nil)
@@ -204,7 +208,7 @@ func TestStartupInstructionsToolRedactsMCPEnvironmentValues(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	prompt, _ := res["prompt"].(string)
-	for _, expected := range []string{"`example`", "`API_TOKEN`", "`APP_ENV`", "变量值不会写入启动说明"} {
+	for _, expected := range []string{"`example`", "`API_TOKEN`", "`APP_ENV`", "值不会写入 startup"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("missing sanitized MCP metadata %q in prompt: %q", expected, prompt)
 		}
@@ -248,35 +252,27 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	prompt, _ := res["prompt"].(string)
-	if !strings.Contains(prompt, "run_command") {
-		t.Fatalf("missing second tool in rendered prompt: %q", prompt)
+	if !strings.Contains(prompt, "`localgate-deployment`") || !strings.Contains(prompt, "builtin://localgate-deployment/SKILL.md") {
+		t.Fatalf("missing deployment skill routing in rendered prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, "`deploy_tool` 使用说明") {
-		t.Fatalf("missing deploy tool guidance in rendered prompt: %q", prompt)
-	}
-	if !strings.Contains(prompt, "options.preserve_source") {
-		t.Fatalf("missing deploy source preservation guidance in rendered prompt: %q", prompt)
-	}
-	for _, want := range []string{"`static` 和 `dynamic`", "runtime.argv", "options.health_path", "restart_deployment", "rollback_deployment"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("missing unified deployment guidance %q in rendered prompt: %q", want, prompt)
+	for _, movedToSkill := range []string{"options.preserve_source", "runtime.argv", "options.health_path", "# LocalGate Deployment"} {
+		if strings.Contains(prompt, movedToSkill) {
+			t.Fatalf("deployment detail %q should not be in startup: %q", movedToSkill, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "status=pending_approval") {
-		t.Fatalf("missing deploy approval guidance in rendered prompt: %q", prompt)
-	}
-	if !strings.Contains(prompt, "不要重复提交原工具调用") || !strings.Contains(prompt, "task_result") {
+	if !strings.Contains(prompt, "status=pending_approval") || !strings.Contains(prompt, "不要重复提交原操作") || !strings.Contains(prompt, "task_result") {
 		t.Fatalf("missing approval continuation guidance in rendered prompt: %q", prompt)
 	}
 	if !strings.Contains(prompt, "Gamma skill") {
 		t.Fatalf("missing dynamic skill description in rendered prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Registry 当前可见工具的摘要") || !strings.Contains(prompt, "task lifecycle helper") {
+	if !strings.Contains(prompt, "LocalGate Registry 可见工具的摘要") || !strings.Contains(prompt, "task lifecycle") {
 		t.Fatalf("missing registry/host tool boundary guidance: %q", prompt)
 	}
 }
 
 func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ws := config.Workspace{
 		ID:    "ws",
 		Roots: []string{t.TempDir()},
@@ -297,8 +293,11 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	prompt, _ := res["prompt"].(string)
-	if !strings.Contains(prompt, "工具 HTTP 化模式") {
+	if !strings.Contains(prompt, "当前模式：Tool HTTP") {
 		t.Fatalf("missing tool http mode summary: %q", prompt)
+	}
+	if !strings.Contains(prompt, "get_skill") || !strings.Contains(prompt, "`localgate-tool-http`") {
+		t.Fatalf("missing built-in skill bootstrap guidance: %q", prompt)
 	}
 	if !strings.Contains(prompt, "get_temporary_access_token") {
 		t.Fatalf("missing tool access tool: %q", prompt)
@@ -306,11 +305,8 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	if !strings.Contains(prompt, "get_tool_schema") {
 		t.Fatalf("missing get_tool_schema guidance: %q", prompt)
 	}
-	if !strings.Contains(prompt, "/tools/{tool}/call") {
-		t.Fatalf("missing tool HTTP call guidance: %q", prompt)
-	}
-	if !strings.Contains(prompt, "X-LocalGate-Tool-Access") {
-		t.Fatalf("missing tool auth header guidance: %q", prompt)
+	if strings.Contains(prompt, "X-LocalGate-Tool-Access") {
+		t.Fatalf("tool HTTP auth detail should move to the built-in skill: %q", prompt)
 	}
 	if strings.Contains(prompt, "/platforms/") {
 		t.Fatalf("legacy platform routing should not appear: %q", prompt)
@@ -331,6 +327,7 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 }
 
 func TestStartupInstructionsToolRequiresBase64WhenEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ws := config.Workspace{
 		ID:    "ws",
 		Roots: []string{t.TempDir()},
@@ -350,8 +347,8 @@ func TestStartupInstructionsToolRequiresBase64WhenEnabled(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	prompt, _ := res["prompt"].(string)
-	if !strings.Contains(prompt, "请把整个工具参数编码为一个 base64 字符串后再提交") {
-		t.Fatalf("startup prompt should require base64 in tool http mode when enabled: %q", prompt)
+	if !strings.Contains(prompt, "tool_arguments.enable_base64=true") || !strings.Contains(prompt, "具体参数编码规则以 `localgate-tool-http`") {
+		t.Fatalf("startup prompt should route enabled base64 handling to the tool HTTP skill: %q", prompt)
 	}
 	if strings.Contains(prompt, "还可以整体传成一个 base64 字符串") {
 		t.Fatalf("startup prompt should not describe base64 as optional when enabled: %q", prompt)
@@ -445,6 +442,156 @@ func TestLoadAllSkillsFollowsSkillSymlinks(t *testing.T) {
 	}
 	if visible[0]["name"] != "global-linked" || visible[1]["name"] != "local-linked" {
 		t.Fatalf("unexpected visible skill ordering through symlink: %#v", visible)
+	}
+}
+
+func TestBuiltinSkillsEmbeddedAndLoadable(t *testing.T) {
+	loaded := loadBuiltinSkills()
+	if len(loaded) != 5 {
+		t.Fatalf("expected 5 built-in skills, got %#v", loaded)
+	}
+	wantNames := []string{
+		"localgate-deployment",
+		"localgate-file-transfer",
+		"localgate-mcp-relay",
+		"localgate-task-session",
+		"localgate-tool-http",
+	}
+	for i, want := range wantNames {
+		if loaded[i].Name != want {
+			t.Fatalf("unexpected built-in skill ordering: %#v", loaded)
+		}
+		if loaded[i].Source != "builtin" || loaded[i].Content == "" {
+			t.Fatalf("built-in skill should carry source and content: %#v", loaded[i])
+		}
+		if strings.HasPrefix(loaded[i].Content, "---") {
+			t.Fatalf("built-in skill content should exclude frontmatter: %q", loaded[i].Content)
+		}
+	}
+}
+
+func TestGetSkillToolReturnsEmbeddedBody(t *testing.T) {
+	tool := NewGetSkillTool(config.DynamicHosting{
+		Enabled:               true,
+		AllowedExecutables:    []string{"/definitely/missing/localgate-test-runtime"},
+		EnvAllowlist:          []string{"NODE_ENV", "APP_ENV"},
+		StartupTimeoutSeconds: 37,
+		RestartPolicy:         "on-failure",
+		RequireApproval:       true,
+	})
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"name": "localgate-deployment"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res["name"] != "localgate-deployment" || res["source"] != "builtin" {
+		t.Fatalf("unexpected get_skill metadata: %#v", res)
+	}
+	content, _ := res["content"].(string)
+	for _, want := range []string{
+		"# LocalGate Deployment",
+		"Current instance: dynamic runtime",
+		"/definitely/missing/localgate-test-runtime",
+		"configured but not currently resolvable",
+		"`APP_ENV`, `NODE_ENV`",
+		"Default startup timeout: 37 seconds",
+		"`HOST=127.0.0.1`",
+		"dynamically allocated `PORT`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("missing dynamic deployment skill context %q: %q", want, content)
+		}
+	}
+	contextMap, ok := res["context"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing structured skill context: %#v", res)
+	}
+	dynamicRuntime, ok := contextMap["dynamic_runtime"].(map[string]any)
+	if !ok || dynamicRuntime["enabled"] != true || dynamicRuntime["startup_timeout_seconds"] != 37 {
+		t.Fatalf("unexpected structured deployment context: %#v", contextMap)
+	}
+	if !strings.Contains(content, "options") {
+		t.Fatalf("missing embedded deployment instructions: %q", content)
+	}
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"name": "missing"}); err == nil {
+		t.Fatal("expected unknown built-in skill to fail")
+	}
+}
+
+func TestGetSkillToolReportsAvailableDeploymentExecutable(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	tool := NewGetSkillTool(config.DynamicHosting{
+		Enabled:            true,
+		AllowedExecutables: []string{executable},
+	})
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"name": "localgate-deployment"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	content, _ := res["content"].(string)
+	if !strings.Contains(content, executable) || !strings.Contains(content, "(available") {
+		t.Fatalf("deployment skill should report configured executable availability: %q", content)
+	}
+}
+
+func TestGetSkillToolReportsDynamicHostingDisabled(t *testing.T) {
+	tool := NewGetSkillTool(config.DynamicHosting{})
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"name": "localgate-deployment"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	content, _ := res["content"].(string)
+	if !strings.Contains(content, "Dynamic hosting is disabled") {
+		t.Fatalf("deployment skill should report disabled dynamic hosting: %q", content)
+	}
+}
+
+func TestStartupBuiltinSkillWinsOverExternalNameCollision(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	writeLocalSkillFixture(t, workspace, "collision", "---\nname: localgate-deployment\ndescription: External collision should not win\n---\n")
+
+	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	reg := core.NewRegistry(nil)
+	reg.Register(dummyTool{name: "deploy_tool", desc: "Deploy"})
+	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
+	reg.Register(tool)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	prompt, _ := res["prompt"].(string)
+	if !strings.Contains(prompt, "source: `builtin`") || !strings.Contains(prompt, "loader: `get_skill`") {
+		t.Fatalf("built-in skill should win name collisions: %q", prompt)
+	}
+	if strings.Contains(prompt, "External collision should not win") {
+		t.Fatalf("external skill should not shadow built-in skill: %q", prompt)
+	}
+}
+
+func TestStartupSuppressesExternalCollisionWhenBuiltinIsNotRelevant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	writeLocalSkillFixture(t, workspace, "collision", "---\nname: localgate-deployment\ndescription: External deployment collision\n---\n")
+
+	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	reg := core.NewRegistry(nil)
+	reg.Register(dummyTool{name: "read_file", desc: "Read"})
+	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
+	reg.Register(tool)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	prompt, _ := res["prompt"].(string)
+	if strings.Contains(prompt, "External deployment collision") || strings.Contains(prompt, "builtin://localgate-deployment") {
+		t.Fatalf("irrelevant built-in name must remain reserved without surfacing either skill: %q", prompt)
 	}
 }
 

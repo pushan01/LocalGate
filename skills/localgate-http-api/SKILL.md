@@ -15,7 +15,7 @@ This skill is for API-driven operation. It is not for editing LocalGate internal
 
 For a complete command reference, consult [api-command-collection.md](file:///Users/bytedance/project/LocalGate.mcp/api-command-collection.md).
 
-This skill also covers the **tool HTTP mode** where MCP only exposes three bootstrap tools and the real business tools move to `/tools/{tool}/call`.
+This skill also covers the **tool HTTP mode** where MCP only exposes the bootstrap tools (`get_startup_instructions`, `get_skill`, `get_temporary_access_token`, and `get_tool_schema`) and the real business tools move to `/tools/{tool}/call`.
 
 ## Design Intent
 
@@ -117,11 +117,13 @@ Primary path:
 Use when the instance only exposes:
 
 - `get_startup_instructions`
+- `get_skill`
 - `get_temporary_access_token`
 - `get_tool_schema`
 
 Primary path:
 
+- load a matching built-in workflow with `get_skill` when startup recommends one
 - call `get_temporary_access_token`
 - read `base_url`, `call_path_pattern`, `auth_header_name`, `auth_value`
 - read the `tools` list from `get_startup_instructions`
@@ -137,7 +139,7 @@ Use these rules consistently:
 4. If the user wants a **background process with follow-up interaction**, prefer sessions over tasks.
 5. If the user wants a **simple command or file operation**, prefer tasks unless they explicitly need interactivity.
 6. If the user wants a **binary self-upgrade of the running HTTP daemon**, use `/system/upgrades` instead of inventing file replacement steps.
-7. If the instance exposes only `get_startup_instructions`, `get_temporary_access_token`, and `get_tool_schema`, switch to the tool HTTP workflow instead of recommending MCP `tools/call`.
+7. If the instance exposes only `get_startup_instructions`, `get_skill`, `get_temporary_access_token`, and `get_tool_schema`, switch to the tool HTTP workflow instead of recommending MCP `tools/call`. Load a matching built-in LocalGate skill with `get_skill` before a multi-tool workflow.
 8. If a tool accepts a host-provided file object, preserve that structure. For `upload_file`, pass the file object under `file` and the target workspace path under `path`.
 9. If `tool_arguments.enable_base64=true`, `/tools/{tool}/call`, `/tasks.args`, and MCP `tools/call.arguments` may be a base64 string; decode it to the tool's normal JSON object shape before reasoning about fields.
 10. If `mcp_http.stateless=true`, HTTP MCP `/mcp` does not require `Mcp-Session-Id`; if it is `false`, keep the normal `initialize -> save SessionID -> send Mcp-Session-Id` workflow.

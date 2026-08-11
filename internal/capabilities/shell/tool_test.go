@@ -85,6 +85,72 @@ func TestRunCommandPreservesAllowlistedProcessPath(t *testing.T) {
 	}
 }
 
+func TestRunCommandInheritsProcessPathWithoutAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	commandName := "localgate-path-probe"
+	commandPath := filepath.Join(dir, commandName)
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\nprintf 'path-ok\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	ws := config.Workspace{
+		ID:               "ws",
+		CommandAllowlist: []string{commandName},
+	}
+	sink := core.NewEventSink()
+	tool := NewTool(ws, 0)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "t-path-default", Sink: sink}, map[string]any{
+		"command": commandName,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if got := res["exit_code"].(int); got != 0 {
+		t.Fatalf("unexpected exit: %d", got)
+	}
+
+	events, _ := sink.List("t-path-default", 0)
+	var stdout []string
+	for _, event := range events {
+		if event.Type == core.EventTaskStdout {
+			stdout = append(stdout, event.Data)
+		}
+	}
+	if got := strings.Join(stdout, "\n"); got != "path-ok" {
+		t.Fatalf("process PATH was not inherited: %q", got)
+	}
+}
+
+func TestMergeEnvAllowedDoesNotPermitUnallowlistedPathOverride(t *testing.T) {
+	t.Setenv("PATH", "/trusted/bin")
+
+	env := mergeEnvAllowed(map[string]string{"PATH": "/request/bin"}, nil)
+	if got := envValue(env, "PATH"); got != "/trusted/bin" {
+		t.Fatalf("unallowlisted PATH override applied: got %q", got)
+	}
+}
+
+func TestMergeEnvAllowedPermitsAllowlistedPathOverride(t *testing.T) {
+	t.Setenv("PATH", "/trusted/bin")
+
+	env := mergeEnvAllowed(map[string]string{"PATH": "/request/bin"}, []string{"PATH"})
+	if got := envValue(env, "PATH"); got != "/request/bin" {
+		t.Fatalf("allowlisted PATH override not applied: got %q", got)
+	}
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
 func TestRunCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	t.Setenv("LOCALGATE_SECRET_TEST", "should-not-leak")
 	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}

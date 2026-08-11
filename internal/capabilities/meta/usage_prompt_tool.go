@@ -36,7 +36,7 @@ func (t StartupInstructionsTool) Name() string {
 }
 
 func (t StartupInstructionsTool) Description() string {
-	return "Call this first to get LocalGate startup instructions, visible tool guidance, and dynamic skill metadata"
+	return "Call this first to get LocalGate capability routing, core execution constraints, and the dynamic skill index."
 }
 
 func (t StartupInstructionsTool) Schema() any {
@@ -57,21 +57,20 @@ func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeCont
 	shell := os.Getenv("SHELL")
 	date := now.Format("2006-01-02")
 	timezone := displayTimezone(now)
-	skillRoots, skills := visibleSkillsForPrompt(t.WS.CWD)
+	skillRoots, externalSkills := visibleSkillsForPrompt(t.WS.CWD)
+	builtinSkills := visibleBuiltinSkillsForPrompt(hasTools, t.Options)
+	skills := mergeSkillIndexes(builtinSkills, externalSkills)
 	mcpServers := safeMCPServersForPrompt(t.Options.MCPServers)
+	if t.Options.ToolHTTPMode {
+		mcpServers = nil
+	}
 	prompt, err := renderEmbeddedPromptTemplate(map[string]any{
-		"workspace_id": ic.WorkspaceID,
-		"cwd":          t.WS.CWD,
-		"roots":        append([]string(nil), t.WS.Roots...),
-		"tool_count":   len(tools),
-		"tools":        tools,
-		"has_tools":    hasTools,
-		"has_deployment_management_tools": hasAnyVisibleTool(hasTools,
-			"list_deployments", "delete_deployment", "set_deployment_access",
-			"get_deployment", "get_deployment_logs", "start_deployment",
-			"stop_deployment", "restart_deployment", "list_deployment_releases",
-			"rollback_deployment",
-		),
+		"workspace_id":     ic.WorkspaceID,
+		"cwd":              t.WS.CWD,
+		"roots":            append([]string(nil), t.WS.Roots...),
+		"tool_count":       len(tools),
+		"tools":            tools,
+		"has_tools":        hasTools,
 		"skill_roots":      append([]string(nil), skillRoots...),
 		"skill_count":      len(skills),
 		"skills":           skills,
@@ -243,7 +242,7 @@ func fmtString(v any) string {
 
 func isStartupBootstrapTool(name string) bool {
 	switch name {
-	case "get_startup_instructions", "get_temporary_access_token", "get_tool_schema":
+	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
 		return true
 	default:
 		return false

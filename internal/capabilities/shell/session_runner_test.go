@@ -90,6 +90,33 @@ func TestSessionRunnerDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	}
 }
 
+func TestSessionRunnerInheritsProcessPathWithoutAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	commandName := "localgate-session-path-probe"
+	commandPath := filepath.Join(dir, commandName)
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\nprintf 'session-path-ok\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	r := SessionRunner{
+		WS:       config.Workspace{ID: "ws", CommandAllowlist: []string{commandName}},
+		Sessions: core.NewSessionManager(),
+	}
+	s, err := r.StartSession(context.Background(), "tester", commandName, "", nil, "/bin/sh", false, false)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, read, err := r.ReadSession(s.ID, 10)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := joinSessionOutput(read.Items); got != "session-path-ok" {
+		t.Fatalf("process PATH was not inherited by session: %q", got)
+	}
+}
+
 func TestSessionRunnerStartAndRead(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",

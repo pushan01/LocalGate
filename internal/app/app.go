@@ -235,6 +235,7 @@ func New(cfg config.Config) (*App, error) {
 			EnableBase64: cfg.ToolArguments.EnableBase64,
 			MCPServers:   cfg.MCPServers,
 		}))
+		reg.Register(meta.NewGetSkillTool(dynamicRoutingConfig))
 		for _, t := range filesystem.NewTools(ws) {
 			reg.Register(t)
 		}

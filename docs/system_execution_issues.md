@@ -35,15 +35,19 @@ run_command 使用 login shell：
 
 ---
 
-## 3. env_allowlist 模型问题
+## 3. env_allowlist 模型问题（PATH 部分已修复）
 
 ### 当前实现
-基于 os.Environ snapshot + whitelist filter
+业务环境变量仍基于 os.Environ snapshot + whitelist filter；`PATH` 作为执行基础环境始终继承 LocalGate 服务进程值。
 
-### 问题
+### 已修复
+- `run_command` / `run_argv` / session shell 使用同一服务进程 PATH 基线
+- startup 的可执行文件探测与 shell 执行使用一致的 PATH 来源
+- request env 只有在 `PATH` 显式进入 `env_allowlist` 时才能覆盖 PATH
+
+### 剩余问题
 - 非 inheritance model
-- PATH 被当普通变量
-- request env 覆盖语义不清晰
+- 除 PATH 外的 request env 覆盖语义仍依赖 allowlist
 
 ---
 

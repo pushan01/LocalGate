@@ -867,6 +867,8 @@ web/admin/                管理后台前端
 <workspace>/.agents/skills/
 ```
 
+LocalGate 还内置一组随二进制发布的工作流 Skills。`get_startup_instructions` 只暴露匹配当前能力面的 skill 索引；需要部署、文件传输、task/session、Tool HTTP 或 MCP relay 等复杂流程时，再通过 `get_skill` 按名称加载完整说明。外部 Skills 仍通过 `read_file` 渐进式加载；与 built-in 同名的外部 Skill 不会覆盖内置版本。
+
 ## 进一步文档
 
 - [`api-command-collection.md`](./api-command-collection.md)：HTTP 和命令调用示例

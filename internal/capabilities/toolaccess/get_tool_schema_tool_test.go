@@ -56,13 +56,15 @@ func TestGetToolSchemaTool(t *testing.T) {
 }
 
 func TestGetToolSchemaToolRejectsBootstrapTool(t *testing.T) {
-	reg := core.NewRegistry(nil)
-	reg.Register(dummyTool{name: "get_temporary_access_token", desc: "bootstrap"})
-	tool := NewGetToolSchemaTool(reg)
+	for _, name := range []string{"get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema"} {
+		reg := core.NewRegistry(nil)
+		reg.Register(dummyTool{name: name, desc: "bootstrap"})
+		tool := NewGetToolSchemaTool(reg)
 
-	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": "get_temporary_access_token"})
-	if err == nil || err.Error() != "bootstrap tools do not have HTTP-callable schemas" {
-		t.Fatalf("unexpected error: %v", err)
+		_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": name})
+		if err == nil || err.Error() != "bootstrap tools do not have HTTP-callable schemas" {
+			t.Fatalf("bootstrap tool %q returned unexpected error: %v", name, err)
+		}
 	}
 }
 

@@ -132,8 +132,9 @@ LocalGate 会切换到工具 HTTP 化模式。
 
 这个模式下有两个关键变化：
 
-1. MCP 只暴露三个 bootstrap 工具：
+1. MCP 只暴露四个 bootstrap 工具：
    - `get_startup_instructions`
+   - `get_skill`
    - `get_temporary_access_token`
    - `get_tool_schema`
 2. 业务工具不再通过 MCP `tools/call` 调用，而是通过 `/tools/{tool}/call` 直接访问
@@ -141,17 +142,18 @@ LocalGate 会切换到工具 HTTP 化模式。
 ### 调用顺序
 
 1. 先读取 `get_startup_instructions`
-2. 调用 `get_temporary_access_token`
-3. 读取返回中的：
+2. 如果 startup 中的 built-in skill 与当前任务匹配，调用 `get_skill` 按需加载完整工作流说明
+3. 调用 `get_temporary_access_token`
+4. 读取返回中的：
    - `auth_value`
    - `auth_header_name`
    - `base_url`
    - `call_path_pattern`
-4. 从 `get_startup_instructions` 返回的 `tools` 字段里读取每个工具的：
+5. 从 `get_startup_instructions` 返回的 `tools` 字段里读取每个工具的：
    - `name`
    - `description`
-5. 对目标工具调用 `get_tool_schema`
-6. 再用 `curl` 或其他 HTTP 客户端访问 `/tools/{tool}/call`
+6. 对目标工具调用 `get_tool_schema`
+7. 再用 `curl` 或其他 HTTP 客户端访问 `/tools/{tool}/call`
 
 如果目标工具是 `upload_file`，先调用 `get_tool_schema(tool=upload_file)`，然后传：
 

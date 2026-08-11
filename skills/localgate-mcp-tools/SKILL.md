@@ -27,7 +27,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 
 不要假设所有内部能力都会以工具形式暴露。LocalGate 支持 hidden tools，默认可见工具集合也刻意小于完整内部能力面。
 
-另外，LocalGate 还有一种单独的**工具 HTTP 化模式**。在该模式下，MCP 只保留三个 bootstrap 工具，其余业务工具改为通过 HTTP 直调。
+另外，LocalGate 还有一种单独的**工具 HTTP 化模式**。在该模式下，MCP 只保留 `get_startup_instructions`、`get_skill`、`get_temporary_access_token`、`get_tool_schema` 四个 bootstrap 工具，其余业务工具改为通过 HTTP 直调。`get_skill` 用于按 startup 的 built-in skill 索引加载复杂跨工具工作流。
 
 ## 默认可见工具
 
@@ -84,9 +84,10 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 
 ## 工具 HTTP 模式下的最小工具面
 
-当 `tools/list` 只出现下面三个工具时，说明实例运行在工具 HTTP 化模式下：
+当 `tools/list` 只出现下面四个工具时，说明实例运行在工具 HTTP 化模式下：
 
 - `get_startup_instructions`
+- `get_skill`
 - `get_temporary_access_token`
 - `get_tool_schema`
 
@@ -95,15 +96,16 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 正确流程是：
 
 1. 先读取 `get_startup_instructions`
-2. 调用 `get_temporary_access_token`
-3. 从结果中读取：
+2. 如果 startup 中的 built-in skill 与任务匹配，调用 `get_skill` 加载完整工作流说明
+3. 调用 `get_temporary_access_token`
+4. 从结果中读取：
    - `auth_value`
    - `auth_header_name`
    - `base_url`
    - `call_path_pattern`
-4. 从 `get_startup_instructions.tools` 里读取工具名称和描述
-5. 对目标工具调用 `get_tool_schema`
-6. 再通过 `/tools/{tool}/call` 直接调业务工具 HTTP 接口
+5. 从 `get_startup_instructions.tools` 里读取工具名称和描述
+6. 对目标工具调用 `get_tool_schema`
+7. 再通过 `/tools/{tool}/call` 直接调业务工具 HTTP 接口
 
 工具 HTTP 模式下的 HTTP 请求要同时携带：
 

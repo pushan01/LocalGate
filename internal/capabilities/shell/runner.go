@@ -221,6 +221,13 @@ func mergeEnvAllowed(env map[string]string, allow []string) []string {
 		allowed[k] = struct{}{}
 	}
 	base := map[string]string{}
+	// PATH is part of LocalGate's execution environment rather than an
+	// application secret. Always inherit the service process PATH so shell
+	// execution resolves the same binaries that LocalGate itself can resolve.
+	// A caller-provided PATH still requires explicit allowlisting below.
+	if pathValue, ok := os.LookupEnv("PATH"); ok {
+		base["PATH"] = pathValue
+	}
 	for _, kv := range os.Environ() {
 		i := strings.IndexByte(kv, '=')
 		if i <= 0 {

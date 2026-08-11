@@ -190,13 +190,23 @@ func TestGetStartupInstructionsRegisteredAndWorksInMCPGo(t *testing.T) {
 	if !strings.Contains(prompt, "LocalGate") {
 		t.Fatalf("missing service instructions in prompt: %#v", result)
 	}
-	if !strings.Contains(prompt, "run_command") {
-		t.Fatalf("missing visible tool in prompt: %#v", result)
+	if !strings.Contains(prompt, "localgate-task-session") || !strings.Contains(prompt, "loader: `get_skill`") {
+		t.Fatalf("missing built-in skill routing in prompt: %#v", result)
 	}
 	switch tools := result["tools"].(type) {
 	case []map[string]any:
 		if len(tools) == 0 {
 			t.Fatalf("missing visible tools in result: %#v", result)
+		}
+		foundRun := false
+		for _, tool := range tools {
+			if tool["name"] == "run_command" {
+				foundRun = true
+				break
+			}
+		}
+		if !foundRun {
+			t.Fatalf("run_command should be in structured tools result: %#v", result)
 		}
 	case []any:
 		if len(tools) == 0 {
@@ -210,7 +220,37 @@ func TestGetStartupInstructionsRegisteredAndWorksInMCPGo(t *testing.T) {
 	}
 }
 
-func TestToolHTTPModeOnlyRegistersThreeToolsInMCPGo(t *testing.T) {
+func TestGetSkillRegisteredAndWorksInMCPGo(t *testing.T) {
+	root := t.TempDir()
+	s := newTestServer(t, root, []string{"echo", "sh"})
+	if tool := s.impl.ListTools()["get_skill"]; tool == nil {
+		t.Fatal("get_skill tool not registered")
+	} else if tool.Tool.Description == "" {
+		t.Fatal("get_skill description should not be empty")
+	}
+
+	res, err := s.makeInvokeHandler("get_skill")(context.Background(), callReq(map[string]any{"name": "localgate-task-session"}))
+	if err != nil {
+		t.Fatalf("invoke get_skill: %v", err)
+	}
+	payload := payloadFromResult(t, res)
+	if got := statusFromPayload(payload); got != "succeeded" {
+		t.Fatalf("unexpected status: %s payload=%#v", got, payload)
+	}
+	result, ok := payload["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing result payload: %#v", payload)
+	}
+	if result["name"] != "localgate-task-session" || result["source"] != "builtin" {
+		t.Fatalf("unexpected get_skill metadata: %#v", result)
+	}
+	content, _ := result["content"].(string)
+	if !strings.Contains(content, "# LocalGate Task and Session Lifecycle") {
+		t.Fatalf("missing embedded skill content: %#v", result)
+	}
+}
+
+func TestToolHTTPModeOnlyRegistersBootstrapToolsInMCPGo(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore: filepath.Join(root, "store"),
@@ -227,10 +267,10 @@ func TestToolHTTPModeOnlyRegistersThreeToolsInMCPGo(t *testing.T) {
 	})
 
 	tools := s.impl.ListTools()
-	if len(tools) != 3 {
-		t.Fatalf("expected exactly 3 tools, got %#v", tools)
+	if len(tools) != 4 {
+		t.Fatalf("expected exactly 4 bootstrap tools, got %#v", tools)
 	}
-	if tools["get_startup_instructions"] == nil || tools["get_temporary_access_token"] == nil || tools["get_tool_schema"] == nil {
+	if tools["get_startup_instructions"] == nil || tools["get_skill"] == nil || tools["get_temporary_access_token"] == nil || tools["get_tool_schema"] == nil {
 		t.Fatalf("missing minimal tools: %#v", tools)
 	}
 	if tools["task_status"] != nil || tools["run_command"] != nil {
@@ -341,20 +381,27 @@ func TestGetToolSchemaKeepsOriginalSchemaInBase64ModeInMCPGo(t *testing.T) {
 			CommandAllowlist: []string{"echo", "sh"},
 		}},
 	})
-	tool := s.impl.ListTools()["get_tool_schema"]
-	if tool == nil {
-		t.Fatal("get_tool_schema tool not registered")
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(tool.Tool.RawInputSchema, &schema); err != nil {
-		t.Fatalf("unmarshal schema: %v", err)
-	}
-	props, _ := schema["properties"].(map[string]any)
-	if _, ok := props["base64data"]; ok {
-		t.Fatalf("get_tool_schema should not expose base64data schema: %#v", schema)
-	}
-	if _, ok := props["tool"]; !ok {
-		t.Fatalf("get_tool_schema should preserve tool property: %#v", schema)
+	for name, property := range map[string]string{"get_tool_schema": "tool", "get_skill": "name"} {
+		tool := s.impl.ListTools()[name]
+		if tool == nil {
+			t.Fatalf("%s tool not registered", name)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(tool.Tool.RawInputSchema, &schema); err != nil {
+			t.Fatalf("unmarshal %s schema: %v", name, err)
+		}
+		props, _ := schema["properties"].(map[string]any)
+		if _, ok := props["base64data"]; ok {
+			t.Fatalf("%s should not expose base64data schema: %#v", name, schema)
+		}
+		if _, ok := props[property]; !ok {
+			t.Fatalf("%s should preserve %s property: %#v", name, property, schema)
+		}
+		if name == "get_skill" {
+			if _, ok := props["async"]; ok {
+				t.Fatalf("get_skill should remain an immediate bootstrap read: %#v", schema)
+			}
+		}
 	}
 }
 

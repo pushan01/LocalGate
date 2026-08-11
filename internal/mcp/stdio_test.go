@@ -595,24 +595,35 @@ func TestStdioGetToolSchemaKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	r2 := readResp()
 	result, _ := r2["result"].(map[string]any)
 	tools, _ := result["tools"].([]any)
-	found := false
+	foundSchema := false
+	foundSkill := false
 	for _, item := range tools {
 		m, _ := item.(map[string]any)
-		if m["name"] != "get_tool_schema" {
-			continue
+		switch m["name"] {
+		case "get_tool_schema":
+			schema, _ := m["inputSchema"].(map[string]any)
+			props, _ := schema["properties"].(map[string]any)
+			if _, ok := props["base64data"]; ok {
+				t.Fatalf("get_tool_schema should not expose base64data schema: %#v", m)
+			}
+			if _, ok := props["tool"]; !ok {
+				t.Fatalf("get_tool_schema should preserve tool property: %#v", m)
+			}
+			foundSchema = true
+		case "get_skill":
+			schema, _ := m["inputSchema"].(map[string]any)
+			props, _ := schema["properties"].(map[string]any)
+			if _, ok := props["base64data"]; ok {
+				t.Fatalf("get_skill should not expose base64data schema: %#v", m)
+			}
+			if _, ok := props["name"]; !ok {
+				t.Fatalf("get_skill should preserve name property: %#v", m)
+			}
+			foundSkill = true
 		}
-		schema, _ := m["inputSchema"].(map[string]any)
-		props, _ := schema["properties"].(map[string]any)
-		if _, ok := props["base64data"]; ok {
-			t.Fatalf("get_tool_schema should not expose base64data schema: %#v", m)
-		}
-		if _, ok := props["tool"]; !ok {
-			t.Fatalf("get_tool_schema should preserve tool property: %#v", m)
-		}
-		found = true
 	}
-	if !found {
-		t.Fatalf("get_tool_schema not found in tools/list: %#v", r2)
+	if !foundSchema || !foundSkill {
+		t.Fatalf("bootstrap schemas not found in tools/list: %#v", r2)
 	}
 
 	_ = inW.Close()
@@ -731,7 +742,7 @@ func TestStdioToolHTTPModeOnlyListsThreeTools(t *testing.T) {
 	writeLine(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 	r2 := readResp()
 	body := mustJSON(r2)
-	if !bytes.Contains(body, []byte("get_startup_instructions")) || !bytes.Contains(body, []byte("get_temporary_access_token")) || !bytes.Contains(body, []byte("get_tool_schema")) {
+	if !bytes.Contains(body, []byte("get_startup_instructions")) || !bytes.Contains(body, []byte("get_skill")) || !bytes.Contains(body, []byte("get_temporary_access_token")) || !bytes.Contains(body, []byte("get_tool_schema")) {
 		t.Fatalf("missing minimal tools: %v", r2)
 	}
 	if bytes.Contains(body, []byte("task_status")) || bytes.Contains(body, []byte("run_command")) {

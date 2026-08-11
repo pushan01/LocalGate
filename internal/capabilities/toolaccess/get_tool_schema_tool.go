@@ -63,7 +63,7 @@ func (t getToolSchemaTool) Execute(ctx context.Context, ic core.InvokeContext, a
 
 func isBootstrapTool(name string) bool {
 	switch name {
-	case "get_startup_instructions", "get_temporary_access_token", "get_tool_schema":
+	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
 		return true
 	default:
 		return false

@@ -2,6 +2,8 @@ package meta
 
 import (
 	"bytes"
+	"embed"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,10 +20,15 @@ type skillFrontmatter struct {
 
 const skillPromptDescriptionMaxRunes = 180
 
+//go:embed builtin_skills/*/SKILL.md
+var builtinSkillsFS embed.FS
+
 type skill struct {
 	Name                   string
 	Description            string
 	FilePath               string
+	Source                 string
+	Content                string
 	DisableModelInvocation bool
 }
 
@@ -30,12 +37,13 @@ func loadAllSkills(cwd string) ([]string, []skill) {
 	seen := make(map[string]bool)
 	var roots []string
 
-	addSkills := func(dir string) {
+	addSkills := func(dir, source string) {
 		if strings.TrimSpace(dir) == "" {
 			return
 		}
 		roots = append(roots, dir)
 		for _, s := range loadSkills(dir) {
+			s.Source = source
 			if !seen[s.Name] {
 				seen[s.Name] = true
 				allSkills = append(allSkills, s)
@@ -44,10 +52,10 @@ func loadAllSkills(cwd string) ([]string, []skill) {
 	}
 
 	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
-		addSkills(filepath.Join(homeDir, ".agents", "skills"))
+		addSkills(filepath.Join(homeDir, ".agents", "skills"), "global")
 	}
 	if strings.TrimSpace(cwd) != "" {
-		addSkills(filepath.Join(cwd, ".agents", "skills"))
+		addSkills(filepath.Join(cwd, ".agents", "skills"), "workspace")
 	}
 
 	return roots, allSkills
@@ -112,6 +120,10 @@ func parseSkillFile(path string) *skill {
 	if err != nil {
 		return nil
 	}
+	return parseSkillContent(content, filepath.Base(filepath.Dir(path)), path)
+}
+
+func parseSkillContent(content []byte, fallbackName, path string) *skill {
 
 	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 	parts := bytes.SplitN(content, []byte("---\n"), 3)
@@ -126,13 +138,14 @@ func parseSkillFile(path string) *skill {
 
 	name := strings.TrimSpace(fm.Name)
 	if name == "" {
-		name = filepath.Base(filepath.Dir(path))
+		name = strings.TrimSpace(fallbackName)
 	}
 
 	return &skill{
 		Name:                   name,
 		Description:            strings.TrimSpace(fm.Description),
 		FilePath:               path,
+		Content:                strings.TrimSpace(string(parts[2])),
 		DisableModelInvocation: fm.DisableModelInvocation,
 	}
 }
@@ -140,20 +153,127 @@ func parseSkillFile(path string) *skill {
 func visibleSkillsForPrompt(cwd string) ([]string, []map[string]any) {
 	roots, loaded := loadAllSkills(cwd)
 	visible := make([]map[string]any, 0, len(loaded))
+	reserved := builtinSkillNames()
 	for _, s := range loaded {
 		if s.DisableModelInvocation {
+			continue
+		}
+		if _, ok := reserved[s.Name]; ok {
 			continue
 		}
 		visible = append(visible, map[string]any{
 			"name":        s.Name,
 			"description": summarizeSkillDescription(s.Description),
 			"location":    s.FilePath,
+			"source":      s.Source,
+			"loader":      "read_file",
 		})
 	}
 	slices.SortFunc(visible, func(a, b map[string]any) int {
 		return strings.Compare(fmtString(a["name"]), fmtString(b["name"]))
 	})
 	return roots, visible
+}
+
+func loadBuiltinSkills() []skill {
+	paths, err := fs.Glob(builtinSkillsFS, "builtin_skills/*/SKILL.md")
+	if err != nil {
+		return nil
+	}
+	slices.Sort(paths)
+	loaded := make([]skill, 0, len(paths))
+	for _, path := range paths {
+		content, err := builtinSkillsFS.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		fallback := filepath.Base(filepath.Dir(path))
+		s := parseSkillContent(content, fallback, "builtin://"+fallback+"/SKILL.md")
+		if s == nil {
+			continue
+		}
+		s.Source = "builtin"
+		loaded = append(loaded, *s)
+	}
+	return loaded
+}
+
+func builtinSkillByName(name string) (skill, bool) {
+	name = strings.TrimSpace(name)
+	for _, s := range loadBuiltinSkills() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return skill{}, false
+}
+
+func builtinSkillNames() map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, s := range loadBuiltinSkills() {
+		names[s.Name] = struct{}{}
+	}
+	return names
+}
+
+func visibleBuiltinSkillsForPrompt(hasTools map[string]any, opts StartupPromptOptions) []map[string]any {
+	visible := make([]map[string]any, 0)
+	for _, s := range loadBuiltinSkills() {
+		if s.DisableModelInvocation || !builtinSkillRelevant(s.Name, hasTools, opts) {
+			continue
+		}
+		visible = append(visible, map[string]any{
+			"name":        s.Name,
+			"description": summarizeSkillDescription(s.Description),
+			"location":    s.FilePath,
+			"source":      "builtin",
+			"loader":      "get_skill",
+		})
+	}
+	slices.SortFunc(visible, func(a, b map[string]any) int {
+		return strings.Compare(fmtString(a["name"]), fmtString(b["name"]))
+	})
+	return visible
+}
+
+func builtinSkillRelevant(name string, hasTools map[string]any, opts StartupPromptOptions) bool {
+	switch name {
+	case "localgate-deployment":
+		return hasAnyVisibleTool(hasTools,
+			"deploy_tool", "list_deployments", "delete_deployment", "set_deployment_access",
+			"get_deployment", "get_deployment_logs", "start_deployment", "stop_deployment",
+			"restart_deployment", "list_deployment_releases", "rollback_deployment",
+		)
+	case "localgate-file-transfer":
+		return hasAnyVisibleTool(hasTools, "upload_file", "export_file", "create_upload_token", "create_download_token")
+	case "localgate-task-session":
+		return hasAnyVisibleTool(hasTools, "run_command", "exec_command", "write_stdin", "read_thread_terminal") || !opts.ToolHTTPMode
+	case "localgate-tool-http":
+		return opts.ToolHTTPMode
+	case "localgate-mcp-relay":
+		return !opts.ToolHTTPMode && len(opts.MCPServers) > 0
+	default:
+		return true
+	}
+}
+
+func mergeSkillIndexes(builtin, external []map[string]any) []map[string]any {
+	merged := make([]map[string]any, 0, len(builtin)+len(external))
+	seen := make(map[string]bool, len(builtin)+len(external))
+	for _, group := range [][]map[string]any{builtin, external} {
+		for _, item := range group {
+			name := fmtString(item["name"])
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			merged = append(merged, item)
+		}
+	}
+	slices.SortFunc(merged, func(a, b map[string]any) int {
+		return strings.Compare(fmtString(a["name"]), fmtString(b["name"]))
+	})
+	return merged
 }
 
 func summarizeSkillDescription(description string) string {

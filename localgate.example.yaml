@@ -33,6 +33,7 @@ admin:
         tools:
           - read_file
           - get_startup_instructions
+          - get_skill
           - task_status
           - task_logs
           - task_result
@@ -99,9 +100,9 @@ workspaces:
     # 可用于屏蔽 workspace 内不应访问的绝对路径。
     path_denylist: []
 
-    # 仅允许传入明确需要的环境变量。
+    # 仅允许传入明确需要的环境变量。LocalGate 会始终继承服务进程 PATH；
+    # 只有需要允许请求覆盖 PATH 时，才应把 PATH 放进 env_allowlist。
     env_allowlist:
-      - PATH
       - HOME
       - TMPDIR
 

@@ -63,7 +63,7 @@ func (s *Server) registerCoreTools() {
 			mcpTool := newToolWithRawSchema(
 				t.Name(),
 				t.Description(),
-				mcpExposedSchema(t.Schema(), s.App.ToolArguments.EnableBase64 && t.Name() != "upload_file" && t.Name() != "get_startup_instructions" && t.Name() != "get_tool_schema", t.Name() != "get_startup_instructions"),
+				mcpExposedSchema(t.Schema(), s.App.ToolArguments.EnableBase64 && t.Name() != "upload_file" && t.Name() != "get_startup_instructions" && t.Name() != "get_skill" && t.Name() != "get_tool_schema", t.Name() != "get_startup_instructions" && t.Name() != "get_skill"),
 				core.ToolMetadata(t),
 			)
 			applyCoreToolExtensions(&mcpTool, t)
@@ -126,7 +126,7 @@ func (s *Server) registerCoreTools() {
 
 func isBootstrapTool(name string) bool {
 	switch name {
-	case "get_startup_instructions", "get_temporary_access_token", "get_tool_schema":
+	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
 		return true
 	default:
 		return false

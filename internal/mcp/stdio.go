@@ -133,7 +133,7 @@ func (s *Server) handleToolsList(req request) response {
 			item := map[string]any{
 				"name":        name,
 				"description": t.Description(),
-				"inputSchema": toolargs.MCPInputSchema(t.Schema(), s.App.ToolArguments.EnableBase64 && name != "upload_file" && name != "get_startup_instructions" && name != "get_tool_schema"),
+				"inputSchema": toolargs.MCPInputSchema(t.Schema(), s.App.ToolArguments.EnableBase64 && name != "upload_file" && name != "get_startup_instructions" && name != "get_skill" && name != "get_tool_schema"),
 			}
 			if meta := core.ToolMetadata(t); len(meta) > 0 {
 				item["_meta"] = meta
@@ -290,7 +290,7 @@ func (s *Server) resourceLinkContent(wsid, toolName string, result map[string]an
 
 func isBootstrapTool(name string) bool {
 	switch name {
-	case "get_startup_instructions", "get_temporary_access_token", "get_tool_schema":
+	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
 		return true
 	default:
 		return false
