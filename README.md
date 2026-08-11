@@ -515,7 +515,7 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/exec \
     "cmd": "cat",
     "workspace_id": "default",
     "yield_time_ms": 100,
-    "max_output_tokens": 200
+    "max_output_items": 200
   }'
 ```
 
@@ -527,7 +527,7 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
   -d '{
     "chars": "hello\n",
     "yield_time_ms": 500,
-    "max_output_tokens": 1000
+    "max_output_items": 200
   }'
 ```
 
@@ -558,7 +558,7 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `read_thread_terminal`：读取 Session 终端缓冲区
 - `close_session`：主动终止并关闭仍在运行的 Session
 
-Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；如果旧输出已被裁剪，响应会包含 `base_offset`、`truncated=true` 和 `cursor_expired=true`。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
+Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；`has_more=true` 时继续分页读取。`buffer_truncated=true`（兼容字段 `truncated=true`）表示更老的缓冲输出已被丢弃，`cursor_expired=true` 表示传入 cursor 已早于当前 `base_offset`。优先使用 `max_output_items`（1–500）；旧 `max_output_tokens` 仅作为兼容 alias，实际限制的也是输出 item 数而不是模型 token。`read_thread_terminal` 可用 `wait_ms` 等待新输出，`write_stdin` 可用 `yield_time_ms` 在写入后等待；空 `chars` 可作为纯等待/读取。只有 `completed=true` / `output_complete=true` 才表示终态 Session 的保留输出已读到当前末尾。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
 
 ### Task 管理
 

@@ -147,8 +147,8 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 3. 已经知道目标修改内容是 patch 时用 `apply_patch`。
 4. 一次性 shell 命令用 `run_command`。
 5. 进程需要交互、长时间运行或后续还要写 stdin 时用 `exec_command`。
-6. `write_stdin` 只能在 `exec_command` 成功之后使用。
-7. 想读 session 缓冲输出但不写 stdin 时用 `read_thread_terminal`。
+6. `write_stdin` 只能在 `exec_command` 成功之后使用；空 `chars` 可以只等待/读取，不发送输入。
+7. 想读 session 缓冲输出但不写 stdin 时用 `read_thread_terminal`；可用 `wait_ms` 等待新输出，避免高频轮询。
 8. Session 不再需要时用 `close_session`；不要用已完成的 `exec_command` Task 的 `task_cancel` 代替 Session 关闭。
 
 ## `run_command` 使用指引
@@ -190,7 +190,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
   "cmd": "python3",
   "workdir": ".",
   "yield_time_ms": 200,
-  "max_output_tokens": 100,
+  "max_output_items": 100,
   "tty": true
 }
 ```
@@ -343,7 +343,8 @@ LocalGate 里的大多数普通工具调用都会包装成 task。拿到 `task_i
 2. 读取返回里的 `session_id`
 3. 保存返回里的 `next_offset`
 4. 用 `write_stdin` 继续发输入，并把上次 `next_offset` 作为 `cursor`
-5. 用 `read_thread_terminal` 只读缓冲输出，同样持续传递 `cursor`
+5. 用 `read_thread_terminal` 只读缓冲输出，同样持续传递 `cursor`；`has_more=true` 时继续翻页
+6. 只有 `completed=true` / `output_complete=true` 才表示终态进程的保留输出已经追平；`buffer_truncated`/`cursor_expired` 分别表示旧缓冲被裁剪/客户端 cursor 已过期
 
 不要对 session 工具使用 `task_status` 或 `task_result`。
 

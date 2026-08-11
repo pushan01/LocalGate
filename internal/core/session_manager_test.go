@@ -1,7 +1,10 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -42,6 +45,194 @@ func TestSessionManagerClientCursorDoesNotRepeatPages(t *testing.T) {
 	}
 	if len(first.Items) != 2 || len(second.Items) != 1 || second.Items[0].Data != "c" {
 		t.Fatalf("unexpected pages: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestSessionManagerReportsHasMoreForPagedRead(t *testing.T) {
+	m := NewSessionManager()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	for _, value := range []string{"a", "b", "c"} {
+		_ = m.AppendOutput(s.ID, "stdout", value)
+	}
+	_, first, err := m.ReadSnapshotForWorkspace(s.ID, "ws", 0, 2)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if !first.HasMore || first.Truncated || first.BufferTruncated || first.NextOffset != 2 {
+		t.Fatalf("unexpected first page metadata: %+v", first)
+	}
+	_, second, err := m.ReadSnapshotForWorkspace(s.ID, "ws", first.NextOffset, 2)
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if second.HasMore || len(second.Items) != 1 || second.NextOffset != 3 {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+}
+
+func TestSessionManagerWaitReadWakesOnOutput(t *testing.T) {
+	m := NewSessionManager()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	if err := m.Start(s.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = m.AppendOutput(s.ID, "stdout", "ready")
+	}()
+	start := time.Now()
+	_, read, err := m.WaitReadForWorkspace(context.Background(), s.ID, "ws", 0, 10, time.Second)
+	if err != nil {
+		t.Fatalf("wait read: %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("wait read did not wake promptly")
+	}
+	if len(read.Items) != 1 || read.Items[0].Data != "ready" {
+		t.Fatalf("unexpected read: %+v", read)
+	}
+}
+
+func TestSessionManagerEmptyWriteAllowedAfterExit(t *testing.T) {
+	m := NewSessionManager()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	if err := m.Start(s.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := m.Finish(s.ID, 0, nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if err := m.WriteStdinForWorkspaceContext(context.Background(), s.ID, "ws", ""); err != nil {
+		t.Fatalf("empty write on exited session: %v", err)
+	}
+	if err := m.WriteStdinForWorkspaceContext(context.Background(), s.ID, "ws", "x"); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("non-empty write should fail on exited session: %v", err)
+	}
+}
+
+type serializedWriteProbe struct {
+	mu      sync.Mutex
+	active  bool
+	overlap bool
+}
+
+func (w *serializedWriteProbe) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	if w.active {
+		w.overlap = true
+	}
+	w.active = true
+	w.mu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+	w.mu.Lock()
+	w.active = false
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *serializedWriteProbe) Close() error { return nil }
+
+func TestSessionManagerSerializesConcurrentStdinWrites(t *testing.T) {
+	m := NewSessionManager()
+	probe := &serializedWriteProbe{}
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: probe})
+	if err := m.Start(s.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	var wg sync.WaitGroup
+	for _, chars := range []string{"first", "second"} {
+		wg.Add(1)
+		go func(value string) {
+			defer wg.Done()
+			if err := m.WriteStdinForWorkspace(s.ID, "ws", value); err != nil {
+				t.Errorf("write %q: %v", value, err)
+			}
+		}(chars)
+	}
+	wg.Wait()
+	probe.mu.Lock()
+	overlap := probe.overlap
+	probe.mu.Unlock()
+	if overlap {
+		t.Fatal("stdin writes overlapped")
+	}
+}
+
+type blockingSessionWriter struct {
+	startedOnce sync.Once
+	closedOnce  sync.Once
+	started     chan struct{}
+	closed      chan struct{}
+}
+
+func newBlockingSessionWriter() *blockingSessionWriter {
+	return &blockingSessionWriter{started: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (w *blockingSessionWriter) Write([]byte) (int, error) {
+	w.startedOnce.Do(func() { close(w.started) })
+	<-w.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingSessionWriter) Close() error {
+	w.closedOnce.Do(func() { close(w.closed) })
+	return nil
+}
+
+func TestSessionManagerPreCanceledWriteDoesNotReachStdin(t *testing.T) {
+	m := NewSessionManager()
+	probe := &serializedWriteProbe{}
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: probe})
+	if err := m.Start(s.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.WriteStdinForWorkspaceContext(ctx, s.ID, "ws", "must-not-write"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	probe.mu.Lock()
+	active := probe.active
+	overlap := probe.overlap
+	probe.mu.Unlock()
+	if active || overlap {
+		t.Fatal("pre-canceled stdin request reached writer")
+	}
+}
+
+func TestSessionManagerCanceledBlockingWriteClosesSession(t *testing.T) {
+	m := NewSessionManager()
+	writer := newBlockingSessionWriter()
+	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: writer, Close: writer.Close})
+	if err := m.Start(s.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- m.WriteStdinForWorkspaceContext(ctx, s.ID, "ws", "blocked")
+	}()
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("write did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled write did not return")
+	}
+	got, err := m.GetForWorkspace(s.ID, "ws")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != SessionClosed {
+		t.Fatalf("session not closed after canceled partial write: %s", got.Status)
 	}
 }
 

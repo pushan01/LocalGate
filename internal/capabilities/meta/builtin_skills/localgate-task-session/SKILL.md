@@ -40,6 +40,13 @@ If approval is rejected, canceled, or expires, report that terminal outcome rath
 
 ## Session terminal cursors
 
-When session output APIs return an absolute cursor/offset such as `next_offset`, preserve it and use it for the next read. If the buffer reports fields such as `base_offset`, `truncated`, or `cursor_expired`, treat them as evidence that older buffered output is no longer available and continue from the valid offset reported by the tool.
+When session output APIs return an absolute cursor/offset such as `next_offset`, preserve it and use it for the next read.
+
+- Prefer `max_output_items` for paging. `max_output_tokens` may exist as a compatibility alias but also limits output items, not model tokens.
+- Continue reading while `has_more=true`. A terminal process status can be observed before all retained output pages have been consumed; `completed=true` / `output_complete=true` means the process is terminal and the returned cursor has caught up with retained output.
+- `buffer_truncated=true` (and the compatibility field `truncated=true`) means older retained output was dropped. `cursor_expired=true` means the supplied cursor was older than the current `base_offset`; continue from the returned `next_offset`.
+- `read_thread_terminal` can use `wait_ms` to wait for new output instead of polling aggressively.
+- `write_stdin` can use `yield_time_ms` to wait for output after input. Empty `chars` performs only the wait/read step, including after the process has exited.
+- A canceled stdin write may have been partially delivered. LocalGate closes that session to avoid leaving an interactive protocol in an unknown state.
 
 Keep session access within the workspace/session context that created it, and do not guess a session id or cursor.

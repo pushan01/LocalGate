@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sort"
@@ -11,6 +12,7 @@ import (
 var ErrSessionNotFound = errors.New("session not found")
 var ErrSessionClosed = errors.New("session closed")
 var ErrSessionWorkspaceMismatch = errors.New("session workspace mismatch")
+var ErrSessionCursorInvalid = errors.New("session cursor must be non-negative")
 
 type SessionController struct {
 	Stdin io.WriteCloser
@@ -25,6 +27,7 @@ type sessionState struct {
 	nextOffset int
 	ctrl       SessionController
 	watchers   map[chan struct{}]struct{}
+	stdinMu    sync.Mutex
 }
 
 type SessionManager struct {
@@ -172,28 +175,44 @@ func (m *SessionManager) GetForWorkspace(id, workspaceID string) (Session, error
 }
 
 func (m *SessionManager) Read(id string, from int, maxItems int) (SessionReadResult, error) {
-	_ = m.Sweep(time.Now().UTC())
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st, ok := m.sessions[id]
-	if !ok {
-		return SessionReadResult{}, ErrSessionNotFound
-	}
-	return readSessionState(st, from, maxItems), nil
+	_, read, err := m.ReadSnapshot(id, from, maxItems)
+	return read, err
 }
 
 func (m *SessionManager) ReadForWorkspace(id, workspaceID string, from int, maxItems int) (SessionReadResult, error) {
+	_, read, err := m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+	return read, err
+}
+
+func (m *SessionManager) ReadSnapshot(id string, from int, maxItems int) (Session, SessionReadResult, error) {
 	_ = m.Sweep(time.Now().UTC())
+	if from < 0 {
+		return Session{}, SessionReadResult{}, ErrSessionCursorInvalid
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st, ok := m.sessions[id]
 	if !ok {
-		return SessionReadResult{}, ErrSessionNotFound
+		return Session{}, SessionReadResult{}, ErrSessionNotFound
+	}
+	return st.session, readSessionState(st, from, maxItems), nil
+}
+
+func (m *SessionManager) ReadSnapshotForWorkspace(id, workspaceID string, from int, maxItems int) (Session, SessionReadResult, error) {
+	_ = m.Sweep(time.Now().UTC())
+	if from < 0 {
+		return Session{}, SessionReadResult{}, ErrSessionCursorInvalid
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.sessions[id]
+	if !ok {
+		return Session{}, SessionReadResult{}, ErrSessionNotFound
 	}
 	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		return SessionReadResult{}, err
+		return Session{}, SessionReadResult{}, err
 	}
-	return readSessionState(st, from, maxItems), nil
+	return st.session, readSessionState(st, from, maxItems), nil
 }
 
 func readSessionState(st *sessionState, from int, maxItems int) SessionReadResult {
@@ -225,12 +244,14 @@ func readSessionState(st *sessionState, from int, maxItems int) SessionReadResul
 	st.session.LastReadAt = now
 	st.session.LastActiveAt = now
 	return SessionReadResult{
-		Items:         out,
-		NextOffset:    next,
-		BaseOffset:    base,
-		Truncated:     st.baseOffset > 0,
-		CursorExpired: cursorExpired,
-		OutputError:   st.session.OutputError,
+		Items:           out,
+		NextOffset:      next,
+		BaseOffset:      base,
+		Truncated:       st.baseOffset > 0,
+		BufferTruncated: st.baseOffset > 0,
+		CursorExpired:   cursorExpired,
+		HasMore:         next < nextAvailable,
+		OutputError:     st.session.OutputError,
 	}
 }
 
@@ -243,6 +264,41 @@ func (m *SessionManager) ReadLatest(id string, maxItems int) (SessionReadResult,
 		return SessionReadResult{}, ErrSessionNotFound
 	}
 	return readSessionState(st, st.session.LastOffset, maxItems), nil
+}
+
+func (m *SessionManager) WaitReadForWorkspace(ctx context.Context, id, workspaceID string, from, maxItems int, wait time.Duration) (Session, SessionReadResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if wait <= 0 {
+		return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+	}
+	updates, cancel, err := m.SubscribeForWorkspace(id, workspaceID)
+	if err != nil {
+		return Session{}, SessionReadResult{}, err
+	}
+	defer cancel()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		session, read, readErr := m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+		if readErr != nil {
+			return Session{}, SessionReadResult{}, readErr
+		}
+		if len(read.Items) > 0 || read.CursorExpired || read.OutputError != "" || isEnded(session.Status) {
+			return session, read, nil
+		}
+		select {
+		case <-ctx.Done():
+			return Session{}, SessionReadResult{}, ctx.Err()
+		case <-timer.C:
+			return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+		case _, open := <-updates:
+			if !open {
+				return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+			}
+		}
+	}
 }
 
 func (m *SessionManager) AppendOutput(id, stream, data string) error {
@@ -302,37 +358,52 @@ func (m *SessionManager) SetOutputError(id, stream string, err error) error {
 }
 
 func (m *SessionManager) WriteStdin(id string, chars string) error {
-	_ = m.Sweep(time.Now().UTC())
-	m.mu.Lock()
-	st, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrSessionNotFound
-	}
-	if st.session.Status == SessionClosed || st.session.Status == SessionExited || st.session.Status == SessionFailed {
-		m.mu.Unlock()
-		return ErrSessionClosed
-	}
-	stdin := st.ctrl.Stdin
-	m.mu.Unlock()
-	if stdin == nil {
-		return ErrSessionClosed
-	}
-	if chars == "" {
-		return nil
-	}
-	now := time.Now().UTC()
-	m.mu.Lock()
-	if st2, ok := m.sessions[id]; ok {
-		st2.session.LastInputAt = now
-		st2.session.LastActiveAt = now
-	}
-	m.mu.Unlock()
-	_, err := io.WriteString(stdin, chars)
-	return err
+	return m.writeStdin(id, "", chars)
 }
 
 func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) error {
+	return m.writeStdin(id, workspaceID, chars)
+}
+
+func (m *SessionManager) WriteStdinForWorkspaceContext(ctx context.Context, id, workspaceID, chars string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if chars == "" {
+		return m.writeStdin(id, workspaceID, chars)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- m.writeStdin(id, workspaceID, chars)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// Prefer a write that completed concurrently with cancellation; in that
+		// case all input was delivered and the session does not need recovery.
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
+		// Once an in-flight stdin write is canceled, partial delivery is
+		// possible. Closing the session is safer than leaving a blocked or
+		// protocol-corrupted interactive process behind, and it unblocks
+		// pipe/PTY writes.
+		_, _ = m.CloseForWorkspace(id, workspaceID)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		return ctx.Err()
+	}
+}
+
+func (m *SessionManager) writeStdin(id, workspaceID, chars string) error {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
 	st, ok := m.sessions[id]
@@ -344,7 +415,30 @@ func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) e
 		m.mu.Unlock()
 		return err
 	}
-	if st.session.Status == SessionClosed || st.session.Status == SessionExited || st.session.Status == SessionFailed {
+	if chars == "" {
+		m.mu.Unlock()
+		return nil
+	}
+	if isEnded(st.session.Status) {
+		m.mu.Unlock()
+		return ErrSessionClosed
+	}
+	m.mu.Unlock()
+
+	st.stdinMu.Lock()
+	defer st.stdinMu.Unlock()
+
+	m.mu.Lock()
+	current, ok := m.sessions[id]
+	if !ok || current != st {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	if isEnded(st.session.Status) {
 		m.mu.Unlock()
 		return ErrSessionClosed
 	}
@@ -353,8 +447,9 @@ func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) e
 	if stdin == nil {
 		return ErrSessionClosed
 	}
-	if chars == "" {
-		return nil
+	_, err := io.WriteString(stdin, chars)
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
 	m.mu.Lock()
@@ -363,8 +458,7 @@ func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) e
 		st2.session.LastActiveAt = now
 	}
 	m.mu.Unlock()
-	_, err := io.WriteString(stdin, chars)
-	return err
+	return nil
 }
 
 func (m *SessionManager) Finish(id string, exitCode int, err error) error {

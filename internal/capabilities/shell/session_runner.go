@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,15 +50,10 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 		return r.startTTYSession(execCmd, ic, command, resolvedCWD, shPath, login)
 	}
 	execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	stdout, err := execCmd.StdoutPipe()
-	if err != nil {
-		return core.Session{}, err
-	}
-	stderr, err := execCmd.StderrPipe()
-	if err != nil {
-		return core.Session{}, err
-	}
+	stdout := newSessionOutputWriter(r.Sessions, "", "stdout")
+	stderr := newSessionOutputWriter(r.Sessions, "", "stderr")
+	execCmd.Stdout = stdout
+	execCmd.Stderr = stderr
 	stdin, err := execCmd.StdinPipe()
 	if err != nil {
 		return core.Session{}, err
@@ -77,6 +74,8 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 		Login:           login,
 		TTY:             tty,
 	}, core.SessionController{Stdin: stdin})
+	stdout.sessionID = session.ID
+	stderr.sessionID = session.ID
 
 	if err := execCmd.Start(); err != nil {
 		_ = stdin.Close()
@@ -98,11 +97,13 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 		return core.Session{}, err
 	}
 
-	go r.streamSessionOutput(session.ID, "stdout", stdout)
-	go r.streamSessionOutput(session.ID, "stderr", stderr)
 	go func() {
 		waitErr := execCmd.Wait()
 		_ = stdin.Close()
+		flushErr := errors.Join(stdout.Flush(), stderr.Flush())
+		if waitErr == nil && flushErr != nil {
+			waitErr = flushErr
+		}
 		if waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
 				_ = r.Sessions.Finish(session.ID, -1, waitErr)
@@ -155,9 +156,15 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext,
 		_ = ptyFile.Close()
 		return core.Session{}, err
 	}
-	go r.streamSessionOutput(session.ID, "stdout", ptyFile)
+	var outputWG sync.WaitGroup
+	outputWG.Add(1)
+	go func() {
+		defer outputWG.Done()
+		r.streamSessionOutput(session.ID, "stdout", ptyFile)
+	}()
 	go func() {
 		waitErr := execCmd.Wait()
+		outputWG.Wait()
 		_ = ptyFile.Close()
 		if waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
@@ -173,25 +180,14 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext,
 }
 
 func (r SessionRunner) WriteStdin(sessionID, chars string, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
-	return r.WriteStdinForWorkspace(sessionID, r.WS.ID, chars, 0, wait, maxItems)
+	return r.WriteStdinForWorkspace(context.Background(), sessionID, r.WS.ID, chars, 0, wait, maxItems)
 }
 
-func (r SessionRunner) WriteStdinForWorkspace(sessionID, workspaceID, chars string, cursor int, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
-	if err := r.Sessions.WriteStdinForWorkspace(sessionID, workspaceID, chars); err != nil {
+func (r SessionRunner) WriteStdinForWorkspace(ctx context.Context, sessionID, workspaceID, chars string, cursor int, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
+	if err := r.Sessions.WriteStdinForWorkspaceContext(ctx, sessionID, workspaceID, chars); err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
-	if wait > 0 {
-		time.Sleep(wait)
-	}
-	read, err := r.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
-	if err != nil {
-		return core.Session{}, core.SessionReadResult{}, err
-	}
-	s, err := r.Sessions.GetForWorkspace(sessionID, workspaceID)
-	if err != nil {
-		return core.Session{}, core.SessionReadResult{}, err
-	}
-	return s, read, nil
+	return r.Sessions.WaitReadForWorkspace(ctx, sessionID, workspaceID, cursor, maxItems, wait)
 }
 
 func (r SessionRunner) ReadSession(sessionID string, maxItems int) (core.Session, core.SessionReadResult, error) {
@@ -199,15 +195,11 @@ func (r SessionRunner) ReadSession(sessionID string, maxItems int) (core.Session
 }
 
 func (r SessionRunner) ReadSessionForWorkspace(sessionID, workspaceID string, cursor, maxItems int) (core.Session, core.SessionReadResult, error) {
-	read, err := r.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
-	if err != nil {
-		return core.Session{}, core.SessionReadResult{}, err
-	}
-	s, err := r.Sessions.GetForWorkspace(sessionID, workspaceID)
-	if err != nil {
-		return core.Session{}, core.SessionReadResult{}, err
-	}
-	return s, read, nil
+	return r.Sessions.ReadSnapshotForWorkspace(sessionID, workspaceID, cursor, maxItems)
+}
+
+func (r SessionRunner) WaitReadSessionForWorkspace(ctx context.Context, sessionID, workspaceID string, cursor, maxItems int, wait time.Duration) (core.Session, core.SessionReadResult, error) {
+	return r.Sessions.WaitReadForWorkspace(ctx, sessionID, workspaceID, cursor, maxItems, wait)
 }
 
 func (r SessionRunner) CloseSession(sessionID string) (core.Session, error) {
@@ -231,13 +223,83 @@ func (r SessionRunner) streamSessionOutput(sessionID, stream string, src io.Read
 		switch {
 		case err == nil, errors.Is(err, bufio.ErrBufferFull):
 			continue
-		case errors.Is(err, io.EOF):
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), errors.Is(err, syscall.EIO):
 			return
 		default:
 			_ = r.Sessions.SetOutputError(sessionID, stream, err)
 			return
 		}
 	}
+}
+
+const sessionOutputChunkBytes = 32 * 1024
+
+type sessionOutputWriter struct {
+	sessions  *core.SessionManager
+	sessionID string
+	stream    string
+	mu        sync.Mutex
+	pending   []byte
+}
+
+func newSessionOutputWriter(sessions *core.SessionManager, sessionID, stream string) *sessionOutputWriter {
+	return &sessionOutputWriter{sessions: sessions, sessionID: sessionID, stream: stream}
+}
+
+func (w *sessionOutputWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	if err := w.emitReadyLocked(); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (w *sessionOutputWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return nil
+	}
+	fragment := append([]byte(nil), w.pending...)
+	w.pending = w.pending[:0]
+	return w.sessions.AppendOutputChunk(w.sessionID, w.stream, string(fragment), false)
+}
+
+func (w *sessionOutputWriter) emitReadyLocked() error {
+	for {
+		if newline := bytes.IndexByte(w.pending, '\n'); newline >= 0 {
+			line := append([]byte(nil), w.pending[:newline]...)
+			w.pending = w.pending[newline+1:]
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			if err := w.emitLineLocked(line); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(w.pending) > sessionOutputChunkBytes {
+			chunk := append([]byte(nil), w.pending[:sessionOutputChunkBytes]...)
+			w.pending = w.pending[sessionOutputChunkBytes:]
+			if err := w.sessions.AppendOutputChunk(w.sessionID, w.stream, string(chunk), true); err != nil {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+}
+
+func (w *sessionOutputWriter) emitLineLocked(line []byte) error {
+	for len(line) > sessionOutputChunkBytes {
+		if err := w.sessions.AppendOutputChunk(w.sessionID, w.stream, string(line[:sessionOutputChunkBytes]), true); err != nil {
+			return err
+		}
+		line = line[sessionOutputChunkBytes:]
+	}
+	return w.sessions.AppendOutputChunk(w.sessionID, w.stream, string(line), false)
 }
 
 func terminateProcess(pid int) {

@@ -47,10 +47,10 @@ func (a *API) writeFileTerminalStream(w http.ResponseWriter, r *http.Request, se
 			forceEvent = false
 		}
 		cursor = payload.NextOffset
-		if terminalSessionEnded(payload.Session.Status) && len(payload.Items) < maxItems {
+		if payload.Completed {
 			return
 		}
-		if len(payload.Items) == maxItems {
+		if payload.HasMore {
 			continue
 		}
 

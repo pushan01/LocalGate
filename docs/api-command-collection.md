@@ -554,7 +554,7 @@ curl -N "http://127.0.0.1:8000/tasks/<task_id>/events/stream"
   "cmd": "npm run dev",
   "workdir": ".",
   "yield_time_ms": 1000,
-  "max_output_tokens": 4000,
+  "max_output_items": 200,
   "shell": "/bin/zsh",
   "login": false,
   "tty": true,
@@ -593,7 +593,7 @@ curl -X POST "http://127.0.0.1:8000/sessions/exec" \
     "cmd": "cat",
     "workspace_id": "default",
     "yield_time_ms": 100,
-    "max_output_tokens": 200
+    "max_output_items": 200
   }'
 ```
 
@@ -621,7 +621,7 @@ curl "http://127.0.0.1:8000/sessions/<session_id>"
 {
   "chars": "help\n",
   "yield_time_ms": 1000,
-  "max_output_tokens": 4000
+  "max_output_items": 200
 }
 ```
 
@@ -637,7 +637,7 @@ curl -X POST "http://127.0.0.1:8000/sessions/<session_id>/stdin" \
   -d '{
     "chars": "",
     "yield_time_ms": 1000,
-    "max_output_tokens": 4000
+    "max_output_items": 200
   }'
 ```
 
@@ -649,12 +649,13 @@ curl -X POST "http://127.0.0.1:8000/sessions/<session_id>/stdin" \
 
 **查询参数**
 
-- `max_output_tokens`
+- `max_output_items`
+- `wait_ms`：可选，等待新输出或 session 终态；旧 `max_output_tokens` 仍作为兼容 alias
 
 **示例**
 
 ```bash
-curl "http://127.0.0.1:8000/sessions/<session_id>/terminal?max_output_tokens=4000"
+curl "http://127.0.0.1:8000/sessions/<session_id>/terminal?max_output_items=200&wait_ms=1000"
 ```
 
 ### 13. 关闭 session
@@ -1165,7 +1166,7 @@ curl -X POST "http://127.0.0.1:8000/mcp" \
       "arguments": {
         "cmd": "echo hello",
         "yield_time_ms": 200,
-        "max_output_tokens": 200
+        "max_output_items": 200
       }
     }
   }'
@@ -1464,7 +1465,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
   "cmd": "npm run dev",
   "workdir": ".",
   "yield_time_ms": 1000,
-  "max_output_tokens": 4000,
+  "max_output_items": 200,
   "shell": "/bin/zsh",
   "login": false,
   "tty": true,
@@ -1481,7 +1482,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
   "session_id": "session-id",
   "chars": "",
   "yield_time_ms": 1000,
-  "max_output_tokens": 4000,
+  "max_output_items": 200,
   "cursor": 120
 }
 ```
@@ -1491,7 +1492,8 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 ```json
 {
   "session_id": "session-id",
-  "max_output_tokens": 4000,
+  "max_output_items": 200,
+  "wait_ms": 1000,
   "cursor": 120
 }
 ```
@@ -1504,7 +1506,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 }
 ```
 
-每次保存返回的 `next_offset` 并作为下一次 `cursor`；Session 必须通过其所属 workspace 的工具或 `/sessions/*?workspace_id=...` 路由访问。
+每次保存返回的 `next_offset` 并作为下一次 `cursor`；`has_more=true` 时继续读取，`completed=true` / `output_complete=true` 表示终态 Session 的保留输出已追平。`buffer_truncated=true` 表示旧缓冲已被裁剪，`cursor_expired=true` 表示传入 cursor 已失效。优先使用 `max_output_items`；`max_output_tokens` 仅是兼容 alias，并不按模型 token 计数。Session 必须通过其所属 workspace 的工具或 `/sessions/*?workspace_id=...` 路由访问。
 
 ### `task_status`
 

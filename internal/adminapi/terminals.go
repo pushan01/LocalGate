@@ -18,6 +18,7 @@ const (
 	defaultTerminalReadItems = 200
 	maxTerminalReadItems     = 500
 	maxTerminalCommandBytes  = 8 << 10
+	maxTerminalInputBytes    = 64 << 10
 	maxTerminalWaitMS        = 1000
 )
 
@@ -171,19 +172,21 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be a non-negative integer", nil)
 			return
 		}
-		if err := a.App.Sessions.WriteStdinForWorkspace(sessionID, req.WorkspaceID, req.Chars); err != nil {
+		if len([]byte(req.Chars)) > maxTerminalInputBytes {
+			server.WriteError(w, http.StatusBadRequest, "terminal_input_too_large", "terminal input exceeds 64 KiB", nil)
+			return
+		}
+		if err := a.App.Sessions.WriteStdinForWorkspaceContext(r.Context(), sessionID, req.WorkspaceID, req.Chars); err != nil {
 			writeFileTerminalError(w, err)
 			return
 		}
-		if wait := clampInt(req.WaitMS, 0, maxTerminalWaitMS); wait > 0 {
-			select {
-			case <-r.Context().Done():
-				server.WriteError(w, http.StatusRequestTimeout, "request_canceled", r.Context().Err().Error(), nil)
-				return
-			case <-time.After(time.Duration(wait) * time.Millisecond):
-			}
+		wait := time.Duration(clampInt(req.WaitMS, 0, maxTerminalWaitMS)) * time.Millisecond
+		session, read, err := a.App.Sessions.WaitReadForWorkspace(r.Context(), sessionID, req.WorkspaceID, req.Cursor, terminalReadItems(req.MaxOutputItems), wait)
+		if err != nil {
+			writeFileTerminalError(w, err)
+			return
 		}
-		a.writeFileTerminalRead(w, sessionID, req.WorkspaceID, req.Cursor, terminalReadItems(req.MaxOutputItems))
+		server.WriteJSON(w, http.StatusOK, fileTerminalReadPayload(session, read))
 	case "close":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -221,33 +224,40 @@ func (a *API) writeFileTerminalRead(w http.ResponseWriter, sessionID, workspaceI
 }
 
 type fileTerminalReadResponse struct {
-	Session       core.Session         `json:"session"`
-	Items         []core.SessionOutput `json:"items"`
-	NextOffset    int                  `json:"next_offset"`
-	BaseOffset    int                  `json:"base_offset"`
-	CursorExpired bool                 `json:"cursor_expired,omitempty"`
-	Truncated     bool                 `json:"truncated"`
-	OutputError   string               `json:"output_error,omitempty"`
+	Session         core.Session         `json:"session"`
+	Items           []core.SessionOutput `json:"items"`
+	NextOffset      int                  `json:"next_offset"`
+	BaseOffset      int                  `json:"base_offset"`
+	CursorExpired   bool                 `json:"cursor_expired,omitempty"`
+	Truncated       bool                 `json:"truncated"`
+	BufferTruncated bool                 `json:"buffer_truncated"`
+	HasMore         bool                 `json:"has_more"`
+	Completed       bool                 `json:"completed"`
+	OutputError     string               `json:"output_error,omitempty"`
 }
 
 func (a *API) readFileTerminal(sessionID, workspaceID string, cursor, maxItems int) (fileTerminalReadResponse, error) {
-	read, err := a.App.Sessions.ReadForWorkspace(sessionID, workspaceID, cursor, maxItems)
+	session, read, err := a.App.Sessions.ReadSnapshotForWorkspace(sessionID, workspaceID, cursor, maxItems)
 	if err != nil {
 		return fileTerminalReadResponse{}, err
 	}
-	session, err := a.App.Sessions.GetForWorkspace(sessionID, workspaceID)
-	if err != nil {
-		return fileTerminalReadResponse{}, err
-	}
+	return fileTerminalReadPayload(session, read), nil
+}
+
+func fileTerminalReadPayload(session core.Session, read core.SessionReadResult) fileTerminalReadResponse {
+	ended := terminalSessionEnded(session.Status)
 	return fileTerminalReadResponse{
-		Session:       session,
-		Items:         read.Items,
-		NextOffset:    read.NextOffset,
-		BaseOffset:    read.BaseOffset,
-		CursorExpired: read.CursorExpired,
-		Truncated:     read.Truncated,
-		OutputError:   read.OutputError,
-	}, nil
+		Session:         session,
+		Items:           read.Items,
+		NextOffset:      read.NextOffset,
+		BaseOffset:      read.BaseOffset,
+		CursorExpired:   read.CursorExpired,
+		Truncated:       read.Truncated,
+		BufferTruncated: read.BufferTruncated,
+		HasMore:         read.HasMore,
+		Completed:       ended && !read.HasMore,
+		OutputError:     read.OutputError,
+	}
 }
 
 func writeFileTerminalSubmission(w http.ResponseWriter, submission app.Submission, directory filebrowser.DirectoryContext) {

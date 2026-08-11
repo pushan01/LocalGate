@@ -141,6 +141,138 @@ func TestSessionRunnerStartAndRead(t *testing.T) {
 	}
 }
 
+func TestSessionOutputWriterPreservesLongLineAndNewlines(t *testing.T) {
+	sessions := core.NewSessionManagerWithLimit(1000)
+	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	w := newSessionOutputWriter(sessions, s.ID, "stdout")
+	want := strings.Repeat("x", sessionOutputChunkBytes*2+17) + "\nsecond\nthird"
+	for start := 0; start < len(want); start += 7000 {
+		end := start + 7000
+		if end > len(want) {
+			end = len(want)
+		}
+		if _, err := w.Write([]byte(want[start:end])); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	_, read, err := sessions.ReadSnapshotForWorkspace(s.ID, "ws", 0, 100)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := joinSessionOutput(read.Items); got != want {
+		t.Fatalf("output changed: got=%d bytes want=%d bytes", len(got), len(want))
+	}
+}
+
+func TestSessionRunnerExitStatusMeansOutputDrained(t *testing.T) {
+	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}
+	sessions := core.NewSessionManager()
+	r := SessionRunner{WS: ws, Sessions: sessions}
+	s, err := r.StartSession(context.Background(), "tester", "printf 'tail-output'", "", nil, "", false, false)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		current, read, readErr := sessions.ReadSnapshotForWorkspace(s.ID, "ws", 0, 10)
+		if readErr != nil {
+			t.Fatalf("read: %v", readErr)
+		}
+		if current.Status == core.SessionExited {
+			if got := joinSessionOutput(read.Items); got != "tail-output" {
+				t.Fatalf("session exited before final output was drained: %q", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session did not exit: %+v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestReadThreadTerminalToolPagesTerminalOutputUntilComplete(t *testing.T) {
+	sessions := core.NewSessionManager()
+	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	for _, value := range []string{"one", "two", "three"} {
+		if err := sessions.AppendOutput(s.ID, "stdout", value); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if err := sessions.Finish(s.ID, 0, nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	tool := NewReadThreadTerminalTool(config.Workspace{ID: "ws"}, sessions)
+	first, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"session_id":       s.ID,
+		"cursor":           0,
+		"max_output_items": 2,
+	})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if first["has_more"] != true || first["completed"] != false || first["next_offset"] != 2 {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+	second, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"session_id":       s.ID,
+		"cursor":           2,
+		"max_output_items": 2,
+	})
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if second["has_more"] != false || second["completed"] != true || second["next_offset"] != 3 {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+}
+
+func TestWriteStdinToolEmptyInputReadsExitedSession(t *testing.T) {
+	sessions := core.NewSessionManager()
+	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	if err := sessions.AppendOutput(s.ID, "stdout", "tail"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := sessions.Finish(s.ID, 0, nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	tool := NewWriteStdinTool(config.Workspace{ID: "ws"}, sessions)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"session_id":       s.ID,
+		"chars":            "",
+		"cursor":           0,
+		"max_output_items": 10,
+	})
+	if err != nil {
+		t.Fatalf("empty write/read: %v", err)
+	}
+	if res["output"] != "tail" || res["completed"] != true {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+}
+
+func TestSessionToolsRejectInvalidCursorAndOversizedInput(t *testing.T) {
+	sessions := core.NewSessionManager()
+	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	readTool := NewReadThreadTerminalTool(config.Workspace{ID: "ws"}, sessions)
+	if _, err := readTool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"session_id": s.ID,
+		"cursor":     -1,
+	}); !errors.Is(err, core.ErrSessionCursorInvalid) {
+		t.Fatalf("expected invalid cursor, got %v", err)
+	}
+	writeTool := NewWriteStdinTool(config.Workspace{ID: "ws"}, sessions)
+	if _, err := writeTool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
+		"session_id": s.ID,
+		"chars":      strings.Repeat("x", maxSessionInputBytes+1),
+	}); err == nil || !strings.Contains(err.Error(), "session input limit") {
+		t.Fatalf("expected input limit error, got %v", err)
+	}
+}
+
 func TestSessionRunnerWriteStdin(t *testing.T) {
 	ws := config.Workspace{
 		ID:               "ws",

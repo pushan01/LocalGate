@@ -10,6 +10,13 @@ import (
 	"localgate/internal/core"
 )
 
+const (
+	defaultSessionReadItems = 200
+	maxSessionReadItems     = 500
+	maxSessionWaitMS        = 30_000
+	maxSessionInputBytes    = 64 << 10
+)
+
 type ExecCommandTool struct {
 	WS       config.Workspace
 	Sessions *core.SessionManager
@@ -32,8 +39,9 @@ func (t ExecCommandTool) Schema() any {
 		"properties": map[string]any{
 			"cmd":               map[string]any{"type": "string"},
 			"workdir":           map[string]any{"type": "string", "description": "Absolute path inside workspace"},
-			"yield_time_ms":     map[string]any{"type": "integer"},
-			"max_output_tokens": map[string]any{"type": "integer"},
+			"yield_time_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": maxSessionWaitMS},
+			"max_output_items":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxSessionReadItems, "description": "Maximum buffered output items returned in this response."},
+			"max_output_tokens": map[string]any{"type": "integer", "minimum": 0, "description": "Deprecated compatibility alias for max_output_items; this value limits output items, not model tokens. Large legacy values are capped internally."},
 			"shell":             map[string]any{"type": "string"},
 			"login":             map[string]any{"type": "boolean"},
 			"tty":               map[string]any{"type": "boolean"},
@@ -58,8 +66,14 @@ func (t ExecCommandTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 	shellName, _ := args["shell"].(string)
 	login, _ := args["login"].(bool)
 	tty, _ := args["tty"].(bool)
-	yield := intFromAny(args["yield_time_ms"])
-	maxItems := intFromAny(args["max_output_tokens"])
+	yield, err := sessionWaitMS(args, "yield_time_ms")
+	if err != nil {
+		return nil, err
+	}
+	maxItems, err := sessionReadItems(args)
+	if err != nil {
+		return nil, err
+	}
 	env := mapFromAny(args["env"])
 	r := SessionRunner{WS: t.WS, Sessions: t.Sessions}
 	session, err := r.StartSessionWithInvokeContext(ctx, ic, cmd, workdir, env, shellName, login, tty)
@@ -67,27 +81,19 @@ func (t ExecCommandTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 		return nil, err
 	}
 	if yield > 0 {
-		time.Sleep(time.Duration(yield) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(yield) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	current, read, err := r.ReadSessionForWorkspace(session.ID, t.WS.ID, 0, maxItems)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"session_id":     current.ID,
-		"status":         current.Status,
-		"running":        current.Status == core.SessionStarting || current.Status == core.SessionRunning,
-		"completed":      current.Status == core.SessionExited || current.Status == core.SessionFailed || current.Status == core.SessionClosed,
-		"output":         joinSessionOutput(read.Items),
-		"items":          read.Items,
-		"next_offset":    read.NextOffset,
-		"base_offset":    read.BaseOffset,
-		"truncated":      read.Truncated,
-		"cursor_expired": read.CursorExpired,
-		"output_error":   read.OutputError,
-		"exit_code":      current.ExitCode,
-		"workspace_id":   current.WorkspaceID,
-	}, nil
+	return sessionReadPayload(current, read), nil
 }
 
 type WriteStdinTool struct {
@@ -111,10 +117,11 @@ func (t WriteStdinTool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"session_id":        map[string]any{"type": "string"},
-			"chars":             map[string]any{"type": "string"},
-			"yield_time_ms":     map[string]any{"type": "integer"},
-			"max_output_tokens": map[string]any{"type": "integer"},
-			"cursor":            map[string]any{"type": "integer", "description": "Absolute output cursor returned by the previous call"},
+			"chars":             map[string]any{"type": "string", "description": "Input to write. Empty input performs only the wait/read step. Input is limited to 64 KiB per call."},
+			"yield_time_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": maxSessionWaitMS, "description": "Wait up to this many milliseconds for new output or session completion after writing."},
+			"max_output_items":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxSessionReadItems},
+			"max_output_tokens": map[string]any{"type": "integer", "minimum": 0, "description": "Deprecated compatibility alias for max_output_items. Large legacy values are capped internally."},
+			"cursor":            map[string]any{"type": "integer", "minimum": 0, "description": "Absolute output cursor returned by the previous call"},
 		},
 		"required": []string{"session_id"},
 	}
@@ -128,27 +135,27 @@ func (t WriteStdinTool) Execute(ctx context.Context, ic core.InvokeContext, args
 		return nil, fmt.Errorf("session_id required")
 	}
 	chars, _ := args["chars"].(string)
-	yield := intFromAny(args["yield_time_ms"])
-	maxItems := intFromAny(args["max_output_tokens"])
-	cursor := intFromAny(args["cursor"])
-	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
-	session, read, err := r.WriteStdinForWorkspace(sessionID, t.WSID, chars, cursor, time.Duration(yield)*time.Millisecond, maxItems)
+	if len([]byte(chars)) > maxSessionInputBytes {
+		return nil, fmt.Errorf("chars exceeds %d byte session input limit", maxSessionInputBytes)
+	}
+	yield, err := sessionWaitMS(args, "yield_time_ms")
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"session_id":     session.ID,
-		"status":         session.Status,
-		"running":        session.Status == core.SessionStarting || session.Status == core.SessionRunning,
-		"output":         joinSessionOutput(read.Items),
-		"items":          read.Items,
-		"next_offset":    read.NextOffset,
-		"base_offset":    read.BaseOffset,
-		"truncated":      read.Truncated,
-		"cursor_expired": read.CursorExpired,
-		"output_error":   read.OutputError,
-		"exit_code":      session.ExitCode,
-	}, nil
+	maxItems, err := sessionReadItems(args)
+	if err != nil {
+		return nil, err
+	}
+	cursor, err := sessionCursor(args)
+	if err != nil {
+		return nil, err
+	}
+	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
+	session, read, err := r.WriteStdinForWorkspace(ctx, sessionID, t.WSID, chars, cursor, time.Duration(yield)*time.Millisecond, maxItems)
+	if err != nil {
+		return nil, err
+	}
+	return sessionReadPayload(session, read), nil
 }
 
 type ReadThreadTerminalTool struct {
@@ -219,8 +226,10 @@ func (t ReadThreadTerminalTool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"session_id":        map[string]any{"type": "string"},
-			"max_output_tokens": map[string]any{"type": "integer"},
-			"cursor":            map[string]any{"type": "integer", "description": "Absolute output cursor returned by the previous call"},
+			"wait_ms":           map[string]any{"type": "integer", "minimum": 0, "maximum": maxSessionWaitMS, "description": "Wait up to this many milliseconds for new output or session completion when the cursor is already caught up."},
+			"max_output_items":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxSessionReadItems},
+			"max_output_tokens": map[string]any{"type": "integer", "minimum": 0, "description": "Deprecated compatibility alias for max_output_items. Large legacy values are capped internally."},
+			"cursor":            map[string]any{"type": "integer", "minimum": 0, "description": "Absolute output cursor returned by the previous call"},
 		},
 		"required": []string{"session_id"},
 	}
@@ -233,26 +242,84 @@ func (t ReadThreadTerminalTool) Execute(ctx context.Context, ic core.InvokeConte
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id required")
 	}
-	maxItems := intFromAny(args["max_output_tokens"])
-	cursor := intFromAny(args["cursor"])
-	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
-	session, read, err := r.ReadSessionForWorkspace(sessionID, t.WSID, cursor, maxItems)
+	maxItems, err := sessionReadItems(args)
 	if err != nil {
 		return nil, err
 	}
+	cursor, err := sessionCursor(args)
+	if err != nil {
+		return nil, err
+	}
+	wait, err := sessionWaitMS(args, "wait_ms")
+	if err != nil {
+		return nil, err
+	}
+	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
+	session, read, err := r.WaitReadSessionForWorkspace(ctx, sessionID, t.WSID, cursor, maxItems, time.Duration(wait)*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	return sessionReadPayload(session, read), nil
+}
+
+func sessionReadPayload(session core.Session, read core.SessionReadResult) map[string]any {
+	ended := session.Status == core.SessionExited || session.Status == core.SessionFailed || session.Status == core.SessionClosed
 	return map[string]any{
-		"session_id":     session.ID,
-		"status":         session.Status,
-		"running":        session.Status == core.SessionStarting || session.Status == core.SessionRunning,
-		"output":         joinSessionOutput(read.Items),
-		"items":          read.Items,
-		"next_offset":    read.NextOffset,
-		"base_offset":    read.BaseOffset,
-		"truncated":      read.Truncated,
-		"cursor_expired": read.CursorExpired,
-		"output_error":   read.OutputError,
-		"exit_code":      session.ExitCode,
-	}, nil
+		"session_id":       session.ID,
+		"status":           session.Status,
+		"running":          session.Status == core.SessionStarting || session.Status == core.SessionRunning,
+		"completed":        ended && !read.HasMore,
+		"output_complete":  ended && !read.HasMore,
+		"output":           joinSessionOutput(read.Items),
+		"items":            read.Items,
+		"next_offset":      read.NextOffset,
+		"base_offset":      read.BaseOffset,
+		"truncated":        read.Truncated,
+		"buffer_truncated": read.BufferTruncated,
+		"cursor_expired":   read.CursorExpired,
+		"has_more":         read.HasMore,
+		"output_error":     read.OutputError,
+		"exit_code":        session.ExitCode,
+		"workspace_id":     session.WorkspaceID,
+	}
+}
+
+func sessionReadItems(args map[string]any) (int, error) {
+	value := 0
+	if raw, ok := args["max_output_items"]; ok {
+		value = intFromAny(raw)
+	} else {
+		value = intFromAny(args["max_output_tokens"])
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("max_output_items must be non-negative")
+	}
+	if value == 0 {
+		return defaultSessionReadItems, nil
+	}
+	if value > maxSessionReadItems {
+		return maxSessionReadItems, nil
+	}
+	return value, nil
+}
+
+func sessionCursor(args map[string]any) (int, error) {
+	cursor := intFromAny(args["cursor"])
+	if cursor < 0 {
+		return 0, core.ErrSessionCursorInvalid
+	}
+	return cursor, nil
+}
+
+func sessionWaitMS(args map[string]any, key string) (int, error) {
+	wait := intFromAny(args[key])
+	if wait < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", key)
+	}
+	if wait > maxSessionWaitMS {
+		return maxSessionWaitMS, nil
+	}
+	return wait, nil
 }
 
 func joinSessionOutput(items []core.SessionOutput) string {

@@ -252,11 +252,11 @@ Use `run_command` instead when guiding a model through tool discovery under defa
 ### Session tools
 
 - `exec_command`: start a background-capable shell session
-- `write_stdin`: send more input and read output from an explicit absolute `cursor`
-- `read_thread_terminal`: read buffered terminal output for a known `session_id` from an explicit absolute `cursor`
+- `write_stdin`: send more input and read output from an explicit absolute `cursor`; empty input can be used for wait/read only
+- `read_thread_terminal`: read buffered terminal output for a known `session_id` from an explicit absolute `cursor`, optionally waiting with `wait_ms`
 - `close_session`: terminate and close a running session after `exec_command` has already returned
 
-Preserve the returned `next_offset` and pass it as the next `cursor`. A trimmed buffer is reported through `base_offset`, `truncated`, and `cursor_expired`. Session access must use the workspace that created the session.
+Preserve the returned `next_offset` and pass it as the next `cursor`. Continue while `has_more=true`; `completed=true` / `output_complete=true` means a terminal session's retained output is caught up. A trimmed buffer is reported through `base_offset`, `buffer_truncated` (plus compatibility `truncated`), and `cursor_expired`. Prefer `max_output_items`; `max_output_tokens` is only a compatibility alias and still counts output items. Session access must use the workspace that created the session.
 
 ### MCP admin tools
 
@@ -440,7 +440,7 @@ curl -sS -X POST "$BASE_URL/sessions/exec" \
     "cmd": "cat",
     "workspace_id": "default",
     "yield_time_ms": 100,
-    "max_output_tokens": 200
+    "max_output_items": 200
   }'
 ```
 
@@ -452,14 +452,14 @@ curl -sS -X POST "$BASE_URL/sessions/$SESSION_ID/stdin" \
   -d '{
     "chars": "",
     "yield_time_ms": 1000,
-    "max_output_tokens": 4000
+    "max_output_items": 200
   }'
 ```
 
 ### Step 3: Inspect terminal buffer
 
 ```bash
-curl -sS "$BASE_URL/sessions/$SESSION_ID/terminal?max_output_tokens=4000"
+curl -sS "$BASE_URL/sessions/$SESSION_ID/terminal?max_output_items=200&wait_ms=1000"
 ```
 
 ### Step 4: Close session
@@ -677,7 +677,7 @@ Start session:
 ```bash
 curl -sS -X POST "$BASE_URL/sessions/exec" \
   -H "Content-Type: application/json" \
-  -d "{\"cmd\":\"cat\",\"workspace_id\":\"$WS\",\"yield_time_ms\":100,\"max_output_tokens\":200}"
+  -d "{\"cmd\":\"cat\",\"workspace_id\":\"$WS\",\"yield_time_ms\":100,\"max_output_items\":200}"
 ```
 
 HTTP MCP list tools:

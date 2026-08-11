@@ -111,6 +111,7 @@ type execSessionRequest struct {
 	Cmd             string         `json:"cmd"`
 	Workdir         string         `json:"workdir"`
 	YieldTimeMs     int            `json:"yield_time_ms"`
+	MaxOutputItems  int            `json:"max_output_items"`
 	MaxOutputTokens int            `json:"max_output_tokens"`
 	Shell           string         `json:"shell"`
 	Login           bool           `json:"login"`
@@ -123,6 +124,7 @@ type execSessionRequest struct {
 type stdinRequest struct {
 	Chars           string `json:"chars"`
 	YieldTimeMs     int    `json:"yield_time_ms"`
+	MaxOutputItems  int    `json:"max_output_items"`
 	MaxOutputTokens int    `json:"max_output_tokens"`
 	Cursor          int    `json:"cursor"`
 }
@@ -249,14 +251,18 @@ func (a *API) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := map[string]any{
-		"cmd":               req.Cmd,
-		"workdir":           req.Workdir,
-		"yield_time_ms":     req.YieldTimeMs,
-		"max_output_tokens": req.MaxOutputTokens,
-		"shell":             req.Shell,
-		"login":             req.Login,
-		"tty":               req.TTY,
-		"env":               req.Env,
+		"cmd":           req.Cmd,
+		"workdir":       req.Workdir,
+		"yield_time_ms": req.YieldTimeMs,
+		"shell":         req.Shell,
+		"login":         req.Login,
+		"tty":           req.TTY,
+		"env":           req.Env,
+	}
+	if req.MaxOutputItems > 0 {
+		args["max_output_items"] = req.MaxOutputItems
+	} else if req.MaxOutputTokens > 0 {
+		args["max_output_tokens"] = req.MaxOutputTokens
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
 		Transport: invocation.TransportREST, WorkspaceID: wsid, Requester: req.Requester,
@@ -314,13 +320,18 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		res, err := a.App.InvokeTool(r.Context(), wsid, "write_stdin", map[string]any{
-			"session_id":        sessionID,
-			"chars":             req.Chars,
-			"yield_time_ms":     req.YieldTimeMs,
-			"max_output_tokens": req.MaxOutputTokens,
-			"cursor":            req.Cursor,
-		})
+		args := map[string]any{
+			"session_id":    sessionID,
+			"chars":         req.Chars,
+			"yield_time_ms": req.YieldTimeMs,
+			"cursor":        req.Cursor,
+		}
+		if req.MaxOutputItems > 0 {
+			args["max_output_items"] = req.MaxOutputItems
+		} else if req.MaxOutputTokens > 0 {
+			args["max_output_tokens"] = req.MaxOutputTokens
+		}
+		res, err := a.App.InvokeTool(r.Context(), wsid, "write_stdin", args)
 		if err != nil {
 			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {
 				writeSessionRouteError(w, err)
@@ -337,7 +348,11 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		maxOutput := 0
-		if v := r.URL.Query().Get("max_output_tokens"); v != "" {
+		if v := r.URL.Query().Get("max_output_items"); v != "" {
+			if i, err := strconv.Atoi(v); err == nil && i > 0 {
+				maxOutput = i
+			}
+		} else if v := r.URL.Query().Get("max_output_tokens"); v != "" {
 			if i, err := strconv.Atoi(v); err == nil && i > 0 {
 				maxOutput = i
 			}
@@ -348,10 +363,17 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				cursor = i
 			}
 		}
+		waitMS := 0
+		if v := r.URL.Query().Get("wait_ms"); v != "" {
+			if i, err := strconv.Atoi(v); err == nil && i >= 0 {
+				waitMS = i
+			}
+		}
 		res, err := a.App.InvokeTool(r.Context(), wsid, "read_thread_terminal", map[string]any{
-			"session_id":        sessionID,
-			"max_output_tokens": maxOutput,
-			"cursor":            cursor,
+			"session_id":       sessionID,
+			"max_output_items": maxOutput,
+			"cursor":           cursor,
+			"wait_ms":          waitMS,
 		})
 		if err != nil {
 			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {

@@ -50,12 +50,14 @@ type SessionOutput struct {
 }
 
 type SessionReadResult struct {
-	Items         []SessionOutput `json:"items"`
-	NextOffset    int             `json:"next_offset"`
-	BaseOffset    int             `json:"base_offset"`
-	Truncated     bool            `json:"truncated"`
-	CursorExpired bool            `json:"cursor_expired,omitempty"`
-	OutputError   string          `json:"output_error,omitempty"`
+	Items           []SessionOutput `json:"items"`
+	NextOffset      int             `json:"next_offset"`
+	BaseOffset      int             `json:"base_offset"`
+	Truncated       bool            `json:"truncated"`
+	BufferTruncated bool            `json:"buffer_truncated"`
+	CursorExpired   bool            `json:"cursor_expired,omitempty"`
+	HasMore         bool            `json:"has_more"`
+	OutputError     string          `json:"output_error,omitempty"`
 }
 
 type SessionCleanupOptions struct {
