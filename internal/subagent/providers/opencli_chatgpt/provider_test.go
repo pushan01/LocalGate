@@ -309,6 +309,52 @@ func TestPendingFingerprintIgnoresMarkdownPresentationSyntax(t *testing.T) {
 	}
 }
 
+func TestPollMatchesPromptWhenDOMAppendsExpandAffordance(t *testing.T) {
+	executable := writeFakeExecutable(t, `
+printf '%s\n' '[{"Index":1,"Role":"User","Text":"older","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"old reply","Generating":false,"StableSeconds":0},{"Index":3,"Role":"User","Text":"long prompt展开","Generating":false,"StableSeconds":0},{"Index":4,"Role":"Assistant","Text":"done","Generating":false,"StableSeconds":0}]'
+`)
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID: "conversation123",
+		Hints:          withPendingMarker(map[string]string{lastObservedIndexHint: "2"}, "long prompt"),
+	}
+	next, observation, err := p.Poll(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Generating || observation.Reply.Text != "done" || next.Hints[pendingFingerprintHint] != "" || next.Hints[pendingFingerprintLenHint] != "" {
+		t.Fatalf("DOM-suffixed turn did not converge: next=%#v observation=%#v", next, observation)
+	}
+}
+
+func TestPollRecoversPersistedV2FingerprintWhenDOMAppendsSuffix(t *testing.T) {
+	executable := writeFakeExecutable(t, `
+printf '%s\n' '[{"Index":1,"Role":"User","Text":"older","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"old reply","Generating":false,"StableSeconds":0},{"Index":3,"Role":"User","Text":"long prompt展开","Generating":false,"StableSeconds":0},{"Index":4,"Role":"Assistant","Text":"done","Generating":false,"StableSeconds":0}]'
+`)
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID: "conversation123",
+		Hints: map[string]string{
+			lastObservedIndexHint:  "2",
+			pendingAfterIndexHint:  "2",
+			pendingFingerprintHint: messageFingerprint("long prompt"),
+		},
+	}
+	next, observation, err := p.Poll(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Generating || observation.Reply.Text != "done" || next.Hints[pendingFingerprintHint] != "" {
+		t.Fatalf("persisted v2 DOM-suffixed turn did not recover: next=%#v observation=%#v", next, observation)
+	}
+}
+
 func TestPollMatchesMarkdownPromptAfterDOMFormattingIsRemoved(t *testing.T) {
 	executable := writeFakeExecutable(t, `
 printf '%s\n' '[{"Index":1,"Role":"User","Text":"读取 /Users/pushan/PROJECT_HANDOFF.md 并查看 reviewer","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"done","Generating":false,"StableSeconds":0}]'

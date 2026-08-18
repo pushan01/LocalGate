@@ -22,13 +22,15 @@ import (
 )
 
 const (
-	Name                   = "opencli_chatgpt"
-	defaultTimeout         = 120 * time.Second
-	maxCapturedBytes       = 8 << 20
-	pendingHashHint        = "opencli_chatgpt.pending_message_sha256" // v1 compatibility only
-	pendingFingerprintHint = "opencli_chatgpt.pending_message_fingerprint_v2"
-	pendingAfterIndexHint  = "opencli_chatgpt.pending_after_index"
-	lastObservedIndexHint  = "opencli_chatgpt.last_observed_index"
+	Name                      = "opencli_chatgpt"
+	defaultTimeout            = 120 * time.Second
+	maxCapturedBytes          = 8 << 20
+	pendingHashHint           = "opencli_chatgpt.pending_message_sha256" // v1 compatibility only
+	pendingFingerprintHint    = "opencli_chatgpt.pending_message_fingerprint_v2"
+	pendingFingerprintLenHint = "opencli_chatgpt.pending_message_fingerprint_len_v2"
+	pendingAfterIndexHint     = "opencli_chatgpt.pending_after_index"
+	lastObservedIndexHint     = "opencli_chatgpt.last_observed_index"
+	maxFingerprintSuffixRunes = 32
 )
 
 type ErrorKind string
@@ -504,16 +506,41 @@ func observationFromRows(state subagent.ProviderState, rows []detailRow) (subage
 	// mistaking an older completed Assistant turn for the new turn's result.
 	if baseline, ok := parseIndexHint(state.Hints[pendingAfterIndexHint]); ok {
 		fingerprint := strings.TrimSpace(state.Hints[pendingFingerprintHint])
+		fingerprintLen, hasFingerprintLen := parseIndexHint(state.Hints[pendingFingerprintLenHint])
 		matchedUserIndex := 0
+		var candidateUserIndexes []int
 		for _, row := range rows {
 			if row.Index <= baseline || row.Role != "User" {
 				continue
 			}
-			if fingerprint != "" && messageFingerprint(row.Text) != fingerprint {
+			candidateUserIndexes = append(candidateUserIndexes, row.Index)
+			if fingerprint != "" && messageFingerprint(row.Text) != fingerprint &&
+				(!hasFingerprintLen || !messageFingerprintPrefixMatches(row.Text, fingerprint, fingerprintLen)) {
 				continue
 			}
 			if row.Index > matchedUserIndex {
 				matchedUserIndex = row.Index
+			}
+		}
+
+		// Persisted v2 states created before pendingFingerprintLenHint existed
+		// cannot validate a DOM-appended suffix (for example ChatGPT's localized
+		// expand affordance on long prompts). Recover only when exactly one new
+		// User turn exists after the submission baseline and it already has a
+		// completed Assistant response. This preserves stale-read protection while
+		// allowing old stuck states to self-heal without replaying the send.
+		if matchedUserIndex == 0 && fingerprint != "" && !hasFingerprintLen && len(candidateUserIndexes) == 1 {
+			candidate := candidateUserIndexes[0]
+			_, assistantIndex := assistantAfter(rows, candidate)
+			generating := false
+			for _, row := range rows {
+				if row.Index > baseline && row.Generating {
+					generating = true
+					break
+				}
+			}
+			if !generating && assistantIndex > candidate {
+				matchedUserIndex = candidate
 			}
 		}
 
@@ -583,6 +610,7 @@ func withPendingMarker(hints map[string]string, message string) map[string]strin
 	}
 	out[pendingAfterIndexHint] = strconv.Itoa(baseline)
 	out[pendingFingerprintHint] = messageFingerprint(message)
+	out[pendingFingerprintLenHint] = strconv.Itoa(len([]rune(normalizeFingerprintText(message))))
 	delete(out, pendingHashHint)
 	return out
 }
@@ -590,6 +618,7 @@ func withPendingMarker(hints map[string]string, message string) map[string]strin
 func clearPendingHints(hints map[string]string) {
 	delete(hints, pendingHashHint)
 	delete(hints, pendingFingerprintHint)
+	delete(hints, pendingFingerprintLenHint)
 	delete(hints, pendingAfterIndexHint)
 }
 
@@ -639,6 +668,24 @@ func hashMessage(message string) string {
 }
 
 func messageFingerprint(message string) string {
+	normalized := normalizeFingerprintText(message)
+	sum := sha256.Sum256([]byte(normalized))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func messageFingerprintPrefixMatches(message, fingerprint string, prefixLen int) bool {
+	if prefixLen <= 0 {
+		return false
+	}
+	normalized := []rune(normalizeFingerprintText(message))
+	if len(normalized) < prefixLen || len(normalized)-prefixLen > maxFingerprintSuffixRunes {
+		return false
+	}
+	sum := sha256.Sum256([]byte(string(normalized[:prefixLen])))
+	return fmt.Sprintf("%x", sum[:]) == fingerprint
+}
+
+func normalizeFingerprintText(message string) string {
 	message = html.UnescapeString(message)
 	message = markdownLinkPattern.ReplaceAllString(message, "$1")
 	message = strings.ToLower(message)
@@ -649,8 +696,7 @@ func messageFingerprint(message string) string {
 			normalized.WriteRune(r)
 		}
 	}
-	sum := sha256.Sum256([]byte(normalized.String()))
-	return fmt.Sprintf("%x", sum[:])
+	return normalized.String()
 }
 
 func cloneState(state subagent.ProviderState) subagent.ProviderState {
