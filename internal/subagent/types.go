@@ -1,0 +1,59 @@
+package subagent
+
+import "time"
+
+type Status string
+
+const (
+	StatusReady    Status = "ready"
+	StatusBusy     Status = "busy"
+	StatusDegraded Status = "degraded"
+	StatusClosed   Status = "closed"
+)
+
+type ProviderState struct {
+	ConversationID  string            `json:"conversation_id,omitempty"`
+	ConversationURL string            `json:"conversation_url,omitempty"`
+	ProjectID       string            `json:"project_id,omitempty"`
+	Hints           map[string]string `json:"hints,omitempty"`
+}
+
+type Subagent struct {
+	ID             string        `json:"id"`
+	Name           string        `json:"name,omitempty"`
+	Provider       string        `json:"provider"`
+	Status         Status        `json:"status"`
+	WorkspaceID    string        `json:"workspace_id"`
+	Instruction    string        `json:"instruction,omitempty"`
+	ProviderState  ProviderState `json:"provider_state"`
+	LastError      string        `json:"last_error,omitempty"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	LastObservedAt time.Time     `json:"last_observed_at,omitempty"`
+}
+
+type Reply struct {
+	Text string `json:"text"`
+}
+
+type Observation struct {
+	Generating bool  `json:"generating"`
+	Reply      Reply `json:"reply"`
+}
+
+type CreateRequest struct {
+	WorkspaceID string
+	Name        string
+	Provider    string
+	Instruction string
+	Options     map[string]string
+}
+
+type CreateResult struct {
+	Subagent Subagent
+}
+
+type ObserveResult struct {
+	Subagent Subagent
+	Reply    Reply
+}

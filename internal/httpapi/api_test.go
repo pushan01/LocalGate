@@ -587,6 +587,65 @@ func TestGetTaskResult(t *testing.T) {
 	t.Fatalf("task result not ready in time")
 }
 
+func TestSubagentSpawnThroughHTTPTask(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	if err := os.WriteFile(executable, []byte(`#!/bin/sh
+set -eu
+printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/g/g-p-deadbeef/c/conversation123","response":"delegated"}]'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	application, err := app.New(cfg)
+	if err != nil {
+		t.Fatalf("app: %v", err)
+	}
+	defer application.Close()
+	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	mux := http.NewServeMux()
+	api.Register(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"tool":         "subagent_spawn",
+		"workspace_id": "ws",
+		"args":         map[string]any{"name": "reviewer", "instruction": "review code"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	taskID, _ := created["task_id"].(string)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/tasks/"+taskID+"/result", nil)
+		resultW := httptest.NewRecorder()
+		mux.ServeHTTP(resultW, resultReq)
+		var result map[string]any
+		_ = json.Unmarshal(resultW.Body.Bytes(), &result)
+		if ready, _ := result["ready"].(bool); ready {
+			payload, _ := result["result"].(map[string]any)
+			subagentID, _ := payload["subagent_id"].(string)
+			if result["status"] != "succeeded" || payload["accepted"] != true || payload["status"] != "busy" || !strings.HasPrefix(subagentID, "sg_") {
+				t.Fatalf("unexpected subagent HTTP result: %#v", result)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("subagent HTTP task did not complete")
+}
+
 func TestGetTaskResultReadyFalse(t *testing.T) {
 	cfg := config.Config{
 		Workspaces: []config.Workspace{

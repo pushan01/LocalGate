@@ -18,6 +18,7 @@ import (
 	"localgate/internal/capabilities/meta"
 	notificationcap "localgate/internal/capabilities/notification"
 	"localgate/internal/capabilities/shell"
+	subagentcap "localgate/internal/capabilities/subagent"
 	toolcap "localgate/internal/capabilities/toolaccess"
 	"localgate/internal/config"
 	"localgate/internal/core"
@@ -32,6 +33,8 @@ import (
 	notify "localgate/internal/notification"
 	"localgate/internal/persist"
 	"localgate/internal/static"
+	"localgate/internal/subagent"
+	opencligpt "localgate/internal/subagent/providers/opencli_chatgpt"
 	"localgate/internal/toolaccess"
 	"localgate/internal/upgrade"
 	"localgate/internal/upload"
@@ -49,6 +52,8 @@ type App struct {
 	Sink               *core.EventSink
 	Tasks              *core.Manager
 	Sessions           *core.SessionManager
+	Subagents          *subagent.Manager
+	SubagentConfig     config.SubagentsConfig
 	Workspaces         map[string]config.Workspace
 	Registries         map[string]*core.Registry
 	Approvals          *approval.Service
@@ -109,6 +114,37 @@ func New(cfg config.Config) (*App, error) {
 	}
 	if err := tm.RecoverInterruptedTasks(); err != nil {
 		return nil, fmt.Errorf("recover interrupted tasks: %w", err)
+	}
+	var subagentManager *subagent.Manager
+	if cfg.Subagents.Enabled {
+		manager, subagentErr := subagent.NewManager(
+			subagent.NewStore(filepath.Join(storeBase, "subagents")),
+			subagent.Options{
+				DefaultProvider:    cfg.Subagents.DefaultProvider,
+				MaxAgents:          cfg.Subagents.MaxAgents,
+				MaxConcurrency:     cfg.Subagents.MaxConcurrency,
+				MaxPendingPerAgent: cfg.Subagents.MaxPendingPerAgent,
+			},
+		)
+		if subagentErr != nil {
+			return nil, fmt.Errorf("init subagents: %w", subagentErr)
+		}
+		if cfg.Subagents.DefaultProvider == opencligpt.Name {
+			providerConfig := cfg.Subagents.Providers.OpenCLIChatGPT
+			provider, providerErr := opencligpt.New(opencligpt.Config{
+				Executable:     providerConfig.Executable,
+				Timeout:        time.Duration(providerConfig.TimeoutSeconds) * time.Second,
+				DefaultProject: providerConfig.DefaultProject,
+				ArchiveProject: providerConfig.ArchiveProject,
+			})
+			if providerErr != nil {
+				return nil, fmt.Errorf("init %s provider: %w", opencligpt.Name, providerErr)
+			}
+			if providerErr := manager.RegisterProvider(opencligpt.Name, provider); providerErr != nil {
+				return nil, fmt.Errorf("register %s provider: %w", opencligpt.Name, providerErr)
+			}
+		}
+		subagentManager = manager
 	}
 	approvalSvc := approval.NewServiceWithOptions(approval.NewStore(filepath.Join(storeBase, "approval")), approval.Options{
 		BaseURL:      adminConfig.BaseURL,
@@ -250,6 +286,11 @@ func New(cfg config.Config) (*App, error) {
 		reg.Register(shell.NewWriteStdinTool(ws, sessions))
 		reg.Register(shell.NewReadThreadTerminalTool(ws, sessions))
 		reg.Register(shell.NewCloseSessionTool(ws, sessions))
+		if subagentManager != nil {
+			for _, tool := range subagentcap.NewTools(subagentManager) {
+				reg.Register(tool)
+			}
+		}
 		if notificationSvc.ToolEnabled() {
 			reg.Register(notificationcap.NewTool(notificationSvc))
 		}
@@ -293,6 +334,8 @@ func New(cfg config.Config) (*App, error) {
 		Sink:               sink,
 		Tasks:              tm,
 		Sessions:           sessions,
+		Subagents:          subagentManager,
+		SubagentConfig:     cfg.Subagents,
 		Workspaces:         wss,
 		Registries:         regs,
 		Approvals:          approvalSvc,
@@ -1276,6 +1319,11 @@ func (a *App) Close() error {
 		a.Tasks.Close()
 	}
 	var closeErrors []error
+	if a.Subagents != nil {
+		if err := a.Subagents.Close(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close subagents: %w", err))
+		}
+	}
 	if a.Sessions != nil {
 		if err := a.Sessions.CloseAll(); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("close sessions: %w", err))

@@ -1256,3 +1256,63 @@ workspaces:
 		t.Fatalf("expected encryption key validation error, got %v", err)
 	}
 }
+
+func TestLoadSubagentsConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+subagents:
+  enabled: true
+  default_provider: fake
+  max_agents: 7
+  max_concurrency: 2
+  max_pending_per_agent: 3
+  providers:
+    opencli_chatgpt:
+      executable: /opt/local/bin/opencli
+      timeout_seconds: 45
+      default_project: deadbeef
+      archive_project: cafebabe
+workspaces:
+  - id: ws
+    roots: ["."]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Subagents.Enabled || cfg.Subagents.DefaultProvider != "fake" || cfg.Subagents.MaxAgents != 7 || cfg.Subagents.MaxConcurrency != 2 || cfg.Subagents.MaxPendingPerAgent != 3 {
+		t.Fatalf("unexpected subagent config: %#v", cfg.Subagents)
+	}
+	if cfg.Subagents.Providers.OpenCLIChatGPT.Executable != "/opt/local/bin/opencli" || cfg.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds != 45 || cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject != "deadbeef" || cfg.Subagents.Providers.OpenCLIChatGPT.ArchiveProject != "cafebabe" {
+		t.Fatalf("unexpected opencli provider config: %#v", cfg.Subagents.Providers.OpenCLIChatGPT)
+	}
+	summary := cfg.SafeSummary()["subagents"].(map[string]any)
+	if summary["default_provider"] != "fake" || summary["max_agents"] != 7 || summary["max_concurrency"] != 2 || summary["max_pending_per_agent"] != 3 {
+		t.Fatalf("unexpected subagent summary: %#v", summary)
+	}
+	providers := summary["providers"].(map[string]any)
+	opencliSummary := providers["opencli_chatgpt"].(map[string]any)
+	if opencliSummary["executable"] != "/opt/local/bin/opencli" || opencliSummary["timeout_seconds"] != 45 || opencliSummary["default_project"] != "deadbeef" || opencliSummary["archive_project"] != "cafebabe" {
+		t.Fatalf("unexpected opencli provider summary: %#v", opencliSummary)
+	}
+}
+
+func TestLoadSubagentsRequiresDefaultProviderWhenEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+subagents:
+  enabled: true
+workspaces:
+  - id: ws
+    roots: ["."]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(LoadOptions{Path: path, PathProvided: true}); err == nil || !strings.Contains(err.Error(), "subagents.default_provider") {
+		t.Fatalf("expected default provider validation error, got %v", err)
+	}
+}

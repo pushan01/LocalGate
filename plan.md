@@ -1,5 +1,250 @@
 # Plan
 
+## Subagent Runtime：基于 OpenCLI + ChatGPT Web 的会话型子 Agent
+
+- **状态**：已实施（CH-SUB-001 ～ CH-SUB-008）
+- **规划日期**：2026-08-17
+- **分支**：`work/localgate-next`
+- **目标**：在 LocalGate 中增加可持久化、可恢复、可串行投递消息的 Subagent Runtime。首个 Provider 使用 OpenCLI 驱动已登录的 ChatGPT Web；LocalGate 使用自己的 `subagent_id` 作为稳定业务身份，保存其与 ChatGPT `conversationId` 的映射，并向上层 Agent 暴露统一的 spawn / send / get / list / close 工具。
+- **已确认的外部能力**：当前 OpenCLI ChatGPT Web adapter 的 `opencli chatgpt ask` 会返回 `conversationId`、`conversationUrl` 和 `response`，并支持 `--conversation <id-or-url>` 继续已有会话；因此 MVP 不需要依赖浏览器 tab ID 或 DOM 猜测 conversation ID。
+- **已确认的 Project 能力**：当前 OpenCLI ChatGPT Web adapter 的 `ask`、`send`、`new` 已支持 `--project <project-id-or-url>`，会先进入指定 ChatGPT Project 再创建新会话；conversation URL 解析也兼容 `/g/g-p-.../c/<conversation-id>`。MVP 默认优先把 LocalGate subagent 新会话创建在一个专用 ChatGPT Project 中，减少普通聊天列表噪声；Project ID 只影响创建归属，后续恢复仍以 `conversationId` 为权威句柄。
+- **核心设计原则**：
+  - `subagent_id` 是 LocalGate 的稳定主键；ChatGPT `conversationId` 只是 Provider 侧句柄。
+  - 浏览器 site session / tab target 只属于临时 transport 状态，不作为持久身份。
+  - 同一 subagent 的消息默认串行执行；不同 subagent 可以并发。
+  - Provider 接口与 ChatGPT Web 解耦，后续可增加 OpenAI API、Claude Web、Gemini Web 或本地模型 Provider。
+  - ChatGPT Web Provider 支持可配置的专用 Project；同一个 LocalGate 实例可默认使用一个 `default_project`，单个 spawn 可在允许时覆盖。
+  - 调用 OpenCLI 使用 argv 形式的受控子进程，不通过 `/bin/sh -c` 拼接用户输入。
+  - Subagent 调用继续进入 LocalGate Task / Event / Audit 体系，不另建一套不可观察的后台执行机制。
+- **本阶段非目标**：
+  - 不实现 Subagent 之间自主互发消息或递归无限 spawn。
+  - 不实现 Admin Console 的 Subagent 可视化页面。
+  - 不把浏览器 tab/session 做跨重启持久化；恢复依赖 conversation ID 重新定位。
+  - 不在第一版引入 SQLite，也不顺带重构现有 Task / Approval 存储。
+  - 不在第一版实现 token/成本统计、复杂负载均衡、多 ChatGPT 账号池或 Provider 自动切换。
+- **总体风险**：ChatGPT Web 和 OpenCLI adapter 都属于外部动态依赖，可能出现登录失效、Challenge、UI/API 变化、生成超时和会话不可恢复；所有失败必须转成稳定的 LocalGate 错误状态，不能让 Manager 卡死或丢失消息状态。
+- **Project 列表边界**：官方文档明确说明 shared project 中被移入 Project 的聊天不再显示在 Project 外；对个人 Project，MVP 依赖 ChatGPT 当前 Project 归组行为来减少普通列表噪声，但不把“所有全局搜索/历史入口完全不可见”作为程序保证。
+
+### CH-SUB-001：Subagent 核心模型、持久化与 Provider 抽象
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **优先级**：P0
+- **目标**：建立与具体 ChatGPT 实现无关的 Subagent Manager，支持稳定 ID、Provider 状态、生命周期、持久化和单 Agent 串行执行，为后续真实 Provider 接入提供可独立测试的内核。
+- **涉及范围**：新增 `internal/subagent`，`internal/app` 组装，配置结构及单元测试。
+- **预计规模**：约 500–850 行有效 diff。
+- **建议模型**：
+  - `Subagent`：`id`、`name`、`provider`、`status`、`workspace_id`、`instruction`、`provider_state`、创建/更新时间、最后错误。
+  - `ProviderState`：首版保存 `conversation_id`、`conversation_url`、可选 `project_id`；browser session / tab 如需记录只能作为可丢失的 hint。
+  - `Manager`：Create/Get/List/Close/Send，按 `subagent_id` 维护串行 mailbox 或等价互斥执行器。
+  - `Provider`：`Create`、`Send`、`Recover/Validate`、`Close`；测试使用 Fake Provider。
+  - `Store`：先沿用 `.localgate/subagents/` 下的原子 JSON 持久化模式，明确单进程保证；跨进程事务作为后续事项。
+- **验收条件**：
+  - 创建 subagent 会生成与 Provider 外部 ID 无关的稳定 `sg_*` ID。
+  - Manager 重建后可以从持久化记录恢复 subagent 元数据和 provider state。
+  - 同一 subagent 的两个并发 Send 不会同时进入 Provider；不同 subagent 不被全局串行化。
+  - Provider 错误会更新 last error，但不会损坏已有 conversation 映射。
+  - Close 后拒绝新消息，并具有幂等语义。
+- **验证方式**：`go test ./internal/subagent ./internal/app`、并发单元测试、`go test -race ./internal/subagent`、`git diff --check`。
+- **实际实现**：新增 `internal/subagent` 内核，提供稳定 `sg_*` ID、Provider 接口、可持久化 ProviderState、workspace 隔离、Create/Send/Get/List/Close 生命周期、同一 subagent 独立串行锁和跨 subagent 全局并发上限；Store 使用 0600 同目录临时文件、`fsync` 和 rename 保存单 agent JSON。配置新增 `subagents.enabled/default_provider/max_agents/max_concurrency`，App 在启用时加载 `.localgate/subagents` 并在进程关闭时只关闭 Manager，不把持久化 subagent 逻辑关闭。
+- **验证结果**：`go test ./internal/subagent ./internal/config ./internal/app`、`go test -race ./internal/subagent`、`go test ./...`、`go vet ./...` 和 `git diff --check` 均通过。首次测试因 LocalGate Shell 未注入 `HOME/GOCACHE` 无法启动 Go build cache，改为显式使用仓库 `.localgate/` 下的 Go cache/module 目录后通过；该问题属于执行环境而非代码失败。
+- **实际规模**：核心实现与测试约 980 行有效新增，接近但未超过 1000 行护栏；Manager 级主动恢复流程未提前实现，保留到 `CH-SUB-004`。
+
+### CH-SUB-002：OpenCLI ChatGPT Web Provider
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **依赖**：CH-SUB-001
+- **优先级**：P0
+- **目标**：实现首个真实 Provider，通过 OpenCLI ChatGPT Web adapter 创建和继续会话，并将 `conversationId` / `conversationUrl` 稳定映射到 Subagent。
+- **涉及范围**：`internal/subagent/providers/opencli_chatgpt`（或等价目录）、配置、命令执行辅助代码、Provider 测试。
+- **预计规模**：约 450–800 行有效 diff。
+- **执行约定**：
+  - 配置了 Project 时，Create 使用 `opencli chatgpt ask <bootstrap-or-first-message> --project <project-id> --format json`；未配置 Project 时才使用 `--new`。从结构化输出读取 `conversationId`、`conversationUrl`、`response`。
+  - Send 使用 `opencli chatgpt ask <message> --conversation <conversationId> --format json`。
+  - `project_id` 只用于确保新会话从目标 Project 内创建；会话建立后以 `conversationId` 继续对话，不依赖浏览器持续停留在 Project URL。
+  - 若 OpenCLI 返回的首轮 `conversationUrl` 带 `/g/g-p-.../c/<id>`，保存原始 URL 作为诊断/展示信息，但恢复逻辑不得只依赖该 URL 形态。
+  - 不依赖 OpenCLI persistent site session 才能恢复；有 `conversationId` 时应允许在新的浏览器 transport 中继续对话。
+  - OpenCLI executable 必须从配置解析为可信可执行文件，使用 `exec.CommandContext(argv...)`，prompt 作为独立 argv 参数传递，禁止 shell 拼接。
+  - 对退出码、空结果、JSON schema 漂移、登录失效、超时、Challenge/Quota 类错误做结构化归类。
+- **配置草案**：
+  - `subagents.enabled`
+  - `subagents.default_provider`
+  - `subagents.max_agents`
+  - `subagents.max_concurrency`
+  - `subagents.max_pending_per_agent`
+  - `subagents.providers.opencli_chatgpt.executable`
+  - `subagents.providers.opencli_chatgpt.timeout_seconds`
+  - `subagents.providers.opencli_chatgpt.default_project`：可接受 Project ID 或 `/g/g-p-...` URL；建议为 LocalGate 建一个专用 Project。
+  - 可选 `profile` / `site_session` hint，但不得成为恢复必需字段。
+- **验收条件**：
+  - Provider 能从 OpenCLI JSON 输出读取 conversation ID，而非解析人类可读文本。
+  - 创建后持久化 conversation ID；再次 Send 明确携带 `--conversation`。
+  - 配置 `default_project` 时，创建命令必须携带 `--project` 且不得再同时携带 `--new`；Provider state 记录规范化后的 project ID。
+  - Prompt 中包含空格、换行、引号、Shell 元字符时不会产生命令注入或参数错位。
+  - Context cancel / timeout 会终止 OpenCLI 子进程并返回稳定错误。
+  - malformed JSON、缺失 conversation ID、非零退出码均有回归测试。
+- **验证方式**：Provider fake-executable 测试、参数捕获测试、超时/取消测试、真实 OpenCLI 冒烟（环境可用时）、`go test -race`、`git diff --check`。
+- **实际实现**：新增 `internal/subagent/providers/opencli_chatgpt`，启动时解析并固定真实 OpenCLI executable；Create 在配置 Project 时使用 `--project`，否则使用 `--new`，Send 始终使用 `--conversation`；prompt 通过 argv 和 `--` 传递，不经过 shell 拼接。Provider 解析 OpenCLI 单行 JSON 结果并校验 conversation ID/URL，支持 Project ID/URL 规范化，提供 auth/challenge/quota/timeout/execution/invalid-output 错误分类。配置新增 `providers.opencli_chatgpt.executable/timeout_seconds/default_project`，App 在默认 Provider 为 `opencli_chatgpt` 时注册真实 Provider。
+- **验证结果**：fake executable 覆盖 Project 路由、conversation 续聊、Shell 元字符/换行参数、malformed JSON、会话切换、登录错误和超时；`go test -race ./internal/subagent ./internal/subagent/providers/opencli_chatgpt`、`go test ./...`、`go vet ./...`、`git diff --check` 均通过。真实 `/opt/homebrew/bin/opencli` 只读探测确认 ChatGPT `Status=Connected`、`Login=Yes`，且 `ask --help` 暴露 `--project`、`--conversation` 和 JSON 输出列；本阶段未擅自创建真实 ChatGPT 会话。
+
+### CH-SUB-003：LocalGate 工具面与 Task 集成
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **依赖**：CH-SUB-001、CH-SUB-002
+- **优先级**：P0
+- **目标**：把 Subagent Runtime 暴露为 LocalGate 标准 Tool，并统一经过现有 Registry、Task、MCP/HTTP 传输和审计链路，使父 Agent 可以稳定创建、投递和读取子 Agent。
+- **涉及范围**：`internal/capabilities/subagent`、`internal/app` Registry 注册、HTTP/MCP schema/结果适配、startup instructions / Skills、测试和 README。
+- **预计规模**：约 550–950 行有效 diff。
+- **首版工具**：
+  - `subagent_spawn`：创建 subagent，可选同时发送 bootstrap/initial message，返回 `subagent_id` 和首轮回复。
+  - `subagent_send`：向指定 subagent 串行发送消息并等待回复。
+  - `subagent_get`：读取状态、provider、conversation 映射摘要、last error，不泄露浏览器凭证。
+  - `subagent_list`：列出 workspace 下的 subagents。
+  - `subagent_close`：关闭逻辑 subagent；不删除 ChatGPT Web 历史会话。
+- **Task 语义**：
+  - 每次 spawn/send/close 都是普通 LocalGate Task，复用 Task cancel、日志和 transport metadata。
+  - `subagent_send` 运行时间可能较长，但 MVP 先采用普通 Task 的同步/async 双模式，不把它伪装成 LocalGate Session。
+  - stdout/stderr 不直接暴露 OpenCLI 内部噪声；必要诊断写入受限 Task event，最终结果使用结构化字段。
+- **审批策略**：首版不默认强制审批，但工具必须可以被现有 `admin.approval.rules` 按工具名匹配；后续再增加基于 provider/账号/外传内容的条件策略。
+- **验收条件**：
+  - stdio MCP、HTTP MCP、REST 经统一 Registry 可以调用相同工具实现。
+  - parent agent 只需要保存 `subagent_id`，不需要知道 ChatGPT conversation ID。
+  - async 提交能返回 Task ID，完成后 Task result 包含稳定 reply schema。
+  - workspace 隔离：一个 workspace 不能读取、发送或关闭另一个 workspace 的 subagent。
+  - startup instructions 能正确告诉 Agent 何时 spawn、何时复用已有 subagent、同一 subagent 默认串行。
+- **验证方式**：Registry/App/HTTP/MCP 定向测试、跨 workspace 测试、审批规则匹配测试、`go test ./...`、`go vet ./...`、相关 race 测试、`git diff --check`。
+- **实际实现**：新增 `internal/capabilities/subagent` 五个标准 Tool：`subagent_spawn`、`subagent_send`、`subagent_get`、`subagent_list`、`subagent_close`，统一使用 InvokeContext workspace 隔离和 Registry/Task 执行链；App 在启用 runtime 时对每个 workspace 注册工具。新增内置 `localgate-subagents` skill，只在 subagent 工具可见时由 startup 索引披露，明确 spawn 一次、复用 `sg_*`、同 agent 串行和逻辑 close 语义。README、tracked example config 和 MCP tools skill 同步补充使用规则。
+- **验证结果**：能力层、startup/meta、App Task、REST `/tasks` 和 MCP invoke 定向测试通过；HTTP/MCP 均从配置启动 fake OpenCLI Provider 并成功创建 `sg_*`。`go test -race ./internal/subagent ./internal/subagent/providers/opencli_chatgpt ./internal/capabilities/subagent ./internal/app ./internal/httpapi ./internal/mcpgo`、`go test ./...`、`go vet ./...`、`git diff --check` 均通过。
+
+### CH-SUB-004：恢复、并发与故障语义加固
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **依赖**：CH-SUB-003
+- **优先级**：P1
+- **目标**：补齐真实运行中最容易产生重复消息或状态漂移的恢复边界，确保 LocalGate 重启、父 Task 取消、OpenCLI 卡死或返回不确定结果时，Subagent 状态可解释、不会无界并发。
+- **涉及范围**：`internal/subagent` Manager/Store、OpenCLI Provider、Task 集成与文档。
+- **预计规模**：约 450–850 行有效 diff。
+- **重点行为**：
+  - 服务重启后保留已知 `conversationId`，首次 Send 前执行轻量恢复/验证；transport session 丢失不视为 subagent 丢失。
+  - 明确 `ready / busy / closed / degraded`（或等价）状态以及 last error 更新规则。
+  - 同一 subagent 串行队列必须有长度上限，避免父 Agent 无限压入请求。
+  - 调用在“消息可能已经发出、但回复/结果丢失”时返回 `outcome_unknown` 类错误，禁止自动无脑重试造成重复用户消息。
+  - Context cancel 取消当前等待，但要区分“尚未提交到 ChatGPT”与“可能已提交”。
+  - 对 Store 损坏、缺失 conversation ID、已关闭 Agent、Provider 不可用提供可操作诊断。
+- **验收条件**：
+  - 重启后已持久化 subagent 能继续使用 conversation ID 发送消息。
+  - 同 agent 高并发压测保持严格串行；不同 agent 可以受全局并发上限控制地并行。
+  - 取消/超时不会导致 Manager 永久保持 busy 或泄漏锁/goroutine。
+  - 不确定投递结果不会自动重复发送同一消息。
+- **验证方式**：故障注入 Fake Provider、restart/store reload 测试、取消/超时/race 测试、真实 OpenCLI 恢复冒烟、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：Manager 为每个 subagent 增加独立 serial permit 和有界 pending queue，新增可观察 `busy` 状态与 `max_pending_per_agent` 配置；排队等待支持 context cancellation，超过上限返回带稳定 Task error code `subagent_queue_full` 的错误。从 Store 加载的非 closed agent 标记为待恢复，首次 Send 前调用 Provider `Recover` 并先持久化恢复后的 provider state。OpenCLI Provider 改为显式 Start/Wait，区分“命令尚未启动”与“已启动、远端操作可能已经发生”；Create/Send 在后者发生超时、取消、执行异常、JSON 不可确认或 conversation 漂移时返回 `outcome_unknown`，其 Task error code 为 `subagent_outcome_unknown`，已有 agent 保留 conversation 映射并进入 `degraded`，不自动重发。
+- **验证结果**：覆盖同 agent queue 上限、busy 可见性、排队 context 取消、重启后 Recover-before-Send、outcome unknown 保留 conversation、OpenCLI Send 超时与 conversation 漂移，以及 App Task 层 `error_code=subagent_outcome_unknown`。`go test -race` 相关 runtime/provider/capability/App/HTTP/MCP 包、`go test ./...`、`go vet ./...` 和 `git diff --check` 均通过。
+- **保留边界**：若 `subagent_spawn` 在远端已经创建 conversation 后才进入 `outcome_unknown`，LocalGate 没有可靠 conversation ID 可写入映射，因此只会明确禁止自动重试，暂不尝试通过 ChatGPT 历史启发式认领未知远端 conversation。
+
+### CH-SUB-005：异步 Submit / Poll / Wait 语义
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **依赖**：CH-SUB-004
+- **优先级**：P0
+- **目标**：把 Subagent 从“每次发送都同步等待完整回复”改成真正的异步委派模型：spawn/send 只确认消息已提交，父 Agent 可稍后 poll 或显式 wait 读取结果。
+- **非目标**：本轮不做服务端主动推送、callback/webhook、跨消息多级队列，也不允许同一 conversation 在上一轮仍生成时继续注入下一轮消息。
+- **涉及范围**：`internal/subagent` Provider/Manager 状态机、`internal/subagent/providers/opencli_chatgpt`、`internal/capabilities/subagent`、App/HTTP/MCP 注册测试、内置 skill 与 README。
+- **预计规模**：约 500–900 行有效 diff。
+- **设计约定**：
+  - `subagent_spawn` 使用 `opencli chatgpt ask --wait=false`；只等 conversation URL/ID 建立，不等 assistant 完整生成，成功后 subagent 保持 `busy`。
+  - `subagent_send` 对既有 conversation 使用 `opencli chatgpt send --conversation ...`；只确认注入成功，随后保持 `busy`。
+  - 同一 subagent 为 `busy` 时拒绝再次 Send，避免在远端仍生成时重入；父 Agent 先 poll/wait 到 `ready` 再发下一轮。
+  - 新增 `subagent_poll`：通过 Provider 只读检查远端生成状态，若已完成则返回最新 assistant reply 并把状态切回 `ready`。
+  - 新增 `subagent_wait`：显式等待当前轮稳定完成并返回最新 reply；OpenCLI Provider 使用 `chatgpt detail <conversationId> --wait=true`。
+  - `subagent_get/list` 仍只读取 LocalGate 本地元数据，不隐式触发浏览器或远端 I/O。
+  - poll/wait 的读取失败不重发消息；已知 conversation 映射继续保留，错误进入 `degraded` 或保持可恢复状态。
+- **验收条件**：
+  - spawn 不等待模型回复即可返回稳定 `sg_*` 与 `conversationId` 映射。
+  - send 不等待 assistant 回复即可返回 accepted；同一 agent busy 时第二次 send 返回稳定 busy 错误且不会调用 Provider。
+  - poll 在生成中返回 `busy`，生成完成后返回 `ready + reply`；wait 能阻塞到完成并返回同一结果。
+  - 不同 subagent 的 poll/wait/send 仍受全局并发上限控制并可并行；同一 subagent 的 Provider 调用保持串行。
+  - 重启后 persisted `busy` subagent 可通过 poll/wait 恢复远端真实状态，而不会自动重发最后一条消息。
+  - REST Task、MCP、startup skill 与 README 对异步语义一致。
+- **验证方式**：Provider fake executable 参数/JSON 测试、Manager 状态机与重启测试、capability/App/HTTP/MCP 定向测试、相关 `go test -race`、`go test ./...`、`go vet ./...`、`git diff --check`，并在本机真实 OpenCLI 环境做一次只读/低影响 async smoke。
+- **实际实现**：Provider 契约拆成异步 `Create` / `Send` 与只读 `Poll` / `Wait`。OpenCLI Create 使用 `chatgpt ask --wait false` 只等 conversation ID，Send 使用 `chatgpt send --conversation` 只确认消息注入，Poll/Wait 使用 `chatgpt detail` 读取生成状态。Manager 在远端提交后持久化 `busy`，busy 时拒绝下一次 Send（`subagent_busy`），degraded 时要求先 poll/wait（`subagent_not_ready`）；重启后 persisted busy 不会自动重发。ProviderState 只保存待处理消息的规范化 SHA-256，用来确认 detail 中对应 User turn 之后确实出现 Assistant turn，完成后清理该 hint。工具面新增 `subagent_poll` / `subagent_wait`，spawn/send 改为 `accepted + busy` 语义；README、MCP skill 和内置 subagent skill 已同步。
+- **验证结果**：Manager/Provider/capability/App/REST/MCP 定向测试通过；`go test -race ./internal/subagent ./internal/subagent/providers/opencli_chatgpt ./internal/capabilities/subagent ./internal/app ./internal/httpapi ./internal/mcpgo` 通过；`go test ./...`、`go vet ./...`、`git diff --check` 通过。尝试对已存在的测试 conversation 执行只读 `opencli chatgpt detail` 真实冒烟时，被当前工具宿主的安全层在命令执行前拦截，因此没有产生外部副作用，也不把该真实冒烟记录为已通过。
+
+### CH-SUB-006：Stale Busy 自愈与可解释状态
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **依赖**：CH-SUB-005
+- **优先级**：P0
+- **背景**：真实父 Agent 在服务升级后沿用了旧工具认知，只反复调用 `subagent_get/list`，没有调用新增的 `subagent_poll/wait`。由于 get/list 只读本地快照，远端已经完成的 conversation 仍长期显示 `busy`，最终被误判为卡死并 close/re-spawn，产生了不必要的重复 conversation。
+- **目标**：让旧客户端只会调用 `subagent_get` 时也能自动收敛 stale busy，同时明确区分“刚提交尚未观察”和“最近真实观察仍在生成”，避免把 `updated_at` 误当作远端心跳。
+- **设计约定**：
+  - `subagent_get` 默认在本地状态为 `busy` 或 `degraded` 时执行一次非阻塞 Provider Poll；`refresh=false` 可显式要求纯本地快照。
+  - refresh 失败时仍返回最新本地诊断状态，并通过 `refresh_error` 暴露错误；不因为一次查询失败自动重发、close 或 spawn。
+  - Subagent 持久化 `last_observed_at`，只在成功完成 Poll/Wait 远端观察时更新；`updated_at` 继续表示 LocalGate 本地状态最后变更时间。
+  - 工具输出增加派生 `phase`：`submitted` 表示最新远端提交后尚未成功观察，`generating` 表示最近 Poll 确认仍在生成；其余与 `ready/degraded/closed` 对齐。
+  - 工具输出增加 `next_action`：busy/degraded 优先 `poll`，ready 为 `send`，closed 为 `none`。任何长期 busy 都不得仅因时长建议 close/re-spawn。
+  - `subagent_list` 保持纯本地批量读取，避免列举大量 agent 时产生 N 次远端浏览器 I/O，但同样输出 `phase/last_observed_at/next_action`。
+- **验收条件**：
+  - busy agent 调用默认 `subagent_get` 时会调用 Provider Poll，并能自动从 stale busy 切到 ready。
+  - `refresh=false` 不触发 Provider；原有 get 作为诊断快照的低成本路径仍可用。
+  - Poll 后仍 busy 时 `phase=generating` 且 `last_observed_at` 前进；刚 spawn/send 后未 Poll 时 `phase=submitted`。
+  - refresh 远端失败时 get 仍返回 subagent 映射、degraded 状态和 `refresh_error`，不创建新 conversation。
+  - README / built-in skill 明确禁止“仅因 busy 时间长就 close + respawn”。
+- **验证方式**：Manager/tool 回归测试、App/REST/MCP schema 与调用测试、相关 `go test -race`、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：`Subagent` 新增持久化 `last_observed_at`，仅在成功 Poll/Wait 后推进。`subagent_get` 新增 `refresh` 参数并默认在 `busy/degraded` 时执行一次非阻塞 Poll；`refresh=false` 保留纯本地快照。默认 refresh 成功会直接返回最新状态/reply，失败则保留 conversation 映射和 degraded 诊断并通过 `refresh_error` 返回，不把一次只读观察失败升级成 close/re-spawn。get/list 状态摘要新增派生 `phase`、`next_action` 与 `last_observed_at`；list 仍保持本地-only，避免批量查询产生 N 次浏览器 I/O。内置 subagent skill、MCP skill 和 README 明确 `updated_at` 不是远端心跳，并禁止仅因长期 busy 就关闭重建 conversation。
+- **事故回归**：真实故障序列中，服务升级后的父 Agent 没有重新加载 startup/skill，只会使用旧的 `subagent_get/list`，导致远端已完成的 reviewer 仍长期显示 stale `busy` 并最终被误关闭重建。本 Change 固化了“旧客户端只调用默认 get 也能远端对账”的测试，同时覆盖 `refresh=false` 不触发远端和 refresh 失败仍保留诊断映射。
+- **验证结果**：Subagent Manager/capability/App/REST/MCP/meta 定向测试通过；`go test -race ./internal/subagent ./internal/subagent/providers/opencli_chatgpt ./internal/capabilities/subagent ./internal/app ./internal/httpapi ./internal/mcpgo` 通过；`go test ./...`、`go vet ./...`、`git diff --check` 均通过。
+
+### 实施顺序与 MVP 收口
+
+1. **CH-SUB-001** 先只做纯 Go 内核和 Fake Provider，不碰浏览器。
+2. **CH-SUB-002** 接 OpenCLI，先证明 `conversationId` 映射和续聊可靠。
+3. **CH-SUB-003** 才暴露给 MCP / HTTP Agent 使用；到这里形成可用 MVP。
+4. **CH-SUB-004** 在 MVP 可跑后补恢复和不确定结果语义，再考虑扩大使用范围。
+5. **CH-SUB-005** 将父 Agent 交互从同步 request/reply 收口为 submit → poll/wait，避免发送工具长时间占用父 Agent。
+6. **CH-SUB-006** 让单 agent get 默认自愈 stale busy，并增加可解释的远端观察时间/phase/next action，兼容未刷新工具认知的旧客户端。
+
+### CH-SUB-007：归档删除与 ChatGPT Project 迁移
+
+- **状态**：已完成（2026-08-17）
+- **目标**：删除 LocalGate 子 Agent 时保留 ChatGPT conversation，把 conversation 安全迁移到独立归档 Project，并且任何远端失败或不确定结果都不得丢失 `sg_* → conversationId` 映射。
+- **实现**：
+  - OpenCLI 新增 `chatgpt project-move <conversation> --project <project>`，通过 ChatGPT 可见的 conversation menu 按 Project ID 选择目标，避免依赖本地化菜单文案。
+  - Move 前先探测目标 Project conversation route，使重复调用在 conversation 已迁移时直接返回 `Already moved`；点击后再次打开目标 Project 下同一 conversation 并校验 conversation header，未验证成功不报告成功。
+  - LocalGate OpenCLI Provider 新增可选 Archive 能力与 `archive_project` 配置；远端命令启动后发生超时、取消、输出损坏等情况统一保持 `outcome_unknown` 语义。
+  - `archive_project` 为空时 Archive 退化为纯本地生命周期操作：仍先 Poll 确认当前 turn 已结束，但不调用远端 `project-move`，直接保留 conversation 原位置并删除 `sg_*` 映射。
+  - Manager 新增 `Archive`：先 Recover/Poll 确认当前 turn 不再生成，再执行远端归档；成功后先持久化新的 Project 映射，再删除 Store 文件和内存映射。
+  - 新增 `subagent_archive` Tool；`subagent_close` 保持原有逻辑关闭语义，不隐式迁移或删除远端历史。
+  - 本地配置的归档 Project 为 `g-p-6a82f9e7eb108191898e41d7594cd407`。
+- **安全边界**：
+  - `subagent_archive_busy` 时保留本地映射且不调用远端 move。
+  - Move/验证失败或 `outcome_unknown` 时保留本地映射并标记 degraded，不自动重放或本地删除。
+  - 本轮实现与测试不移动任何现有真实 conversation；真实迁移需由后续显式 `subagent_archive` 调用触发。
+
+### CH-SUB-008：Conversation 隔离与 Turn 对账加固
+
+- **状态**：已完成（2026-08-17）
+- **目标**：修复两个并发 spawn 绑定同一 ChatGPT conversation，以及 Markdown 渲染差异导致已完成 turn 长期误判 `busy/generating` 的问题。
+- **实现**：
+  - OpenCLI ChatGPT Provider 对整个 persistent ChatGPT browser surface 做进程内串行化；`ask/send/detail/project-move` 不再并发驱动同一个持久化 tab。Create/Send 仍在提交后快速返回，因此远端 ChatGPT 生成可以并行。
+  - Pending turn 从 v1 的“原始文本 SHA-256 完全相等”升级为“`last_observed_index` 基线 + v2 展示文本 fingerprint”。新 turn 必须先出现大于提交前基线的 User row，再出现其后的 Assistant row，才能从 busy 收敛为 ready，避免发送后立即读取旧 DOM 时误判完成。
+  - v2 fingerprint 忽略 Markdown 展示符、常见链接包装与标点差异，兼容 ChatGPT DOM 去掉反引号/粗体等格式后的文本；旧 v1 hash 记录保留一次兼容恢复路径。
+  - Manager 对 `(provider, conversation_id)` 建立原子 owner claim；第二个不同 `sg_*` 若返回同一 conversation，直接报 `subagent_conversation_conflict`，不创建第二份本地映射，并把已存在 owner 标记为 degraded 以阻止继续静默执行。
+  - 从 Store 恢复历史重复映射时，最早记录取得 owner claim；其他重复记录在尝试 send/poll/wait/archive 等远端操作时会被 conversation conflict 防线拦截，保留只读诊断能力。
+- **事故回归**：真实故障中 writer/reviewer 两次 spawn 在约 10 秒间隔内重叠执行，最终两个 `sg_*` 都保存了 `6a831944-566c-83ee-9645-fce832cc8cb4`；该 conversation 实际只有 reviewer turn，且 `chatgpt detail` 已显示 `Generating=false`，LocalGate 却因原 instruction 含 Markdown 反引号而无法匹配 User row，持续显示 busy。本 Change 分别固化并发 Create 隔离、conversation owner 唯一性、Markdown→DOM fingerprint 和 legacy pending 恢复测试。
+
+当前最小成功场景：配置一个专用 ChatGPT Project 后，父 Agent 调用 `subagent_spawn`，新会话直接在该 Project 内创建并快速返回 `sg_* + busy`；父 Agent通过 `subagent_poll` 或 `subagent_wait` 取得首轮结果并进入 `ready`，再用同一个 `sg_*` 调用 `subagent_send` 提交下一轮。LocalGate 内部始终路由到同一个 ChatGPT `conversationId`；LocalGate 重启后 persisted busy 会先 poll/wait 对账而不会自动重发；两个不同 `sg_*` 可并发，而同一个 `sg_*` 在当前轮完成前拒绝新的 send。
+
 ## CH-NOTIFY-002：收敛系统通知触发策略
 
 - **状态**：已完成

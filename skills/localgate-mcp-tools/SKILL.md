@@ -55,6 +55,19 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 - `read_thread_terminal`
 - `close_session`
 
+### Subagent 工具（启用 `subagents` 时）
+
+- `subagent_spawn`
+- `subagent_send`
+- `subagent_poll`
+- `subagent_wait`
+- `subagent_get`
+- `subagent_list`
+- `subagent_archive`
+- `subagent_close`
+
+`subagent_spawn` 返回稳定的 `sg_*` ID，并在首轮消息成功提交后立即返回 `busy`，不会等待 assistant 完整回复。之后用 `subagent_poll` 非阻塞检查，或在确实需要结果时用 `subagent_wait`；状态到 `ready` 后再使用 `subagent_send` 提交下一轮。`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，旧客户端只会 get 也能收敛 stale busy；需要纯本地快照时显式传 `refresh=false`。对同一个 delegated role 或对话持续复用这个 ID，不要每轮重新 spawn。Provider conversation ID / URL 只是诊断信息；`subagent_close` 只关闭 LocalGate 逻辑身份，不删除 Provider 历史。需要彻底移除本地 `sg_*`、同时保留远端 conversation 时使用 `subagent_archive`：它会先确认当前 turn 已完成；配置了 `archive_project` 时先移动并验证 conversation，未配置时不移动远端 conversation，直接删除本地映射。
+
 ### 任务管理工具
 
 - `task_status`
@@ -150,6 +163,13 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 6. `write_stdin` 只能在 `exec_command` 成功之后使用；空 `chars` 可以只等待/读取，不发送输入。
 7. 想读 session 缓冲输出但不写 stdin 时用 `read_thread_terminal`；可用 `wait_ms` 等待新输出，避免高频轮询。
 8. Session 不再需要时用 `close_session`；不要用已完成的 `exec_command` Task 的 `task_cancel` 代替 Session 关闭。
+9. 需要独立、可持续的委派对话时用 `subagent_spawn`；它只负责 submit，不等待模型完成。
+10. 用 `subagent_poll` 检查子 Agent 是否完成；只有当前结果必须立刻拿到时才用 `subagent_wait` 阻塞等待。
+11. 不要根据 `busy` 持续时间或 `updated_at` 不变化就判断会话卡死；先看 `last_observed_at`、`phase`、`next_action` 并调用 get/poll 对账。仅为清除 stale busy 而 close + respawn 会制造重复 provider conversation，应禁止。
+11. 同一个委派线程到 `ready` 后用 `subagent_send` 复用 `subagent_id`；`busy` 时不要继续 send，也不要通过新 spawn 制造重复对话。
+12. 多个互不依赖的 delegated tasks 可以使用不同 subagent 并行。
+13. 需要删除 LocalGate 子 Agent 但保留 ChatGPT 历史时优先用 `subagent_archive`。若返回 `subagent_archive_busy`，稍后重试；若返回 `subagent_outcome_unknown`，不要先删本地映射或手工重建，先确认远端 Project 归属再显式重试。
+14. 若返回 `subagent_conversation_conflict`，说明两个本地身份试图绑定同一 Provider conversation；这是隔离故障，不要继续向冲突 ID 发消息，也不要用 close/re-spawn 掩盖。先保留诊断信息并修复/清理重复映射。
 
 ## `run_command` 使用指引
 

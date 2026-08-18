@@ -1,0 +1,278 @@
+package subagentcap
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+
+	"localgate/internal/core"
+	runtime "localgate/internal/subagent"
+)
+
+type fakeProvider struct{}
+
+var fakeConversationCounter atomic.Uint64
+
+func (fakeProvider) Create(_ context.Context, req runtime.ProviderCreateRequest) (runtime.ProviderState, error) {
+	conversationID := fmt.Sprintf("conversation%d", fakeConversationCounter.Add(1))
+	return runtime.ProviderState{
+		ConversationID:  conversationID,
+		ConversationURL: "https://chatgpt.com/g/g-p-deadbeef/c/" + conversationID,
+		ProjectID:       req.Options["project"],
+		Hints:           map[string]string{"reply": "created:" + req.Instruction},
+	}, nil
+}
+
+func (fakeProvider) Send(_ context.Context, state runtime.ProviderState, message string) (runtime.ProviderState, error) {
+	state.Hints = map[string]string{"reply": "reply:" + message}
+	return state, nil
+}
+
+func (fakeProvider) Poll(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return state, runtime.Observation{Reply: runtime.Reply{Text: state.Hints["reply"]}}, nil
+}
+
+func (fakeProvider) Wait(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return state, runtime.Observation{Reply: runtime.Reply{Text: state.Hints["reply"]}}, nil
+}
+
+func (fakeProvider) Recover(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, error) {
+	return state, nil
+}
+
+func (fakeProvider) Close(context.Context, runtime.ProviderState) error { return nil }
+
+func (fakeProvider) Archive(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, error) {
+	state.ProjectID = "cafebabe"
+	state.ConversationURL = "https://chatgpt.com/g/g-p-cafebabe/c/" + state.ConversationID
+	return state, nil
+}
+
+type pollErrorProvider struct{ fakeProvider }
+
+func (pollErrorProvider) Poll(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return state, runtime.Observation{}, errors.New("remote observation failed")
+}
+
+func newToolTestManager(t *testing.T) *runtime.Manager {
+	t.Helper()
+	m, err := runtime.NewManager(runtime.NewStore(filepath.Join(t.TempDir(), "subagents")), runtime.Options{
+		DefaultProvider: "fake",
+		MaxAgents:       8,
+		MaxConcurrency:  4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RegisterProvider("fake", fakeProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func newToolTestManagerWithProvider(t *testing.T, provider runtime.Provider) *runtime.Manager {
+	t.Helper()
+	m, err := runtime.NewManager(runtime.NewStore(filepath.Join(t.TempDir(), "subagents")), runtime.Options{
+		DefaultProvider: "fake",
+		MaxAgents:       8,
+		MaxConcurrency:  4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RegisterProvider("fake", provider); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestSubagentToolsFlow(t *testing.T) {
+	m := newToolTestManager(t)
+	tools := NewTools(m)
+	byName := make(map[string]core.Tool, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name()] = tool
+	}
+	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_archive", "subagent_close"} {
+		if byName[name] == nil {
+			t.Fatalf("missing tool %s", name)
+		}
+		if byName[name].Schema() == nil {
+			t.Fatalf("tool %s has nil schema", name)
+		}
+	}
+	ic := core.InvokeContext{WorkspaceID: "ws-a", Requester: "tester"}
+	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{
+		"name":        "reviewer",
+		"instruction": "review code",
+		"project":     "deadbeef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawned["subagent_id"].(string)
+	if id == "" || spawned["provider"] != "fake" || spawned["accepted"] != true || spawned["status"] != string(runtime.StatusBusy) {
+		t.Fatalf("unexpected spawn result: %#v", spawned)
+	}
+	polled, err := byName["subagent_poll"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polled["reply"] != "created:review code" || polled["status"] != string(runtime.StatusReady) {
+		t.Fatalf("unexpected poll result: %#v", polled)
+	}
+
+	sent, err := byName["subagent_send"].Execute(context.Background(), ic, map[string]any{
+		"subagent_id": id,
+		"message":     "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent["accepted"] != true || sent["status"] != string(runtime.StatusBusy) {
+		t.Fatalf("unexpected send result: %#v", sent)
+	}
+	waited, err := byName["subagent_wait"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited["reply"] != "reply:continue" || waited["status"] != string(runtime.StatusReady) {
+		t.Fatalf("unexpected wait result: %#v", waited)
+	}
+
+	got, err := byName["subagent_get"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, ok := got["subagent"].(map[string]any)
+	conversationID, _ := agent["conversation_id"].(string)
+	if !ok || conversationID == "" || agent["project_id"] != "deadbeef" {
+		t.Fatalf("unexpected get result: %#v", got)
+	}
+
+	listed, err := byName["subagent_list"].Execute(context.Background(), ic, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, ok := listed["subagents"].([]map[string]any)
+	if !ok || len(items) != 1 || items[0]["subagent_id"] != id {
+		t.Fatalf("unexpected list result: %#v", listed)
+	}
+
+	closed, err := byName["subagent_close"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed["status"] != string(runtime.StatusClosed) {
+		t.Fatalf("unexpected close result: %#v", closed)
+	}
+	if _, err := byName["subagent_send"].Execute(context.Background(), ic, map[string]any{"subagent_id": id, "message": "after"}); !errors.Is(err, runtime.ErrClosed) {
+		t.Fatalf("send after close error = %v", err)
+	}
+	archived, err := byName["subagent_archive"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived["archived"] != true || archived["project_id"] != "cafebabe" {
+		t.Fatalf("unexpected archive result: %#v", archived)
+	}
+	if _, err := byName["subagent_get"].Execute(context.Background(), ic, map[string]any{"subagent_id": id}); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("archived subagent should be removed locally, got %v", err)
+	}
+}
+
+func TestSubagentToolsUseInvokeWorkspace(t *testing.T) {
+	m := newToolTestManager(t)
+	spawn := SpawnTool{manager: m}
+	get := GetTool{manager: m}
+	res, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws-a"}, map[string]any{"instruction": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res["subagent_id"].(string)
+	if _, err := get.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws-b"}, map[string]any{"subagent_id": id}); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("cross-workspace get error = %v", err)
+	}
+}
+
+func TestSubagentGetRefreshesBusyByDefaultAndCanStayLocal(t *testing.T) {
+	m := newToolTestManager(t)
+	spawn := SpawnTool{manager: m}
+	get := GetTool{manager: m}
+	ic := core.InvokeContext{WorkspaceID: "ws"}
+
+	first, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := first["subagent_id"].(string)
+	refreshed, err := get.Execute(context.Background(), ic, map[string]any{"subagent_id": firstID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed["refreshed"] != true || refreshed["reply"] != "created:first" {
+		t.Fatalf("default get did not refresh busy agent: %#v", refreshed)
+	}
+	refreshedAgent := refreshed["subagent"].(map[string]any)
+	if refreshedAgent["status"] != string(runtime.StatusReady) || refreshedAgent["phase"] != "ready" || refreshedAgent["next_action"] != "send" {
+		t.Fatalf("unexpected refreshed agent: %#v", refreshedAgent)
+	}
+	if refreshedAgent["last_observed_at"] == "" {
+		t.Fatalf("default get should expose last_observed_at: %#v", refreshedAgent)
+	}
+
+	second, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID := second["subagent_id"].(string)
+	localOnly, err := get.Execute(context.Background(), ic, map[string]any{"subagent_id": secondID, "refresh": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if localOnly["refreshed"] != false {
+		t.Fatalf("refresh=false unexpectedly refreshed: %#v", localOnly)
+	}
+	localAgent := localOnly["subagent"].(map[string]any)
+	if localAgent["status"] != string(runtime.StatusBusy) || localAgent["phase"] != "submitted" || localAgent["next_action"] != "poll" || localAgent["last_observed_at"] != "" {
+		t.Fatalf("unexpected local-only busy snapshot: %#v", localAgent)
+	}
+}
+
+func TestSubagentGetReturnsDiagnosticStateWhenRefreshFails(t *testing.T) {
+	m := newToolTestManagerWithProvider(t, pollErrorProvider{})
+	spawn := SpawnTool{manager: m}
+	get := GetTool{manager: m}
+	ic := core.InvokeContext{WorkspaceID: "ws"}
+	spawned, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := spawned["subagent_id"].(string)
+	result, err := get.Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatalf("diagnostic get should survive provider refresh failure: %v", err)
+	}
+	if result["refreshed"] != true || result["refresh_error"] != "remote observation failed" {
+		t.Fatalf("unexpected refresh failure result: %#v", result)
+	}
+	agent := result["subagent"].(map[string]any)
+	conversationID, _ := agent["conversation_id"].(string)
+	if agent["status"] != string(runtime.StatusDegraded) || agent["phase"] != "degraded" || agent["next_action"] != "poll" || conversationID == "" {
+		t.Fatalf("refresh failure lost diagnostic mapping: %#v", agent)
+	}
+}
+
+func TestSubagentToolInputLimits(t *testing.T) {
+	m := newToolTestManager(t)
+	spawn := SpawnTool{manager: m}
+	if _, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"instruction": ""}); err == nil {
+		t.Fatal("expected empty instruction error")
+	}
+	if _, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"instruction": "ok", "name": string(make([]byte, maxNameBytes+1))}); err == nil {
+		t.Fatal("expected oversized name error")
+	}
+}

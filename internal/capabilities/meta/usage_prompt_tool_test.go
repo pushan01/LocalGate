@@ -326,6 +326,35 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	}
 }
 
+func TestStartupInstructionsSurfacesSubagentSkillOnlyWithSubagentTools(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := config.Workspace{ID: "ws", CWD: t.TempDir(), Roots: []string{t.TempDir()}}
+	reg := core.NewRegistry(nil)
+	reg.Register(dummyTool{name: "read_file", desc: "Read files"})
+	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
+	reg.Register(tool)
+
+	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := res["prompt"].(string)
+	if strings.Contains(prompt, "`localgate-subagents`") {
+		t.Fatalf("subagent skill should not surface without subagent tools: %q", prompt)
+	}
+
+	reg.Register(dummyTool{name: "subagent_spawn", desc: "Create subagent"})
+	reg.Register(dummyTool{name: "subagent_send", desc: "Send to subagent"})
+	res, err = tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ = res["prompt"].(string)
+	if !strings.Contains(prompt, "`localgate-subagents`") || !strings.Contains(prompt, "builtin://localgate-subagents/SKILL.md") {
+		t.Fatalf("missing subagent skill routing: %q", prompt)
+	}
+}
+
 func TestStartupInstructionsToolRequiresBase64WhenEnabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ws := config.Workspace{
@@ -447,13 +476,14 @@ func TestLoadAllSkillsFollowsSkillSymlinks(t *testing.T) {
 
 func TestBuiltinSkillsEmbeddedAndLoadable(t *testing.T) {
 	loaded := loadBuiltinSkills()
-	if len(loaded) != 5 {
-		t.Fatalf("expected 5 built-in skills, got %#v", loaded)
+	if len(loaded) != 6 {
+		t.Fatalf("expected 6 built-in skills, got %#v", loaded)
 	}
 	wantNames := []string{
 		"localgate-deployment",
 		"localgate-file-transfer",
 		"localgate-mcp-relay",
+		"localgate-subagents",
 		"localgate-task-session",
 		"localgate-tool-http",
 	}

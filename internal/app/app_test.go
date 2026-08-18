@@ -19,6 +19,7 @@ import (
 	"localgate/internal/dynamic"
 	"localgate/internal/mcprelay"
 	"localgate/internal/persist"
+	"localgate/internal/subagent"
 )
 
 func TestShouldSendApprovalNotification(t *testing.T) {
@@ -803,6 +804,199 @@ func TestNewToolHTTPModeDisablesRelayButKeepsRegistryTools(t *testing.T) {
 	}
 	if !reg.IsVisible("run_command") || !reg.IsVisible("get_temporary_access_token") {
 		t.Fatalf("missing expected tool http mode tools: %#v", got)
+	}
+}
+
+func TestNewInitializesSubagentManagerWhenEnabled(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "fake"
+	cfg.Subagents.MaxAgents = 8
+	cfg.Subagents.MaxConcurrency = 3
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app: %v", err)
+	}
+	defer a.Close()
+	if a.Subagents == nil {
+		t.Fatal("expected subagent manager")
+	}
+	if a.SubagentConfig.MaxAgents != 8 || a.SubagentConfig.MaxConcurrency != 3 {
+		t.Fatalf("unexpected subagent config: %#v", a.SubagentConfig)
+	}
+}
+
+func TestNewRegistersOpenCLIChatGPTProvider(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	script := `#!/bin/sh
+set -eu
+case "${2:-}" in
+  ask)
+    printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/g/g-p-deadbeef/c/conversation123","response":""}]'
+    ;;
+  detail)
+    printf '%s\n' '[{"Index":1,"Role":"User","Text":"review code","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"created","Generating":false,"StableSeconds":0}]'
+    ;;
+  send)
+    printf '%s\n' '[{"Status":"Success","InjectedText":"continue"}]'
+    ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app: %v", err)
+	}
+	defer a.Close()
+	result, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{
+		WorkspaceID: "ws",
+		Name:        "reviewer",
+		Instruction: "review code",
+	})
+	if err != nil {
+		t.Fatalf("create subagent: %v", err)
+	}
+	if result.Subagent.Provider != "opencli_chatgpt" || result.Subagent.ProviderState.ConversationID != "conversation123" || result.Subagent.ProviderState.ProjectID != "deadbeef" {
+		t.Fatalf("unexpected subagent: %#v", result.Subagent)
+	}
+	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_archive", "subagent_close"} {
+		if !a.Registries["ws"].IsVisible(name) {
+			t.Fatalf("subagent tool %s is not visible", name)
+		}
+	}
+	polled, err := a.Subagents.Poll(context.Background(), "ws", result.Subagent.ID)
+	if err != nil {
+		t.Fatalf("poll created subagent: %v", err)
+	}
+	if polled.Subagent.Status != subagent.StatusReady || polled.Reply.Text != "created" {
+		t.Fatalf("unexpected initial poll: %#v", polled)
+	}
+	submission, err := a.SubmitToolTask("ws", "tester", "subagent_send", map[string]any{
+		"subagent_id": result.Subagent.ID,
+		"message":     "continue",
+	})
+	if err != nil {
+		t.Fatalf("submit subagent send: %v", err)
+	}
+	final := waitForAppTaskTerminal(t, a, submission.Task.ID)
+	if final.Status != core.StatusSucceeded || final.Result["accepted"] != true || final.Result["status"] != string(subagent.StatusBusy) || final.Result["subagent_id"] != result.Subagent.ID {
+		t.Fatalf("unexpected subagent task result: %#v", final)
+	}
+}
+
+func TestSubagentToolCanBeApprovalGatedByName(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "opencli-invoked")
+	executable := filepath.Join(root, "opencli-fake")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+touch %q
+printf '%%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/c/conversation123","response":"created"}]'
+`, marker)
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.Admin.Approval.Rules = []config.ApprovalRule{{
+		ID: "approve-subagent", Effect: "require_approval", Tools: []string{"subagent_spawn"}, Risk: "high",
+	}}
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	submission, err := a.SubmitToolTask("ws", "tester", "subagent_spawn", map[string]any{
+		"instruction": "review code",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submission.Approval == nil || submission.Task.Status != core.StatusAwaitingApproval {
+		t.Fatalf("expected approval-gated subagent task: %#v", submission)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("provider executed before approval: %v", err)
+	}
+}
+
+func TestSubagentOutcomeUnknownKeepsConversationAndSetsTaskCode(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	script := `#!/bin/sh
+set -eu
+if [ "${2:-}" = "detail" ]; then
+  printf '%s\n' '[{"Index":1,"Role":"User","Text":"start","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"ready","Generating":false,"StableSeconds":0}]'
+  exit 0
+fi
+for arg in "$@"; do
+  if [ "$arg" = "--conversation" ]; then
+    printf '%s\n' 'adapter lost the response after submit' >&2
+    exit 9
+  fi
+done
+printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/c/conversation123","response":"created"}]'
+`
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	created, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{WorkspaceID: "ws", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Subagents.Poll(context.Background(), "ws", created.Subagent.ID); err != nil {
+		t.Fatalf("poll created subagent: %v", err)
+	}
+
+	submission, err := a.SubmitToolTask("ws", "tester", "subagent_send", map[string]any{
+		"subagent_id": created.Subagent.ID,
+		"message":     "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitForAppTaskTerminal(t, a, submission.Task.ID)
+	if final.Status != core.StatusFailed || final.ErrorCode != "subagent_outcome_unknown" {
+		t.Fatalf("unexpected outcome-unknown task: %#v", final)
+	}
+	agent, err := a.Subagents.Get("ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Status != subagent.StatusDegraded || agent.ProviderState.ConversationID != "conversation123" {
+		t.Fatalf("unexpected subagent after uncertain delivery: %#v", agent)
 	}
 }
 

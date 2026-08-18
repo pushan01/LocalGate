@@ -1,5 +1,20 @@
 # Active TODO
 
+## Subagent runtime follow-ups
+
+- Keep `subagent_list` local-only unless a future bounded bulk-refresh API is designed; default remote refresh belongs to single-agent `subagent_get` so listing many agents cannot accidentally fan out browser I/O.
+- Add an official API-backed Provider (for example OpenAI Conversations/Responses) behind the same `internal/subagent.Provider` interface; keep browser-backed ChatGPT as one provider rather than the architecture itself.
+- Add Admin Console Subagents page for state, provider, conversation link, last activity, error, close/recover actions, and Task navigation.
+- Decide whether LocalGate should optionally create/manage a dedicated ChatGPT Project automatically; MVP only accepts a configured existing Project ID/URL and does not mutate the user's Project list.
+- Design an idempotent remote marker/reconciliation strategy for `subagent_spawn` outcome-unknown cases before attempting to auto-adopt a ChatGPT conversation from history; do not match conversations by title/text heuristics alone.
+- Add bounded message history / delivery records with stable message IDs if callers need asynchronous per-message result lookup beyond the existing Task result model.
+- Add optional subagent completion events/notifications (or a future callback mechanism) so parents can react to finished turns without polling; keep this separate from the core Provider contract until event delivery semantics are defined.
+- Evaluate SQLite or another transactional store before supporting multiple LocalGate processes mutating subagents concurrently.
+- Add provider-aware conditional approval policies for external data disclosure, account selection, high-cost modes, deep research, file upload, and other provider-specific capabilities.
+- Add multiple browser profiles / ChatGPT account pools only after single-profile lifecycle and recovery semantics are stable.
+- Add streaming partial replies only after the basic request/reply and cancellation semantics are stable; do not couple the core Provider interface to ChatGPT DOM streaming.
+- Define bounded delegation trees, parent/child ownership and recursion limits before allowing a subagent to spawn further subagents.
+
 ## Static deployment hardening
 
 - Make site deletion transactional by renaming to a trash directory before committing the registry update, with rollback on failure.

@@ -560,6 +560,20 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 
 Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；`has_more=true` 时继续分页读取。`buffer_truncated=true`（兼容字段 `truncated=true`）表示更老的缓冲输出已被丢弃，`cursor_expired=true` 表示传入 cursor 已早于当前 `base_offset`。优先使用 `max_output_items`（1–500）；旧 `max_output_tokens` 仅作为兼容 alias，实际限制的也是输出 item 数而不是模型 token。`read_thread_terminal` 可用 `wait_ms` 等待新输出，`write_stdin` 可用 `yield_time_ms` 在写入后等待；空 `chars` 可作为纯等待/读取。只有 `completed=true` / `output_complete=true` 才表示终态 Session 的保留输出已读到当前末尾。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
 
+### Subagent
+
+启用 `subagents` 后，LocalGate 会额外暴露一组持久化子 Agent 工具：
+
+- `subagent_spawn`：创建新的 `sg_*` 子 Agent 并提交首轮消息；拿到 conversation ID 后立即返回，不等待模型生成完成
+- `subagent_send`：向 `ready` 的 `sg_*` 提交下一轮消息并立即返回；若当前轮仍是 `busy`，会拒绝重入
+- `subagent_poll`：非阻塞检查当前轮生成状态；完成时返回最终 reply，生成中可返回已可见的部分 reply
+- `subagent_wait`：显式等待当前轮完成并返回最终 reply
+- `subagent_get` / `subagent_list`：查看状态以及 provider conversation / Project 映射摘要；`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，`refresh=false` 可读取纯本地快照
+- `subagent_archive`：确认当前远端 turn 已结束后删除本地 `sg_*` 映射；若 Provider 配置了 `archive_project`，会先把 backing conversation 移过去并验证成功；未配置时远端 conversation 保持原位
+- `subagent_close`：逻辑关闭 subagent；不会删除 ChatGPT 中已有的 conversation 或 Project 历史
+
+调用方应把 `subagent_id` 当成稳定身份并持续复用。ChatGPT `conversation_id`、conversation URL 和 Project ID 只是 Provider 诊断信息；LocalGate 重启后的恢复也以持久化的 provider state 为基础，而不是依赖浏览器 tab ID。`subagent_get` 的 `refreshed=true` 表示这次 get 实际尝试了远端对账；远端读取失败时仍会返回本地诊断映射，并通过 `refresh_error` 暴露失败原因。
+
 ### Task 管理
 
 - `task_status`
@@ -596,6 +610,39 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 - workspace 级审批规则
 
 所有文件路径都会被限制在 workspace 允许的根目录内。
+
+### Subagents
+
+首个 Provider 使用 OpenCLI 驱动已经登录的 ChatGPT Web。建议先在 ChatGPT 中创建一个专用 Project，再把 Project ID 或 `/g/g-p-...` URL 配给 `default_project`，这样新建 subagent 会话不会散落在普通聊天列表中：
+
+```yaml
+subagents:
+  enabled: true
+  default_provider: opencli_chatgpt
+  max_agents: 32
+  max_concurrency: 4
+  max_pending_per_agent: 8
+  providers:
+    opencli_chatgpt:
+      executable: opencli
+      timeout_seconds: 120
+      default_project: deadbeef
+      archive_project: cafebabe
+```
+
+创建时有 Project 就调用 `opencli chatgpt ask --project ... --wait false`，只等 conversation ID/URL 建立；后续消息通过 `opencli chatgpt send --conversation ...` 注入同一对话，不等待 assistant 回复。`subagent_poll` / `subagent_wait` 使用 `chatgpt detail` 读取远端状态和 reply。LocalGate 不把 OpenCLI browser session 或 tab target 当作持久身份。
+
+OpenCLI ChatGPT adapter 使用一个 persistent site session，同一 browser surface 上的 `ask/send/detail/project-move` 都可能导航当前 tab。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 persistent tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。显式 `subagent_wait` 会占用该 surface 更久，所以协调多个 Agent 时优先使用非阻塞 `subagent_poll`。
+
+每个 `(provider, conversation_id)` 在 Manager 中只能有一个 `sg_*` owner。若 Provider 异常返回一个已经被其他 `sg_*` 使用的 conversation，新的 spawn 会失败并返回 `subagent_conversation_conflict`，不会静默制造两个角色共享同一 ChatGPT 会话。Pending turn 对账使用“提交前最后观察到的 message index + 规范化展示文本 fingerprint”；因此 ChatGPT DOM 去掉 Markdown 反引号、粗体等展示符后仍能识别原 User turn，同时发送后短暂读到旧 DOM 时也不会过早变成 ready。
+
+异步提交后 subagent 会保持 `busy`，直到 `subagent_poll` 或 `subagent_wait` 观察到对应 User turn 之后已经出现稳定的 Assistant turn，才切回 `ready`。Provider 只在 state 中保存待处理消息的 SHA-256 用于 turn 对账，不额外持久化消息正文。`busy` 时再次 `subagent_send` 返回 `subagent_busy`，`degraded` 状态则要求先 poll/wait 恢复，不会自动重发。
+
+`subagent_get` 对 `busy/degraded` 默认执行一次非阻塞 Poll，因此即使调用方仍按旧流程只会 get，也不会让已经完成的远端会话永久粘在 stale `busy`。状态摘要同时提供 `phase`、`next_action` 和 `last_observed_at`：`phase=submitted` 表示最新一轮提交后还没有成功观察远端，`phase=generating` 表示最近一次真实 Poll 确认仍未完成；`updated_at` 只是 LocalGate 本地状态最后变更时间，不是 ChatGPT 远端心跳。不能因为 `busy` 持续很久或 `updated_at` 不变化就直接 close/re-spawn；必须先 get/poll/wait 对账，避免制造重复 conversation。
+
+`max_pending_per_agent` 限制单个 subagent 同时等待串行 Provider 操作的本地调用数量；超过上限会直接返回 queue full，而不是无限堆积 goroutine。LocalGate 重启后，从磁盘加载的 subagent 会在首次需要 Provider I/O 的 send/poll/wait 前执行 Recover/Validate。若 OpenCLI 已经启动并可能完成了远端创建/消息提交，但随后发生超时、取消或无法确认 JSON 结果，调用会返回 `outcome_unknown`；已有 subagent 会标记为 `degraded`，并保留可用的 pending turn 对账信息。调用方不应自动重放同一次 spawn/send。
+
+`subagent_archive` 归档前始终先 Poll；若 conversation 仍在生成则返回 `subagent_archive_busy` 并保留映射。配置了 `archive_project` 时，它会使用 OpenCLI `chatgpt project-move`，成功路径是“确认不再生成 → 移动到 `archive_project` → 确认迁移成功 → 删除本地 `sg_*`”。未配置 `archive_project` 时则跳过远端 move，conversation 保持在原来的 Project/位置，只删除本地 `sg_*`。远端 move 或结果确认失败时不会删除本地记录；如果 move 已发生但响应丢失，会返回 `subagent_outcome_unknown`，后续显式重试会先确认 conversation 是否已经在目标 Project，从而避免盲目重复移动。
 
 ### HTTP 鉴权
 

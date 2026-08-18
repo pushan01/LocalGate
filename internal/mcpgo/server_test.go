@@ -64,6 +64,44 @@ func TestRegisterCoreToolsAddsAsyncSchema(t *testing.T) {
 	}
 }
 
+func TestSubagentSpawnRegisteredAndInvokableInMCPGo(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	if err := os.WriteFile(executable, []byte(`#!/bin/sh
+set -eu
+printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/g/g-p-deadbeef/c/conversation123","response":"delegated"}]'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	s := newTestServerWithConfig(t, cfg)
+	if s.impl.ListTools()["subagent_spawn"] == nil || s.impl.ListTools()["subagent_send"] == nil || s.impl.ListTools()["subagent_poll"] == nil || s.impl.ListTools()["subagent_wait"] == nil || s.impl.ListTools()["subagent_archive"] == nil {
+		t.Fatalf("subagent tools not registered: %#v", s.impl.ListTools())
+	}
+
+	res, err := s.makeInvokeHandler("subagent_spawn")(context.Background(), callReq(map[string]any{
+		"name":        "reviewer",
+		"instruction": "review code",
+	}))
+	if err != nil {
+		t.Fatalf("invoke subagent_spawn: %v", err)
+	}
+	payload := payloadFromResult(t, res)
+	result, _ := payload["result"].(map[string]any)
+	if statusFromPayload(payload) != "succeeded" || result["accepted"] != true || result["status"] != "busy" {
+		t.Fatalf("unexpected MCP subagent reply: %#v", payload)
+	}
+	if id, _ := result["subagent_id"].(string); !strings.HasPrefix(id, "sg_") {
+		t.Fatalf("unexpected MCP subagent id: %#v", payload)
+	}
+}
+
 func TestRegisterCoreToolsExposeOnlyBase64dataSchemaWhenEnabled(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{

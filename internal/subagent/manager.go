@@ -1,0 +1,833 @@
+package subagent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+var (
+	ErrNotFound               = errors.New("subagent not found")
+	ErrProviderNotFound       = errors.New("subagent provider not found")
+	ErrClosed                 = errors.New("subagent is closed")
+	ErrManagerClosed          = errors.New("subagent manager is closed")
+	ErrMaxAgents              = errors.New("subagent limit reached")
+	ErrQueueFull        error = queueFullError{}
+)
+
+type Options struct {
+	DefaultProvider    string
+	MaxAgents          int
+	MaxConcurrency     int
+	MaxPendingPerAgent int
+}
+
+type agentEntry struct {
+	mu            sync.Mutex
+	agent         Subagent
+	serial        chan struct{}
+	queue         chan struct{}
+	needsRecovery bool
+}
+
+type Manager struct {
+	mu                 sync.RWMutex
+	store              *Store
+	providers          map[string]Provider
+	agents             map[string]*agentEntry
+	conversationOwners map[string]string
+	defaultProvider    string
+	maxAgents          int
+	maxPendingPerAgent int
+	creating           int
+	sem                chan struct{}
+	closed             bool
+}
+
+func NewManager(store *Store, options Options) (*Manager, error) {
+	if store == nil {
+		return nil, errors.New("subagent store is required")
+	}
+	if options.MaxAgents <= 0 {
+		options.MaxAgents = 32
+	}
+	if options.MaxConcurrency <= 0 {
+		options.MaxConcurrency = 4
+	}
+	if options.MaxPendingPerAgent <= 0 {
+		options.MaxPendingPerAgent = 8
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load subagents: %w", err)
+	}
+	m := &Manager{
+		store:              store,
+		providers:          map[string]Provider{},
+		agents:             make(map[string]*agentEntry, len(loaded)),
+		conversationOwners: make(map[string]string, len(loaded)),
+		defaultProvider:    strings.TrimSpace(options.DefaultProvider),
+		maxAgents:          options.MaxAgents,
+		sem:                make(chan struct{}, options.MaxConcurrency),
+	}
+	for _, agent := range loaded {
+		needsRecovery := agent.Status != StatusClosed
+		key := conversationKey(agent.Provider, agent.ProviderState.ConversationID)
+		if key != "" {
+			if ownerID, exists := m.conversationOwners[key]; exists {
+				conflict := &ConversationConflictError{ConversationID: agent.ProviderState.ConversationID, OwnerID: ownerID}
+				agent.Status = StatusDegraded
+				agent.LastError = conflict.Error()
+				agent.UpdatedAt = time.Now().UTC()
+				needsRecovery = false
+				if err := store.Save(agent); err != nil {
+					return nil, fmt.Errorf("persist duplicate conversation quarantine for %s: %w", agent.ID, err)
+				}
+			} else {
+				m.conversationOwners[key] = agent.ID
+			}
+		}
+		m.agents[agent.ID] = newAgentEntry(agent, options.MaxPendingPerAgent, needsRecovery)
+	}
+	m.maxPendingPerAgent = options.MaxPendingPerAgent
+	return m, nil
+}
+
+func (m *Manager) RegisterProvider(name string, provider Provider) error {
+	name = strings.TrimSpace(name)
+	if name == "" || provider == nil {
+		return errors.New("subagent provider name and implementation are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return ErrManagerClosed
+	}
+	if _, exists := m.providers[name]; exists {
+		return fmt.Errorf("subagent provider %q already registered", name)
+	}
+	m.providers[name] = provider
+	return nil
+}
+
+func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
+	workspaceID := strings.TrimSpace(req.WorkspaceID)
+	if workspaceID == "" {
+		return CreateResult{}, errors.New("workspace id is required")
+	}
+	providerName := strings.TrimSpace(req.Provider)
+	if providerName == "" {
+		providerName = m.defaultProvider
+	}
+	provider, err := m.reserveCreate(providerName)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	defer m.finishCreateReservation()
+	if err := m.acquire(ctx); err != nil {
+		return CreateResult{}, err
+	}
+	state, err := provider.Create(ctx, ProviderCreateRequest{
+		WorkspaceID: workspaceID,
+		Name:        strings.TrimSpace(req.Name),
+		Instruction: req.Instruction,
+		Options:     cloneStringMap(req.Options),
+	})
+	m.release()
+	if err != nil {
+		return CreateResult{}, err
+	}
+	now := time.Now().UTC()
+	agent := Subagent{
+		ID:            m.newID(),
+		Name:          strings.TrimSpace(req.Name),
+		Provider:      providerName,
+		Status:        StatusBusy,
+		WorkspaceID:   workspaceID,
+		Instruction:   req.Instruction,
+		ProviderState: cloneProviderState(state),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if ownerID, claimErr := m.claimConversation(agent.Provider, agent.ProviderState.ConversationID, agent.ID); claimErr != nil {
+		m.markConversationOwnerDegraded(ownerID, claimErr)
+		return CreateResult{}, claimErr
+	}
+	claimed := conversationKey(agent.Provider, agent.ProviderState.ConversationID) != ""
+	if err := m.store.Save(agent); err != nil {
+		if claimed {
+			m.releaseConversationClaim(agent.Provider, agent.ProviderState.ConversationID, agent.ID)
+		}
+		_ = provider.Close(context.Background(), state)
+		return CreateResult{}, fmt.Errorf("persist subagent: %w", err)
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		if claimed {
+			m.releaseConversationClaim(agent.Provider, agent.ProviderState.ConversationID, agent.ID)
+		}
+		_ = provider.Close(context.Background(), state)
+		return CreateResult{}, ErrManagerClosed
+	}
+	m.agents[agent.ID] = newAgentEntry(agent, m.maxPendingPerAgent, false)
+	m.mu.Unlock()
+	return CreateResult{Subagent: cloneSubagent(agent)}, nil
+}
+
+func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Subagent, error) {
+	if strings.TrimSpace(message) == "" {
+		return Subagent{}, errors.New("subagent message is required")
+	}
+	entry, err := m.entry(workspaceID, id)
+	if err != nil {
+		return Subagent{}, err
+	}
+	if err := m.ensureConversationOwner(id, entry); err != nil {
+		return Subagent{}, err
+	}
+	if err := entry.reserveQueue(); err != nil {
+		return Subagent{}, err
+	}
+	defer entry.releaseQueue()
+	if err := entry.acquireSerial(ctx); err != nil {
+		return Subagent{}, err
+	}
+	defer entry.releaseSerial()
+
+	entry.mu.Lock()
+	if entry.agent.Status == StatusClosed {
+		entry.mu.Unlock()
+		return Subagent{}, ErrClosed
+	}
+	if entry.agent.Status == StatusBusy {
+		entry.mu.Unlock()
+		return Subagent{}, ErrBusy
+	}
+	if entry.agent.Status != StatusReady {
+		entry.mu.Unlock()
+		return Subagent{}, ErrNotReady
+	}
+	providerName := entry.agent.Provider
+	state := cloneProviderState(entry.agent.ProviderState)
+	needsRecovery := entry.needsRecovery
+	entry.mu.Unlock()
+
+	provider, err := m.provider(providerName)
+	if err != nil {
+		m.markEntryFailure(entry, err)
+		return Subagent{}, err
+	}
+	state, err = m.recoverEntry(ctx, entry, provider, state, needsRecovery)
+	if err != nil {
+		return Subagent{}, err
+	}
+
+	entry.mu.Lock()
+	entry.agent.Status = StatusBusy
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	busySnapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(busySnapshot); err != nil {
+		entry.mu.Lock()
+		entry.agent.Status = StatusReady
+		entry.mu.Unlock()
+		return Subagent{}, fmt.Errorf("persist subagent busy state: %w", err)
+	}
+	if err := m.acquire(ctx); err != nil {
+		m.restoreEntryReady(entry)
+		return Subagent{}, err
+	}
+	nextState, callErr := provider.Send(ctx, state, message)
+	m.release()
+	if callErr != nil {
+		if errors.Is(callErr, ErrOutcomeUnknown) && nextState.ConversationID != "" && nextState.ConversationID == state.ConversationID {
+			entry.mu.Lock()
+			entry.agent.ProviderState = cloneProviderState(nextState)
+			entry.mu.Unlock()
+		}
+		m.markEntryFailure(entry, callErr)
+		return Subagent{}, callErr
+	}
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(nextState)
+	entry.agent.Status = StatusBusy
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(snapshot); err != nil {
+		return Subagent{}, fmt.Errorf("persist subagent: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (m *Manager) Poll(ctx context.Context, workspaceID, id string) (ObserveResult, error) {
+	return m.observe(ctx, workspaceID, id, false)
+}
+
+func (m *Manager) Wait(ctx context.Context, workspaceID, id string) (ObserveResult, error) {
+	return m.observe(ctx, workspaceID, id, true)
+}
+
+func (m *Manager) observe(ctx context.Context, workspaceID, id string, wait bool) (ObserveResult, error) {
+	entry, err := m.entry(workspaceID, id)
+	if err != nil {
+		return ObserveResult{}, err
+	}
+	if err := m.ensureConversationOwner(id, entry); err != nil {
+		return ObserveResult{}, err
+	}
+	if err := entry.reserveQueue(); err != nil {
+		return ObserveResult{}, err
+	}
+	defer entry.releaseQueue()
+	if err := entry.acquireSerial(ctx); err != nil {
+		return ObserveResult{}, err
+	}
+	defer entry.releaseSerial()
+
+	entry.mu.Lock()
+	if entry.agent.Status == StatusClosed {
+		entry.mu.Unlock()
+		return ObserveResult{}, ErrClosed
+	}
+	providerName := entry.agent.Provider
+	state := cloneProviderState(entry.agent.ProviderState)
+	needsRecovery := entry.needsRecovery
+	entry.mu.Unlock()
+
+	provider, err := m.provider(providerName)
+	if err != nil {
+		m.markEntryFailure(entry, err)
+		return ObserveResult{}, err
+	}
+	state, err = m.recoverEntry(ctx, entry, provider, state, needsRecovery)
+	if err != nil {
+		return ObserveResult{}, err
+	}
+	if err := m.acquire(ctx); err != nil {
+		return ObserveResult{}, err
+	}
+	var nextState ProviderState
+	var observation Observation
+	if wait {
+		nextState, observation, err = provider.Wait(ctx, state)
+	} else {
+		nextState, observation, err = provider.Poll(ctx, state)
+	}
+	m.release()
+	if err != nil {
+		m.markEntryFailure(entry, err)
+		return ObserveResult{}, err
+	}
+
+	observedAt := time.Now().UTC()
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(nextState)
+	if observation.Generating {
+		entry.agent.Status = StatusBusy
+	} else {
+		entry.agent.Status = StatusReady
+	}
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = observedAt
+	entry.agent.LastObservedAt = observedAt
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(snapshot); err != nil {
+		return ObserveResult{}, fmt.Errorf("persist subagent observation: %w", err)
+	}
+	return ObserveResult{Subagent: snapshot, Reply: observation.Reply}, nil
+}
+
+func (m *Manager) Get(workspaceID, id string) (Subagent, error) {
+	entry, err := m.entry(workspaceID, id)
+	if err != nil {
+		return Subagent{}, err
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return cloneSubagent(entry.agent), nil
+}
+
+func (m *Manager) List(workspaceID string) ([]Subagent, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return nil, errors.New("workspace id is required")
+	}
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, ErrManagerClosed
+	}
+	entries := make([]*agentEntry, 0, len(m.agents))
+	for _, entry := range m.agents {
+		entries = append(entries, entry)
+	}
+	m.mu.RUnlock()
+	out := make([]Subagent, 0, len(entries))
+	for _, entry := range entries {
+		entry.mu.Lock()
+		if entry.agent.WorkspaceID == workspaceID {
+			out = append(out, cloneSubagent(entry.agent))
+		}
+		entry.mu.Unlock()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (m *Manager) CloseAgent(ctx context.Context, workspaceID, id string) (Subagent, error) {
+	entry, err := m.entry(workspaceID, id)
+	if err != nil {
+		return Subagent{}, err
+	}
+	if err := m.ensureConversationOwner(id, entry); err != nil {
+		return Subagent{}, err
+	}
+	if err := entry.acquireSerial(ctx); err != nil {
+		return Subagent{}, err
+	}
+	defer entry.releaseSerial()
+	entry.mu.Lock()
+	if entry.agent.Status == StatusClosed {
+		agent := cloneSubagent(entry.agent)
+		entry.mu.Unlock()
+		return agent, nil
+	}
+	providerName := entry.agent.Provider
+	state := cloneProviderState(entry.agent.ProviderState)
+	entry.mu.Unlock()
+	provider, err := m.provider(providerName)
+	if err != nil {
+		return Subagent{}, err
+	}
+	if err := m.acquire(ctx); err != nil {
+		return Subagent{}, err
+	}
+	callErr := provider.Close(ctx, state)
+	m.release()
+	entry.mu.Lock()
+	if callErr != nil {
+		entry.agent.UpdatedAt = time.Now().UTC()
+		entry.agent.Status = StatusDegraded
+		entry.agent.LastError = callErr.Error()
+		snapshot := cloneSubagent(entry.agent)
+		entry.mu.Unlock()
+		_ = m.store.Save(snapshot)
+		return snapshot, callErr
+	}
+	entry.agent.Status = StatusClosed
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	entry.needsRecovery = false
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(snapshot); err != nil {
+		return Subagent{}, fmt.Errorf("persist subagent: %w", err)
+	}
+	return snapshot, nil
+}
+
+// Archive lets the provider perform its configured archival step and only then
+// removes the LocalGate sg_* record. A provider may intentionally leave the
+// remote conversation in place when no archive destination is configured. Any
+// remote or verification failure preserves the local mapping so the operation
+// can be inspected or retried safely.
+func (m *Manager) Archive(ctx context.Context, workspaceID, id string) (Subagent, error) {
+	entry, err := m.entry(workspaceID, id)
+	if err != nil {
+		return Subagent{}, err
+	}
+	if err := m.ensureConversationOwner(id, entry); err != nil {
+		return Subagent{}, err
+	}
+	if err := entry.reserveQueue(); err != nil {
+		return Subagent{}, err
+	}
+	defer entry.releaseQueue()
+	if err := entry.acquireSerial(ctx); err != nil {
+		return Subagent{}, err
+	}
+	defer entry.releaseSerial()
+
+	entry.mu.Lock()
+	providerName := entry.agent.Provider
+	state := cloneProviderState(entry.agent.ProviderState)
+	needsRecovery := entry.needsRecovery
+	entry.mu.Unlock()
+
+	provider, err := m.provider(providerName)
+	if err != nil {
+		m.markEntryFailure(entry, err)
+		return Subagent{}, err
+	}
+	archiver, ok := provider.(Archiver)
+	if !ok {
+		return Subagent{}, ErrArchiveUnsupported
+	}
+	state, err = m.recoverEntry(ctx, entry, provider, state, needsRecovery)
+	if err != nil {
+		return Subagent{}, err
+	}
+
+	// A logical close does not stop an already-running remote generation. Poll
+	// immediately before the move so archive never knowingly relocates a turn
+	// whose outcome is still in flight.
+	if err := m.acquire(ctx); err != nil {
+		return Subagent{}, err
+	}
+	polledState, observation, pollErr := provider.Poll(ctx, state)
+	m.release()
+	if pollErr != nil {
+		m.markEntryFailure(entry, pollErr)
+		return Subagent{}, pollErr
+	}
+	state = cloneProviderState(polledState)
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(state)
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	if entry.agent.Status != StatusClosed {
+		if observation.Generating {
+			entry.agent.Status = StatusBusy
+		} else {
+			entry.agent.Status = StatusReady
+		}
+	}
+	preArchive := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(preArchive); err != nil {
+		return Subagent{}, fmt.Errorf("persist subagent before archive: %w", err)
+	}
+	if observation.Generating {
+		return preArchive, ErrArchiveBusy
+	}
+
+	if err := m.acquire(ctx); err != nil {
+		return Subagent{}, err
+	}
+	archivedState, archiveErr := archiver.Archive(ctx, state)
+	m.release()
+	if archiveErr != nil {
+		m.markEntryFailure(entry, archiveErr)
+		return Subagent{}, archiveErr
+	}
+
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(archivedState)
+	entry.agent.Status = StatusClosed
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	entry.needsRecovery = false
+	archived := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+
+	// Persist the provider's final archive state before deletion. If deletion
+	// itself fails, the retained record is safe to retry because providers are
+	// required to make Archive idempotent, including the no-move case.
+	if err := m.store.Save(archived); err != nil {
+		return archived, fmt.Errorf("persist archived subagent: %w", err)
+	}
+	if err := m.store.Delete(id); err != nil {
+		return archived, fmt.Errorf("delete archived subagent: %w", err)
+	}
+
+	m.mu.Lock()
+	if current := m.agents[id]; current == entry {
+		delete(m.agents, id)
+		key := conversationKey(archived.Provider, archived.ProviderState.ConversationID)
+		if key != "" && m.conversationOwners[key] == id {
+			delete(m.conversationOwners, key)
+		}
+	}
+	m.mu.Unlock()
+	return archived, nil
+}
+
+func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) reserveCreate(providerName string) (Provider, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, ErrManagerClosed
+	}
+	if providerName == "" {
+		return nil, ErrProviderNotFound
+	}
+	provider := m.providers[providerName]
+	if provider == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, providerName)
+	}
+	if len(m.agents)+m.creating >= m.maxAgents {
+		return nil, ErrMaxAgents
+	}
+	m.creating++
+	return provider, nil
+}
+
+func (m *Manager) finishCreateReservation() {
+	m.mu.Lock()
+	if m.creating > 0 {
+		m.creating--
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) entry(workspaceID, id string) (*agentEntry, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	id = strings.TrimSpace(id)
+	if workspaceID == "" || id == "" {
+		return nil, ErrNotFound
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrManagerClosed
+	}
+	entry := m.agents[id]
+	if entry == nil || entry.agent.WorkspaceID != workspaceID {
+		return nil, ErrNotFound
+	}
+	return entry, nil
+}
+
+func (m *Manager) provider(name string) (Provider, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return nil, ErrManagerClosed
+	}
+	provider := m.providers[name]
+	if provider == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, name)
+	}
+	return provider, nil
+}
+
+func conversationKey(providerName, conversationID string) string {
+	providerName = strings.TrimSpace(providerName)
+	conversationID = strings.TrimSpace(conversationID)
+	if providerName == "" || conversationID == "" {
+		return ""
+	}
+	return providerName + "\x00" + conversationID
+}
+
+func (m *Manager) claimConversation(providerName, conversationID, agentID string) (string, error) {
+	key := conversationKey(providerName, conversationID)
+	if key == "" {
+		return "", nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return "", ErrManagerClosed
+	}
+	if ownerID := m.conversationOwners[key]; ownerID != "" && ownerID != agentID {
+		return ownerID, &ConversationConflictError{ConversationID: strings.TrimSpace(conversationID), OwnerID: ownerID}
+	}
+	m.conversationOwners[key] = agentID
+	return agentID, nil
+}
+
+func (m *Manager) releaseConversationClaim(providerName, conversationID, agentID string) {
+	key := conversationKey(providerName, conversationID)
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.conversationOwners[key] == agentID {
+		delete(m.conversationOwners, key)
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) ensureConversationOwner(agentID string, entry *agentEntry) error {
+	entry.mu.Lock()
+	providerName := entry.agent.Provider
+	conversationID := entry.agent.ProviderState.ConversationID
+	entry.mu.Unlock()
+	key := conversationKey(providerName, conversationID)
+	if key == "" {
+		return nil
+	}
+	m.mu.RLock()
+	ownerID := m.conversationOwners[key]
+	m.mu.RUnlock()
+	if ownerID != "" && ownerID != agentID {
+		conflict := &ConversationConflictError{ConversationID: strings.TrimSpace(conversationID), OwnerID: ownerID}
+		m.markEntryFailure(entry, conflict)
+		return conflict
+	}
+	return nil
+}
+
+func (m *Manager) markConversationOwnerDegraded(ownerID string, cause error) {
+	if strings.TrimSpace(ownerID) == "" || cause == nil {
+		return
+	}
+	m.mu.RLock()
+	entry := m.agents[ownerID]
+	m.mu.RUnlock()
+	if entry != nil {
+		m.markEntryFailure(entry, cause)
+	}
+}
+
+func (m *Manager) acquire(ctx context.Context) error {
+	select {
+	case m.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) release() {
+	<-m.sem
+}
+
+func newAgentEntry(agent Subagent, maxPending int, needsRecovery bool) *agentEntry {
+	return &agentEntry{
+		agent:         cloneSubagent(agent),
+		serial:        make(chan struct{}, 1),
+		queue:         make(chan struct{}, maxPending+1),
+		needsRecovery: needsRecovery,
+	}
+}
+
+func (e *agentEntry) reserveQueue() error {
+	select {
+	case e.queue <- struct{}{}:
+		return nil
+	default:
+		return ErrQueueFull
+	}
+}
+
+func (e *agentEntry) releaseQueue() { <-e.queue }
+
+func (e *agentEntry) acquireSerial(ctx context.Context) error {
+	select {
+	case e.serial <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *agentEntry) releaseSerial() { <-e.serial }
+
+func (m *Manager) recoverEntry(ctx context.Context, entry *agentEntry, provider Provider, state ProviderState, needsRecovery bool) (ProviderState, error) {
+	if !needsRecovery {
+		return state, nil
+	}
+	if err := m.acquire(ctx); err != nil {
+		return ProviderState{}, err
+	}
+	recovered, recoverErr := provider.Recover(ctx, state)
+	m.release()
+	if recoverErr != nil {
+		m.markEntryFailure(entry, recoverErr)
+		return ProviderState{}, recoverErr
+	}
+	state = cloneProviderState(recovered)
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(state)
+	entry.agent.LastError = ""
+	entry.agent.UpdatedAt = time.Now().UTC()
+	entry.needsRecovery = false
+	recoveredSnapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(recoveredSnapshot); err != nil {
+		persistErr := fmt.Errorf("persist recovered subagent: %w", err)
+		m.markEntryFailure(entry, persistErr)
+		return ProviderState{}, persistErr
+	}
+	return state, nil
+}
+
+func (m *Manager) markEntryFailure(entry *agentEntry, cause error) {
+	entry.mu.Lock()
+	entry.agent.Status = StatusDegraded
+	entry.agent.LastError = cause.Error()
+	entry.agent.UpdatedAt = time.Now().UTC()
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	_ = m.store.Save(snapshot)
+}
+
+func (m *Manager) restoreEntryReady(entry *agentEntry) {
+	entry.mu.Lock()
+	changed := false
+	if entry.agent.Status == StatusBusy {
+		entry.agent.Status = StatusReady
+		entry.agent.UpdatedAt = time.Now().UTC()
+		changed = true
+	}
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if changed {
+		_ = m.store.Save(snapshot)
+	}
+}
+
+func (m *Manager) newID() string {
+	for {
+		var raw [12]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			panic(fmt.Sprintf("generate subagent id: %v", err))
+		}
+		id := "sg_" + hex.EncodeToString(raw[:])
+		m.mu.RLock()
+		_, exists := m.agents[id]
+		m.mu.RUnlock()
+		if !exists {
+			return id
+		}
+	}
+}
+
+func cloneSubagent(agent Subagent) Subagent {
+	agent.ProviderState = cloneProviderState(agent.ProviderState)
+	return agent
+}
+
+func cloneProviderState(state ProviderState) ProviderState {
+	state.Hints = cloneStringMap(state.Hints)
+	return state
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}

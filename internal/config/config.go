@@ -37,6 +37,7 @@ type Config struct {
 	LogStore         string              `yaml:"log_store"`
 	Admin            AdminConfig         `yaml:"admin"`
 	SessionCleanup   SessionCleanup      `yaml:"session_cleanup"`
+	Subagents        SubagentsConfig     `yaml:"subagents"`
 	HTTP             HTTP                `yaml:"http"`
 	MCPHTTP          MCPHTTP             `yaml:"mcp_http"`
 	FileExports      FileExports         `yaml:"file_exports"`
@@ -93,6 +94,26 @@ type SessionCleanup struct {
 	IdleTTLSeconds     int `yaml:"idle_ttl_seconds"`
 	MaxSessions        int `yaml:"max_sessions"`
 	SweepIntervalMs    int `yaml:"sweep_interval_ms"`
+}
+
+type SubagentsConfig struct {
+	Enabled            bool                    `yaml:"enabled"`
+	DefaultProvider    string                  `yaml:"default_provider"`
+	MaxAgents          int                     `yaml:"max_agents"`
+	MaxConcurrency     int                     `yaml:"max_concurrency"`
+	MaxPendingPerAgent int                     `yaml:"max_pending_per_agent"`
+	Providers          SubagentProvidersConfig `yaml:"providers"`
+}
+
+type SubagentProvidersConfig struct {
+	OpenCLIChatGPT OpenCLIChatGPTProviderConfig `yaml:"opencli_chatgpt"`
+}
+
+type OpenCLIChatGPTProviderConfig struct {
+	Executable     string `yaml:"executable"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	DefaultProject string `yaml:"default_project"`
+	ArchiveProject string `yaml:"archive_project"`
 }
 
 type HTTP struct {
@@ -249,6 +270,17 @@ func Default() Config {
 			IdleTTLSeconds:     30 * 60,
 			MaxSessions:        100,
 			SweepIntervalMs:    60 * 1000,
+		},
+		Subagents: SubagentsConfig{
+			MaxAgents:          32,
+			MaxConcurrency:     4,
+			MaxPendingPerAgent: 8,
+			Providers: SubagentProvidersConfig{
+				OpenCLIChatGPT: OpenCLIChatGPTProviderConfig{
+					Executable:     "opencli",
+					TimeoutSeconds: 120,
+				},
+			},
 		},
 		ToolHTTPMode: ToolHTTPMode{
 			AccessTokenTTLSeconds: 10 * 60,
@@ -812,6 +844,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateAdminConfig(cfg.Admin); err != nil {
 		return Config{}, err
 	}
+	if err := validateSubagentsConfig(cfg.Subagents); err != nil {
+		return Config{}, err
+	}
 	if err := validateFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL); err != nil {
 		return Config{}, err
 	}
@@ -925,6 +960,21 @@ func (c Config) SafeSummary() map[string]any {
 			"idle_ttl_seconds":     c.SessionCleanup.IdleTTLSeconds,
 			"max_sessions":         c.SessionCleanup.MaxSessions,
 			"sweep_interval_ms":    c.SessionCleanup.SweepIntervalMs,
+		},
+		"subagents": map[string]any{
+			"enabled":               c.Subagents.Enabled,
+			"default_provider":      c.Subagents.DefaultProvider,
+			"max_agents":            c.Subagents.MaxAgents,
+			"max_concurrency":       c.Subagents.MaxConcurrency,
+			"max_pending_per_agent": c.Subagents.MaxPendingPerAgent,
+			"providers": map[string]any{
+				"opencli_chatgpt": map[string]any{
+					"executable":      c.Subagents.Providers.OpenCLIChatGPT.Executable,
+					"timeout_seconds": c.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds,
+					"default_project": c.Subagents.Providers.OpenCLIChatGPT.DefaultProject,
+					"archive_project": c.Subagents.Providers.OpenCLIChatGPT.ArchiveProject,
+				},
+			},
 		},
 		"http_auth": map[string]any{
 			"enabled":     c.HTTPAuth.Enabled,
@@ -1067,6 +1117,28 @@ func validateAdminConfig(cfg AdminConfig) error {
 		return errors.New("admin.base_url must be a valid http or https URL when admin is enabled")
 	}
 	return validateApprovalConfig(cfg.Approval)
+}
+
+func validateSubagentsConfig(cfg SubagentsConfig) error {
+	if cfg.MaxAgents <= 0 {
+		return errors.New("subagents.max_agents must be greater than zero")
+	}
+	if cfg.MaxConcurrency <= 0 {
+		return errors.New("subagents.max_concurrency must be greater than zero")
+	}
+	if cfg.MaxPendingPerAgent <= 0 {
+		return errors.New("subagents.max_pending_per_agent must be greater than zero")
+	}
+	if cfg.Providers.OpenCLIChatGPT.TimeoutSeconds <= 0 {
+		return errors.New("subagents.providers.opencli_chatgpt.timeout_seconds must be greater than zero")
+	}
+	if cfg.Enabled && strings.TrimSpace(cfg.DefaultProvider) == "" {
+		return errors.New("subagents.default_provider is required when subagents.enabled is true")
+	}
+	if cfg.Enabled && cfg.DefaultProvider == "opencli_chatgpt" && strings.TrimSpace(cfg.Providers.OpenCLIChatGPT.Executable) == "" {
+		return errors.New("subagents.providers.opencli_chatgpt.executable is required when opencli_chatgpt is the default provider")
+	}
+	return nil
 }
 
 func NormalizeFileExportsConfig(cfg FileExports, controlBaseURL string) FileExports {
