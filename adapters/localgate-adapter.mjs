@@ -179,9 +179,26 @@ const snapshotScript = String.raw`
     const text = isUser
       ? stripUserPrefix(node.innerText || node.textContent || '')
       : stripAssistantPrefix(node.innerText || node.textContent || '');
-    if (!text) continue;
+    // Gemini image-generation responses can have a real model response with no
+    // textual body at all: the response container only contains generated
+    // image media. Preserve an empty Assistant turn in that case so LocalGate
+    // can reconcile the pending User turn once generation has stopped. Do not
+    // treat an arbitrary empty model-response node as completion; require
+    // explicit generated-media structure in the same response container.
+    const responseRoot = !isUser
+      ? node.closest('model-response, response-container, .response-container')
+      : null;
+    const hasGeneratedMedia = !!(responseRoot && responseRoot.querySelector(
+      '.generated-images, single-image.generated-image, .generated-image img, img.image.loaded'
+    ));
+    if (!text && !hasGeneratedMedia) continue;
     const previous = turns[turns.length - 1];
     if (previous && previous.Role === role) {
+      if (!text && hasGeneratedMedia) {
+        // A text Assistant turn followed by generated media belongs to the same
+        // model response. It already provides the completion anchor we need.
+        continue;
+      }
       if (previous.Text === text) continue;
       if (previous.Text.includes(text)) continue;
       if (text.includes(previous.Text)) {

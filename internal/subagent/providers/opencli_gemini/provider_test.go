@@ -160,6 +160,33 @@ printf '%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":
 	}
 }
 
+func TestPollCompletesOnEmptyAssistantTurnForGeneratedMedia(t *testing.T) {
+	executable := writeFakeExecutable(t, `
+printf '%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":[{"Index":1,"Role":"User","Text":"draw an image"},{"Index":2,"Role":"Assistant","Text":""}]}]'
+`)
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID: "abc123def4567890",
+		Hints:          withPendingMarker(nil, "draw an image"),
+	}
+	next, observation, err := p.Poll(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Generating {
+		t.Fatalf("generated-media Assistant turn should complete the pending turn: %#v", observation)
+	}
+	if observation.Reply.Text != "" {
+		t.Fatalf("generated-media completion should not invent reply text: %#v", observation)
+	}
+	if next.Hints[pendingFingerprintHint] != "" {
+		t.Fatalf("pending marker was not cleared after generated-media completion: %#v", next)
+	}
+}
+
 func TestProviderClassifiesAuthAndTimeout(t *testing.T) {
 	authExecutable := writeFakeExecutable(t, `
 printf '%s\n' 'Google session cookies missing; sign in' >&2
