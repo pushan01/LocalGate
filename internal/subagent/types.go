@@ -21,12 +21,14 @@ type ProviderState struct {
 type Subagent struct {
 	ID             string        `json:"id"`
 	Name           string        `json:"name,omitempty"`
+	SubagentType   string        `json:"subagent_type,omitempty"`
 	Provider       string        `json:"provider"`
 	Status         Status        `json:"status"`
 	WorkspaceID    string        `json:"workspace_id"`
 	Instruction    string        `json:"instruction,omitempty"`
 	ProviderState  ProviderState `json:"provider_state"`
 	LastError      string        `json:"last_error,omitempty"`
+	LastErrorCode  string        `json:"last_error_code,omitempty"`
 	CreatedAt      time.Time     `json:"created_at"`
 	UpdatedAt      time.Time     `json:"updated_at"`
 	LastObservedAt time.Time     `json:"last_observed_at,omitempty"`
@@ -42,11 +44,12 @@ type Observation struct {
 }
 
 type CreateRequest struct {
-	WorkspaceID string
-	Name        string
-	Provider    string
-	Instruction string
-	Options     map[string]string
+	WorkspaceID  string
+	Name         string
+	SubagentType string
+	Provider     string
+	Instruction  string
+	Options      map[string]string
 }
 
 type CreateResult struct {
@@ -54,6 +57,8 @@ type CreateResult struct {
 }
 
 type ObserveResult struct {
-	Subagent Subagent
-	Reply    Reply
+	Subagent   Subagent
+	Reply      Reply
+	Refreshed  bool
+	RetryAfter time.Duration
 }

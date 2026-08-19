@@ -24,6 +24,7 @@ import (
 const (
 	Name                      = "opencli_chatgpt"
 	defaultTimeout            = 120 * time.Second
+	waitProbeChunk            = 9 * time.Second
 	maxCapturedBytes          = 8 << 20
 	pendingHashHint           = "opencli_chatgpt.pending_message_sha256" // v1 compatibility only
 	pendingFingerprintHint    = "opencli_chatgpt.pending_message_fingerprint_v2"
@@ -38,6 +39,7 @@ type ErrorKind string
 const (
 	ErrorConfiguration ErrorKind = "configuration"
 	ErrorAuthRequired  ErrorKind = "auth_required"
+	ErrorConnectorAuth ErrorKind = "connector_auth_required"
 	ErrorChallenge     ErrorKind = "challenge"
 	ErrorQuota         ErrorKind = "quota"
 	ErrorTimeout       ErrorKind = "timeout"
@@ -67,25 +69,45 @@ func (e *ProviderError) Error() string {
 
 func (e *ProviderError) Unwrap() error { return e.Cause }
 
+func (e *ProviderError) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return string(e.Kind)
+}
+
 type Config struct {
-	Executable     string
-	Timeout        time.Duration
-	DefaultProject string
-	ArchiveProject string
+	Executable        string
+	AdapterExecutable string
+	Timeout           time.Duration
+	SubmitInterval    time.Duration
+	DefaultProject    string
+	ArchiveProject    string
 }
 
 type Provider struct {
-	executable     string
-	timeout        time.Duration
-	defaultProject string
-	archiveProject string
-	surfaceSerial  chan struct{}
+	executable        string
+	adapterExecutable string
+	timeout           time.Duration
+	submitInterval    time.Duration
+	defaultProject    string
+	archiveProject    string
+	surfaceSerial     chan struct{}
+	submitSerial      chan struct{}
+	lastSubmitDoneAt  time.Time
 }
 
 func New(cfg Config) (*Provider, error) {
 	executable, err := resolveExecutable(cfg.Executable)
 	if err != nil {
 		return nil, err
+	}
+	adapterExecutable := ""
+	if strings.TrimSpace(cfg.AdapterExecutable) != "" {
+		adapterExecutable, err = resolveExecutable(cfg.AdapterExecutable)
+		if err != nil {
+			return nil, err
+		}
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -106,11 +128,14 @@ func New(cfg Config) (*Provider, error) {
 		}
 	}
 	return &Provider{
-		executable:     executable,
-		timeout:        timeout,
-		defaultProject: projectID,
-		archiveProject: archiveProjectID,
-		surfaceSerial:  make(chan struct{}, 1),
+		executable:        executable,
+		adapterExecutable: adapterExecutable,
+		timeout:           timeout,
+		submitInterval:    cfg.SubmitInterval,
+		defaultProject:    projectID,
+		archiveProject:    archiveProjectID,
+		surfaceSerial:     make(chan struct{}, 1),
+		submitSerial:      make(chan struct{}, 1),
 	}, nil
 }
 
@@ -136,7 +161,7 @@ func (p *Provider) Create(ctx context.Context, req subagent.ProviderCreateReques
 		args = append(args, "--new")
 	}
 	args = append(args, "--wait", "false", "--format", "json", "--", prompt)
-	payload, err := p.run(ctx, args, true)
+	payload, err := p.runSubmit(ctx, args)
 	if err != nil {
 		if mayHaveSubmitted(err) {
 			return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(err)
@@ -172,12 +197,12 @@ func (p *Provider) Send(ctx context.Context, state subagent.ProviderState, messa
 	}
 	pendingState := cloneState(state)
 	pendingState.Hints = withPendingMarker(pendingState.Hints, prompt)
-	payload, err := p.run(ctx, []string{
+	payload, err := p.runSubmit(ctx, []string{
 		"chatgpt", "send",
 		"--conversation", conversationID,
 		"--format", "json",
 		"--", prompt,
-	}, true)
+	})
 	if err != nil {
 		if mayHaveSubmitted(err) {
 			return pendingState, subagent.NewOutcomeUnknownError(err)
@@ -199,21 +224,64 @@ func (p *Provider) Send(ctx context.Context, state subagent.ProviderState, messa
 }
 
 func (p *Provider) Poll(ctx context.Context, state subagent.ProviderState) (subagent.ProviderState, subagent.Observation, error) {
-	return p.observe(ctx, state, false)
+	return p.observe(ctx, state, 0)
 }
 
 func (p *Provider) Wait(ctx context.Context, state subagent.ProviderState) (subagent.ProviderState, subagent.Observation, error) {
-	return p.observe(ctx, state, true)
+	waitCtx := ctx
+	cancel := func() {}
+	if p.timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, p.timeout)
+	}
+	defer cancel()
+
+	current := cloneState(state)
+	for {
+		chunk := waitProbeChunk
+		if deadline, ok := waitCtx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return current, subagent.Observation{}, waitCtx.Err()
+			}
+			if remaining < chunk {
+				chunk = remaining
+			}
+		}
+
+		next, observation, err := p.observe(waitCtx, current, chunk)
+		if err == nil {
+			return next, observation, nil
+		}
+		if providerErrorKind(err) != ErrorTimeout || waitCtx.Err() != nil {
+			return current, subagent.Observation{}, err
+		}
+
+		// OpenCLI's detail --wait cannot see connector authorization cards because
+		// they live outside data-message-author-role turns. After each bounded
+		// wait slice, take one non-blocking observation so a stalled turn can be
+		// probed for reconnect-required UI instead of waiting the full provider
+		// timeout.
+		next, observation, err = p.observe(waitCtx, current, 0)
+		if err != nil {
+			return next, observation, err
+		}
+		current = next
+		if !observation.Generating {
+			return next, observation, nil
+		}
+	}
 }
 
-func (p *Provider) observe(ctx context.Context, state subagent.ProviderState, wait bool) (subagent.ProviderState, subagent.Observation, error) {
+func (p *Provider) observe(ctx context.Context, state subagent.ProviderState, waitFor time.Duration) (subagent.ProviderState, subagent.Observation, error) {
 	conversationID := strings.TrimSpace(state.ConversationID)
 	if conversationID == "" {
 		return state, subagent.Observation{}, &ProviderError{Kind: ErrorConfiguration, Message: "opencli ChatGPT conversation id is required"}
 	}
 	args := []string{"chatgpt", "detail", conversationID}
-	if wait {
-		seconds := int(p.timeout / time.Second)
+	if p.adapterExecutable != "" {
+		args = []string{"chatgpt", "inspect", conversationID}
+	} else if waitFor > 0 {
+		seconds := int((waitFor + time.Second - 1) / time.Second)
 		if seconds < 1 {
 			seconds = 1
 		}
@@ -229,7 +297,108 @@ func (p *Provider) observe(ctx context.Context, state subagent.ProviderState, wa
 		return state, subagent.Observation{}, &ProviderError{Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err}
 	}
 	next, observation := observationFromRows(state, rows)
+	if observation.Generating && !rowsGenerating(rows) && hasPendingMarker(state.Hints) {
+		blocker, probeErr := p.probeConversationBlocker(ctx, state)
+		if probeErr == nil && blocker.Blocked {
+			message := "ChatGPT connector authorization has expired; open the subagent ChatGPT conversation and complete authorization to continue"
+			if blocker.Connector != "" {
+				message = fmt.Sprintf("ChatGPT connector %s authorization has expired; open the subagent ChatGPT conversation and complete authorization to continue", blocker.Connector)
+			}
+			return next, observation, &ProviderError{Kind: ErrorConnectorAuth, Message: message}
+		}
+	}
 	return next, observation, nil
+}
+
+type conversationBlocker struct {
+	Blocked   bool   `json:"blocked"`
+	Kind      string `json:"kind"`
+	Connector string `json:"connector"`
+	Evidence  string `json:"evidence"`
+}
+
+func (p *Provider) probeConversationBlocker(ctx context.Context, state subagent.ProviderState) (conversationBlocker, error) {
+	conversationID := strings.TrimSpace(state.ConversationID)
+	if conversationID == "" {
+		return conversationBlocker{}, nil
+	}
+	conversationURL := strings.TrimSpace(state.ConversationURL)
+	if conversationURL == "" {
+		conversationURL = "https://chatgpt.com/c/" + url.PathEscape(conversationID)
+	}
+	sum := sha256.Sum256([]byte(conversationID))
+	session := fmt.Sprintf("localgate-subagent-probe-%x", sum[:6])
+	if _, err := p.run(ctx, []string{"browser", session, "open", conversationURL, "--window", "background"}, false); err != nil {
+		return conversationBlocker{}, err
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = p.run(closeCtx, []string{"browser", session, "close"}, false)
+	}()
+
+	payload, err := p.run(ctx, []string{"browser", session, "eval", connectorBlockerProbeJS}, false)
+	if err != nil {
+		return conversationBlocker{}, err
+	}
+	var blocker conversationBlocker
+	if err := json.Unmarshal(bytes.TrimSpace(payload), &blocker); err != nil {
+		return conversationBlocker{}, fmt.Errorf("decode opencli ChatGPT connector blocker probe: %w", err)
+	}
+	return blocker, nil
+}
+
+const connectorBlockerProbeJS = `(() => {
+    const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+    const labelOf = (el) => normalize(el.getAttribute('aria-label') || el.innerText || el.textContent || '');
+    const reconnectLabel = (value) => /^(?:重新连接|重新授权|Reconnect|Reauthorize)$/i.test(value);
+    const expiryText = (value) => /连接已过期|连接(?:已经)?失效|授权已过期|connection\s+(?:to\s+.+?\s+)?has\s+expired|connection\s+expired|authorization\s+(?:has\s+)?expired|reconnect.+(?:use|continue)/i.test(value);
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+    for (const button of buttons) {
+        if (!reconnectLabel(labelOf(button))) continue;
+        let node = button;
+        for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+            const text = normalize(node.innerText || node.textContent || '');
+            if (!expiryText(text)) continue;
+            let connector = '';
+            let match = text.match(/你与\s*([^\s，。]{1,80})\s*的连接(?:已过期|已经失效|失效)/);
+            if (!match) match = text.match(/重新连接\s+([^\s，。]{1,80})/);
+            if (!match) match = text.match(/(?:your\s+)?connection\s+to\s+(.{1,80}?)\s+has\s+expired/i);
+            if (!match) match = text.match(/reconnect\s+([^\s,.]{1,80})/i);
+            if (match) connector = normalize(match[1]);
+            return {
+                blocked: true,
+                kind: 'connector_auth_required',
+                connector,
+                evidence: text.slice(0, 600),
+            };
+        }
+    }
+    return { blocked: false, kind: '', connector: '', evidence: '' };
+})()`
+
+func rowsGenerating(rows []detailRow) bool {
+	for _, row := range rows {
+		if row.Generating {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPendingMarker(hints map[string]string) bool {
+	if len(hints) == 0 {
+		return false
+	}
+	return strings.TrimSpace(hints[pendingAfterIndexHint]) != "" ||
+		strings.TrimSpace(hints[pendingHashHint]) != ""
 }
 
 func (p *Provider) Recover(_ context.Context, state subagent.ProviderState) (subagent.ProviderState, error) {
@@ -360,7 +529,15 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 	var stdout, stderr limitedBuffer
 	stdout.max = maxCapturedBytes
 	stderr.max = 256 << 10
-	cmd := exec.CommandContext(runCtx, p.executable, args...)
+	executable := p.executable
+	useBundledAdapter := len(args) >= 2 && args[0] == "chatgpt" && (args[1] == "project-move" || args[1] == "inspect") && p.adapterExecutable != ""
+	if useBundledAdapter {
+		executable = p.adapterExecutable
+	}
+	cmd := exec.CommandContext(runCtx, executable, args...)
+	if useBundledAdapter {
+		cmd.Env = append(os.Environ(), "LOCALGATE_BROWSER_EXECUTABLE="+p.executable)
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
@@ -392,6 +569,33 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 		return nil, &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT JSON output exceeded capture limit", MayHaveSubmitted: maySubmit}
 	}
 	return append([]byte(nil), stdout.Bytes()...), nil
+}
+
+func (p *Provider) runSubmit(ctx context.Context, args []string) ([]byte, error) {
+	if p.submitInterval <= 0 {
+		return p.run(ctx, args, true)
+	}
+	select {
+	case p.submitSerial <- struct{}{}:
+		defer func() { <-p.submitSerial }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if !p.lastSubmitDoneAt.IsZero() {
+		remaining := p.submitInterval - time.Since(p.lastSubmitDoneAt)
+		if remaining > 0 {
+			timer := time.NewTimer(remaining)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	payload, err := p.run(ctx, args, true)
+	p.lastSubmitDoneAt = time.Now()
+	return payload, err
 }
 
 func parseAskRow(payload []byte) (askRow, error) {
@@ -808,6 +1012,8 @@ func classifyFailure(stderr string) ErrorKind {
 		return ErrorAuthRequired
 	case strings.Contains(text, "quota"), strings.Contains(text, "rate limit"), strings.Contains(text, "usage limit"), strings.Contains(text, "usage cap"):
 		return ErrorQuota
+	case strings.Contains(text, "did not finish or stabilize before timeout"), strings.Contains(text, "timed out"), strings.Contains(text, "timeout"):
+		return ErrorTimeout
 	default:
 		return ErrorExecution
 	}
@@ -819,8 +1025,12 @@ func failureMessage(kind ErrorKind) string {
 		return "ChatGPT browser session requires challenge handling"
 	case ErrorAuthRequired:
 		return "ChatGPT browser session requires login"
+	case ErrorConnectorAuth:
+		return "ChatGPT connector authorization has expired; open the subagent ChatGPT conversation and complete authorization to continue"
 	case ErrorQuota:
 		return "ChatGPT browser session is quota limited"
+	case ErrorTimeout:
+		return "opencli ChatGPT command timed out"
 	default:
 		return "opencli ChatGPT command failed"
 	}
@@ -829,6 +1039,14 @@ func failureMessage(kind ErrorKind) string {
 func mayHaveSubmitted(err error) bool {
 	var providerErr *ProviderError
 	return errors.As(err, &providerErr) && providerErr.MayHaveSubmitted
+}
+
+func providerErrorKind(err error) ErrorKind {
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.Kind
+	}
+	return ""
 }
 
 type limitedBuffer struct {

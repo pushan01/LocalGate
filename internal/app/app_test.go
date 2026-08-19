@@ -835,6 +835,18 @@ func TestNewRegistersOpenCLIChatGPTProvider(t *testing.T) {
 	executable := filepath.Join(root, "opencli-fake")
 	script := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "browser" ]; then
+  case "${3:-}" in
+    open)
+      printf '%s\n' '{"url":"https://chatgpt.com/c/conversation123","page":"fake"}'
+      ;;
+    eval)
+      printf '%s\n' '{"url":"https://chatgpt.com/c/conversation123","messages":[{"Role":"User","Text":"review code"},{"Role":"Assistant","Text":"created"}],"generating":false,"blocker":""}'
+      ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 case "${2:-}" in
   ask)
     printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/g/g-p-deadbeef/c/conversation123","response":""}]'
@@ -900,6 +912,88 @@ esac
 	}
 }
 
+func TestNewRegistersOpenCLIGeminiProvider(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	script := `#!/bin/sh
+set -eu
+case "${2:-}" in
+  submit)
+    printf '%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Generating":true}]'
+    ;;
+  inspect)
+    printf '%s\n' '[{"ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Generating":false,"Turns":[{"Index":1,"Role":"User","Text":"review code"},{"Index":2,"Role":"Assistant","Text":"gemini created"}]}]'
+    ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_gemini"
+	cfg.Subagents.Providers.OpenCLIGemini.Executable = executable
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app: %v", err)
+	}
+	defer a.Close()
+	result, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{
+		WorkspaceID: "ws",
+		Name:        "gemini-reviewer",
+		Instruction: "review code",
+	})
+	if err != nil {
+		t.Fatalf("create Gemini subagent: %v", err)
+	}
+	if result.Subagent.Provider != "opencli_gemini" || result.Subagent.ProviderState.ConversationID != "abc123def4567890" {
+		t.Fatalf("unexpected Gemini subagent: %#v", result.Subagent)
+	}
+	polled, err := a.Subagents.Poll(context.Background(), "ws", result.Subagent.ID)
+	if err != nil {
+		t.Fatalf("poll Gemini subagent: %v", err)
+	}
+	if polled.Subagent.Status != subagent.StatusReady || polled.Reply.Text != "gemini created" {
+		t.Fatalf("unexpected Gemini poll: %#v", polled)
+	}
+}
+
+func TestNewMaterializesBundledGeminiAdapterWhenExecutableIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = true
+	cfg.Subagents.DefaultProvider = "opencli_gemini"
+	cfg.Subagents.Providers.OpenCLIGemini.Enabled = true
+	cfg.Subagents.Providers.OpenCLIGemini.Executable = ""
+	cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable = "/bin/true"
+	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init app with bundled Gemini adapter: %v", err)
+	}
+	defer a.Close()
+	matches, err := filepath.Glob(filepath.Join(cfg.LogStore, "runtime", "adapters", "*", "localgate-adapter.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("materialized Gemini adapters = %v, want one", matches)
+	}
+	info, err := os.Stat(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("materialized Gemini adapter is not executable: %v", info.Mode())
+	}
+}
+
 func TestSubagentToolCanBeApprovalGatedByName(t *testing.T) {
 	root := t.TempDir()
 	marker := filepath.Join(root, "opencli-invoked")
@@ -946,6 +1040,18 @@ func TestSubagentOutcomeUnknownKeepsConversationAndSetsTaskCode(t *testing.T) {
 	executable := filepath.Join(root, "opencli-fake")
 	script := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "browser" ]; then
+  case "${3:-}" in
+    open)
+      printf '%s\n' '{"url":"https://chatgpt.com/c/conversation123","page":"fake"}'
+      ;;
+    eval)
+      printf '%s\n' '{"url":"https://chatgpt.com/c/conversation123","messages":[{"Role":"User","Text":"start"},{"Role":"Assistant","Text":"ready"}],"generating":false,"blocker":""}'
+      ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 if [ "${2:-}" = "detail" ]; then
   printf '%s\n' '[{"Index":1,"Role":"User","Text":"start","Generating":false,"StableSeconds":0},{"Index":2,"Role":"Assistant","Text":"ready","Generating":false,"StableSeconds":0}]'
   exit 0

@@ -203,6 +203,24 @@ func newArchiveTestManager(t *testing.T, provider *archiveFakeProvider) (*Manage
 	return m, store
 }
 
+func TestStoreLoadsLegacySubagentWithoutType(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "subagents")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"id":"sg_legacy1","name":"legacy","provider":"fake","status":"ready","workspace_id":"ws","provider_state":{"conversation_id":"conv-legacy"}}`
+	if err := os.WriteFile(filepath.Join(base, "sg_legacy1.json"), []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewStore(base).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].SubagentType != "" || loaded[0].Name != "legacy" {
+		t.Fatalf("unexpected legacy subagent: %#v", loaded)
+	}
+}
+
 func TestManagerArchiveMovesBeforeDeletingLocalRecord(t *testing.T) {
 	provider := &archiveFakeProvider{fakeProvider: newFakeProvider()}
 	m, store := newArchiveTestManager(t, provider)
@@ -382,9 +400,10 @@ func TestManagerCreatePersistsAndReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := m.Create(context.Background(), CreateRequest{
-		WorkspaceID: "ws-a",
-		Name:        "reviewer",
-		Instruction: "review code",
+		WorkspaceID:  "ws-a",
+		Name:         "reviewer",
+		SubagentType: "reviewer",
+		Instruction:  "review code",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -410,7 +429,7 @@ func TestManagerCreatePersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.Instruction != "review code" || agent.ProviderState.ConversationID != "conv-reviewer" {
+	if agent.SubagentType != "reviewer" || agent.Instruction != "review code" || agent.ProviderState.ConversationID != "conv-reviewer" {
 		t.Fatalf("reloaded agent mismatch: %#v", agent)
 	}
 }
@@ -458,6 +477,121 @@ func TestManagerPollBusyThenWaitReadyAndRejectsSendWhileBusy(t *testing.T) {
 	}
 	if !agent.LastObservedAt.Before(agent.UpdatedAt) {
 		t.Fatalf("new async submission should be newer than last observation: observed=%s updated=%s", agent.LastObservedAt, agent.UpdatedAt)
+	}
+}
+
+func TestManagerThrottlesRepeatedPollsForSameAgent(t *testing.T) {
+	provider := newFakeProvider()
+	m := newTestManager(t, provider, Options{
+		SameAgentPollInterval:      80 * time.Millisecond,
+		DifferentAgentPollInterval: 30 * time.Millisecond,
+	})
+	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Refreshed {
+		t.Fatalf("first poll should refresh: %#v", first)
+	}
+	second, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Refreshed || second.RetryAfter <= 0 {
+		t.Fatalf("same-agent poll should be throttled: %#v", second)
+	}
+	provider.mu.Lock()
+	pollCount := provider.pollCount
+	provider.mu.Unlock()
+	if pollCount != 1 {
+		t.Fatalf("provider poll count = %d, want 1 while throttled", pollCount)
+	}
+
+	time.Sleep(90 * time.Millisecond)
+	third, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !third.Refreshed {
+		t.Fatalf("poll after same-agent interval should refresh: %#v", third)
+	}
+}
+
+func TestManagerThrottlesPollsAcrossDifferentAgents(t *testing.T) {
+	provider := newFakeProvider()
+	m := newTestManager(t, provider, Options{
+		SameAgentPollInterval:      80 * time.Millisecond,
+		DifferentAgentPollInterval: 40 * time.Millisecond,
+	})
+	one, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "two", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Poll(context.Background(), "ws", one.Subagent.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Poll(context.Background(), "ws", two.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Refreshed || second.RetryAfter <= 0 {
+		t.Fatalf("different-agent poll should be throttled: %#v", second)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	third, err := m.Poll(context.Background(), "ws", two.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !third.Refreshed {
+		t.Fatalf("different-agent poll after interval should refresh: %#v", third)
+	}
+}
+
+func TestManagerWaitSleepsUntilPollIntervalAllowsRefresh(t *testing.T) {
+	provider := newFakeProvider()
+	provider.pollBusy = true
+	m := newTestManager(t, provider, Options{
+		SameAgentPollInterval:      60 * time.Millisecond,
+		DifferentAgentPollInterval: 20 * time.Millisecond,
+	})
+	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Poll(context.Background(), "ws", created.Subagent.ID); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	provider.pollBusy = false
+	provider.mu.Unlock()
+
+	started := time.Now()
+	waited, err := m.Wait(context.Background(), "ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 45*time.Millisecond {
+		t.Fatalf("wait ignored same-agent poll interval: %s", elapsed)
+	}
+	if !waited.Refreshed || waited.Subagent.Status != StatusReady {
+		t.Fatalf("unexpected waited result: %#v", waited)
+	}
+	provider.mu.Lock()
+	pollCount := provider.pollCount
+	waitCount := provider.waitCount
+	provider.mu.Unlock()
+	if pollCount != 2 || waitCount != 0 {
+		t.Fatalf("provider poll/wait counts = %d/%d, want 2/0", pollCount, waitCount)
 	}
 }
 

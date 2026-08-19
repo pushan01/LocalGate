@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	maxNameBytes        = 256
-	maxProviderBytes    = 128
-	maxProjectBytes     = 2048
-	maxInstructionBytes = 256 << 10
-	maxMessageBytes     = 256 << 10
+	maxNameBytes         = 256
+	maxSubagentTypeBytes = 128
+	maxProviderBytes     = 128
+	maxProjectBytes      = 2048
+	maxInstructionBytes  = 256 << 10
+	maxMessageBytes      = 256 << 10
 )
 
 func NewTools(manager *runtime.Manager) []core.Tool {
@@ -44,7 +45,11 @@ func (SpawnTool) Schema() any {
 	return objectSchema(map[string]any{
 		"name": map[string]any{
 			"type":        "string",
-			"description": "Optional short role/name for this subagent, such as security-reviewer.",
+			"description": "Optional short display name for this subagent, such as security-reviewer-1.",
+		},
+		"subagent_type": map[string]any{
+			"type":        "string",
+			"description": "Optional logical subagent type independent of provider, such as coder, reviewer, researcher, or general.",
 		},
 		"provider": map[string]any{
 			"type":        "string",
@@ -63,11 +68,12 @@ func (SpawnTool) Schema() any {
 
 func (SpawnTool) OutputSchema() any {
 	return objectSchema(map[string]any{
-		"subagent_id": map[string]any{"type": "string"},
-		"name":        map[string]any{"type": "string"},
-		"provider":    map[string]any{"type": "string"},
-		"status":      map[string]any{"type": "string"},
-		"accepted":    map[string]any{"type": "boolean"},
+		"subagent_id":   map[string]any{"type": "string"},
+		"name":          map[string]any{"type": "string"},
+		"subagent_type": map[string]any{"type": "string"},
+		"provider":      map[string]any{"type": "string"},
+		"status":        map[string]any{"type": "string"},
+		"accepted":      map[string]any{"type": "boolean"},
 	}, []string{"subagent_id", "provider", "status", "accepted"})
 }
 
@@ -85,6 +91,10 @@ func (t SpawnTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 	if err := optionalText("name", name, maxNameBytes); err != nil {
 		return nil, err
 	}
+	subagentType := strings.TrimSpace(stringArg(args, "subagent_type"))
+	if err := optionalText("subagent_type", subagentType, maxSubagentTypeBytes); err != nil {
+		return nil, err
+	}
 	provider := strings.TrimSpace(stringArg(args, "provider"))
 	if err := optionalText("provider", provider, maxProviderBytes); err != nil {
 		return nil, err
@@ -98,21 +108,23 @@ func (t SpawnTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 		options = map[string]string{"project": project}
 	}
 	result, err := t.manager.Create(ctx, runtime.CreateRequest{
-		WorkspaceID: ic.WorkspaceID,
-		Name:        name,
-		Provider:    provider,
-		Instruction: instruction,
-		Options:     options,
+		WorkspaceID:  ic.WorkspaceID,
+		Name:         name,
+		SubagentType: subagentType,
+		Provider:     provider,
+		Instruction:  instruction,
+		Options:      options,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"subagent_id": result.Subagent.ID,
-		"name":        result.Subagent.Name,
-		"provider":    result.Subagent.Provider,
-		"status":      string(result.Subagent.Status),
-		"accepted":    true,
+		"subagent_id":   result.Subagent.ID,
+		"name":          result.Subagent.Name,
+		"subagent_type": result.Subagent.SubagentType,
+		"provider":      result.Subagent.Provider,
+		"status":        string(result.Subagent.Status),
+		"accepted":      true,
 	}, nil
 }
 
@@ -175,7 +187,7 @@ type PollTool struct{ manager *runtime.Manager }
 func (PollTool) Name() string { return "subagent_poll" }
 
 func (PollTool) Description() string {
-	return "Check an existing LocalGate subagent's remote generation state without waiting. Returns busy with any visible partial assistant text, or ready with the completed reply."
+	return "Check an existing LocalGate subagent's generation state without waiting for model completion. Remote refreshes are paced; calls made too soon return the cached local state with refreshed=false and retry_after_ms."
 }
 
 func (PollTool) Schema() any { return observeSchema() }
@@ -204,7 +216,7 @@ type WaitTool struct{ manager *runtime.Manager }
 func (WaitTool) Name() string { return "subagent_wait" }
 
 func (WaitTool) Description() string {
-	return "Wait until the current LocalGate subagent turn finishes and return the completed assistant reply. Use this only when the parent agent explicitly needs the result now."
+	return "Wait until the current LocalGate subagent turn finishes and return the completed assistant reply. Remote status checks respect the configured same-agent and different-agent polling intervals."
 }
 
 func (WaitTool) Schema() any { return observeSchema() }
@@ -233,7 +245,7 @@ type GetTool struct{ manager *runtime.Manager }
 func (GetTool) Name() string { return "subagent_get" }
 
 func (GetTool) Description() string {
-	return "Get one LocalGate subagent's status and provider conversation mapping summary. By default a busy or degraded subagent is non-blockingly refreshed from the provider so stale busy state can self-heal; set refresh=false for a local-only snapshot."
+	return "Get one LocalGate subagent's status and provider conversation mapping summary. By default a busy or degraded subagent is remotely refreshed when its polling interval allows; otherwise the cached local state is returned with refreshed=false. Set refresh=false for a strictly local snapshot."
 }
 
 func (GetTool) Schema() any {
@@ -248,10 +260,11 @@ func (GetTool) Schema() any {
 
 func (GetTool) OutputSchema() any {
 	return objectSchema(map[string]any{
-		"subagent":      agentOutputSchema(),
-		"refreshed":     map[string]any{"type": "boolean"},
-		"reply":         map[string]any{"type": "string"},
-		"refresh_error": map[string]any{"type": "string"},
+		"subagent":       agentOutputSchema(),
+		"refreshed":      map[string]any{"type": "boolean"},
+		"retry_after_ms": map[string]any{"type": "integer"},
+		"reply":          map[string]any{"type": "string"},
+		"refresh_error":  map[string]any{"type": "string"},
 	}, []string{"subagent", "refreshed"})
 }
 
@@ -283,8 +296,13 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 	observed, refreshErr := t.manager.Poll(ctx, ic.WorkspaceID, id)
 	if refreshErr == nil {
 		result["subagent"] = agentMap(observed.Subagent)
-		result["refreshed"] = true
-		result["reply"] = observed.Reply.Text
+		result["refreshed"] = observed.Refreshed
+		if observed.Refreshed {
+			result["reply"] = observed.Reply.Text
+		}
+		if observed.RetryAfter > 0 {
+			result["retry_after_ms"] = observed.RetryAfter.Milliseconds()
+		}
 		return result, nil
 	}
 	if errors.Is(refreshErr, context.Canceled) || errors.Is(refreshErr, context.DeadlineExceeded) {
@@ -434,6 +452,7 @@ func agentMap(agent runtime.Subagent) map[string]any {
 	return map[string]any{
 		"subagent_id":      agent.ID,
 		"name":             agent.Name,
+		"subagent_type":    agent.SubagentType,
 		"provider":         agent.Provider,
 		"status":           string(agent.Status),
 		"workspace_id":     agent.WorkspaceID,
@@ -441,6 +460,7 @@ func agentMap(agent runtime.Subagent) map[string]any {
 		"conversation_url": agent.ProviderState.ConversationURL,
 		"project_id":       agent.ProviderState.ProjectID,
 		"last_error":       agent.LastError,
+		"last_error_code":  agent.LastErrorCode,
 		"phase":            agentPhase(agent),
 		"next_action":      nextAction(agent),
 		"created_at":       formatTime(agent.CreatedAt),
@@ -453,6 +473,7 @@ func agentOutputSchema() map[string]any {
 	properties := map[string]any{
 		"subagent_id":      map[string]any{"type": "string"},
 		"name":             map[string]any{"type": "string"},
+		"subagent_type":    map[string]any{"type": "string"},
 		"provider":         map[string]any{"type": "string"},
 		"status":           map[string]any{"type": "string"},
 		"workspace_id":     map[string]any{"type": "string"},
@@ -460,6 +481,7 @@ func agentOutputSchema() map[string]any {
 		"conversation_url": map[string]any{"type": "string"},
 		"project_id":       map[string]any{"type": "string"},
 		"last_error":       map[string]any{"type": "string"},
+		"last_error_code":  map[string]any{"type": "string"},
 		"phase":            map[string]any{"type": "string"},
 		"next_action":      map[string]any{"type": "string"},
 		"created_at":       map[string]any{"type": "string"},
@@ -479,6 +501,9 @@ func agentPhase(agent runtime.Subagent) string {
 	case runtime.StatusReady:
 		return "ready"
 	case runtime.StatusDegraded:
+		if agent.LastErrorCode == "connector_auth_required" {
+			return "connector_auth_required"
+		}
 		return "degraded"
 	case runtime.StatusClosed:
 		return "closed"
@@ -491,7 +516,12 @@ func nextAction(agent runtime.Subagent) string {
 	switch agent.Status {
 	case runtime.StatusReady:
 		return "send"
-	case runtime.StatusBusy, runtime.StatusDegraded:
+	case runtime.StatusDegraded:
+		if agent.LastErrorCode == "connector_auth_required" {
+			return "authorize"
+		}
+		return "poll"
+	case runtime.StatusBusy:
 		return "poll"
 	case runtime.StatusClosed:
 		return "none"
@@ -538,18 +568,25 @@ func observeSchema() any {
 
 func observeOutputSchema() any {
 	return objectSchema(map[string]any{
-		"subagent_id": map[string]any{"type": "string"},
-		"status":      map[string]any{"type": "string"},
-		"reply":       map[string]any{"type": "string"},
-	}, []string{"subagent_id", "status", "reply"})
+		"subagent_id":    map[string]any{"type": "string"},
+		"status":         map[string]any{"type": "string"},
+		"reply":          map[string]any{"type": "string"},
+		"refreshed":      map[string]any{"type": "boolean"},
+		"retry_after_ms": map[string]any{"type": "integer"},
+	}, []string{"subagent_id", "status", "reply", "refreshed"})
 }
 
 func observeResultMap(id string, result runtime.ObserveResult) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"subagent_id": id,
 		"status":      string(result.Subagent.Status),
 		"reply":       result.Reply.Text,
+		"refreshed":   result.Refreshed,
 	}
+	if result.RetryAfter > 0 {
+		out["retry_after_ms"] = result.RetryAfter.Milliseconds()
+	}
+	return out
 }
 
 func mutatingAnnotations(idempotent bool) map[string]any {

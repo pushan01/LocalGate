@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	adapterbundle "localgate/adapters"
 	"localgate/internal/approval"
 	"localgate/internal/capabilities/filesystem"
 	"localgate/internal/capabilities/meta"
@@ -35,6 +36,7 @@ import (
 	"localgate/internal/static"
 	"localgate/internal/subagent"
 	opencligpt "localgate/internal/subagent/providers/opencli_chatgpt"
+	opencligemini "localgate/internal/subagent/providers/opencli_gemini"
 	"localgate/internal/toolaccess"
 	"localgate/internal/upgrade"
 	"localgate/internal/upload"
@@ -120,28 +122,58 @@ func New(cfg config.Config) (*App, error) {
 		manager, subagentErr := subagent.NewManager(
 			subagent.NewStore(filepath.Join(storeBase, "subagents")),
 			subagent.Options{
-				DefaultProvider:    cfg.Subagents.DefaultProvider,
-				MaxAgents:          cfg.Subagents.MaxAgents,
-				MaxConcurrency:     cfg.Subagents.MaxConcurrency,
-				MaxPendingPerAgent: cfg.Subagents.MaxPendingPerAgent,
+				DefaultProvider:            cfg.Subagents.DefaultProvider,
+				MaxAgents:                  cfg.Subagents.MaxAgents,
+				MaxConcurrency:             cfg.Subagents.MaxConcurrency,
+				MaxPendingPerAgent:         cfg.Subagents.MaxPendingPerAgent,
+				SameAgentPollInterval:      time.Duration(cfg.Subagents.SameAgentPollIntervalSeconds) * time.Second,
+				DifferentAgentPollInterval: time.Duration(cfg.Subagents.DifferentAgentPollIntervalSeconds) * time.Second,
 			},
 		)
 		if subagentErr != nil {
 			return nil, fmt.Errorf("init subagents: %w", subagentErr)
 		}
-		if cfg.Subagents.DefaultProvider == opencligpt.Name {
+		if cfg.Subagents.DefaultProvider == opencligpt.Name || cfg.Subagents.Providers.OpenCLIChatGPT.Enabled {
 			providerConfig := cfg.Subagents.Providers.OpenCLIChatGPT
+			adapterExecutable, materializeErr := adapterbundle.Materialize(filepath.Join(storeBase, "runtime"))
+			if materializeErr != nil {
+				return nil, fmt.Errorf("materialize %s adapter: %w", opencligpt.Name, materializeErr)
+			}
 			provider, providerErr := opencligpt.New(opencligpt.Config{
-				Executable:     providerConfig.Executable,
-				Timeout:        time.Duration(providerConfig.TimeoutSeconds) * time.Second,
-				DefaultProject: providerConfig.DefaultProject,
-				ArchiveProject: providerConfig.ArchiveProject,
+				Executable:        providerConfig.Executable,
+				AdapterExecutable: adapterExecutable,
+				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
+				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
+				DefaultProject:    providerConfig.DefaultProject,
+				ArchiveProject:    providerConfig.ArchiveProject,
 			})
 			if providerErr != nil {
 				return nil, fmt.Errorf("init %s provider: %w", opencligpt.Name, providerErr)
 			}
 			if providerErr := manager.RegisterProvider(opencligpt.Name, provider); providerErr != nil {
 				return nil, fmt.Errorf("register %s provider: %w", opencligpt.Name, providerErr)
+			}
+		}
+		if cfg.Subagents.DefaultProvider == opencligemini.Name || cfg.Subagents.Providers.OpenCLIGemini.Enabled {
+			providerConfig := cfg.Subagents.Providers.OpenCLIGemini
+			adapterExecutable := strings.TrimSpace(providerConfig.Executable)
+			if adapterExecutable == "" {
+				adapterExecutable, subagentErr = adapterbundle.Materialize(filepath.Join(storeBase, "runtime"))
+				if subagentErr != nil {
+					return nil, fmt.Errorf("materialize %s adapter: %w", opencligemini.Name, subagentErr)
+				}
+			}
+			provider, providerErr := opencligemini.New(opencligemini.Config{
+				Executable:        adapterExecutable,
+				BrowserExecutable: providerConfig.BrowserExecutable,
+				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
+				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
+			})
+			if providerErr != nil {
+				return nil, fmt.Errorf("init %s provider: %w", opencligemini.Name, providerErr)
+			}
+			if providerErr := manager.RegisterProvider(opencligemini.Name, provider); providerErr != nil {
+				return nil, fmt.Errorf("register %s provider: %w", opencligemini.Name, providerErr)
 			}
 		}
 		subagentManager = manager

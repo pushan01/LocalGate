@@ -97,23 +97,36 @@ type SessionCleanup struct {
 }
 
 type SubagentsConfig struct {
-	Enabled            bool                    `yaml:"enabled"`
-	DefaultProvider    string                  `yaml:"default_provider"`
-	MaxAgents          int                     `yaml:"max_agents"`
-	MaxConcurrency     int                     `yaml:"max_concurrency"`
-	MaxPendingPerAgent int                     `yaml:"max_pending_per_agent"`
-	Providers          SubagentProvidersConfig `yaml:"providers"`
+	Enabled                           bool                    `yaml:"enabled"`
+	DefaultProvider                   string                  `yaml:"default_provider"`
+	MaxAgents                         int                     `yaml:"max_agents"`
+	MaxConcurrency                    int                     `yaml:"max_concurrency"`
+	MaxPendingPerAgent                int                     `yaml:"max_pending_per_agent"`
+	SameAgentPollIntervalSeconds      int                     `yaml:"same_agent_poll_interval_seconds"`
+	DifferentAgentPollIntervalSeconds int                     `yaml:"different_agent_poll_interval_seconds"`
+	Providers                         SubagentProvidersConfig `yaml:"providers"`
 }
 
 type SubagentProvidersConfig struct {
 	OpenCLIChatGPT OpenCLIChatGPTProviderConfig `yaml:"opencli_chatgpt"`
+	OpenCLIGemini  OpenCLIGeminiProviderConfig  `yaml:"opencli_gemini"`
 }
 
 type OpenCLIChatGPTProviderConfig struct {
-	Executable     string `yaml:"executable"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
-	DefaultProject string `yaml:"default_project"`
-	ArchiveProject string `yaml:"archive_project"`
+	Enabled               bool   `yaml:"enabled"`
+	Executable            string `yaml:"executable"`
+	TimeoutSeconds        int    `yaml:"timeout_seconds"`
+	SubmitIntervalSeconds int    `yaml:"submit_interval_seconds"`
+	DefaultProject        string `yaml:"default_project"`
+	ArchiveProject        string `yaml:"archive_project"`
+}
+
+type OpenCLIGeminiProviderConfig struct {
+	Enabled               bool   `yaml:"enabled"`
+	Executable            string `yaml:"executable"`
+	BrowserExecutable     string `yaml:"browser_executable"`
+	TimeoutSeconds        int    `yaml:"timeout_seconds"`
+	SubmitIntervalSeconds int    `yaml:"submit_interval_seconds"`
 }
 
 type HTTP struct {
@@ -272,13 +285,19 @@ func Default() Config {
 			SweepIntervalMs:    60 * 1000,
 		},
 		Subagents: SubagentsConfig{
-			MaxAgents:          32,
-			MaxConcurrency:     4,
-			MaxPendingPerAgent: 8,
+			MaxAgents:                         32,
+			MaxConcurrency:                    4,
+			MaxPendingPerAgent:                8,
+			SameAgentPollIntervalSeconds:      10,
+			DifferentAgentPollIntervalSeconds: 5,
 			Providers: SubagentProvidersConfig{
 				OpenCLIChatGPT: OpenCLIChatGPTProviderConfig{
 					Executable:     "opencli",
 					TimeoutSeconds: 120,
+				},
+				OpenCLIGemini: OpenCLIGeminiProviderConfig{
+					BrowserExecutable: "opencli",
+					TimeoutSeconds:    120,
 				},
 			},
 		},
@@ -962,17 +981,28 @@ func (c Config) SafeSummary() map[string]any {
 			"sweep_interval_ms":    c.SessionCleanup.SweepIntervalMs,
 		},
 		"subagents": map[string]any{
-			"enabled":               c.Subagents.Enabled,
-			"default_provider":      c.Subagents.DefaultProvider,
-			"max_agents":            c.Subagents.MaxAgents,
-			"max_concurrency":       c.Subagents.MaxConcurrency,
-			"max_pending_per_agent": c.Subagents.MaxPendingPerAgent,
+			"enabled":                               c.Subagents.Enabled,
+			"default_provider":                      c.Subagents.DefaultProvider,
+			"max_agents":                            c.Subagents.MaxAgents,
+			"max_concurrency":                       c.Subagents.MaxConcurrency,
+			"max_pending_per_agent":                 c.Subagents.MaxPendingPerAgent,
+			"same_agent_poll_interval_seconds":      c.Subagents.SameAgentPollIntervalSeconds,
+			"different_agent_poll_interval_seconds": c.Subagents.DifferentAgentPollIntervalSeconds,
 			"providers": map[string]any{
 				"opencli_chatgpt": map[string]any{
-					"executable":      c.Subagents.Providers.OpenCLIChatGPT.Executable,
-					"timeout_seconds": c.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds,
-					"default_project": c.Subagents.Providers.OpenCLIChatGPT.DefaultProject,
-					"archive_project": c.Subagents.Providers.OpenCLIChatGPT.ArchiveProject,
+					"enabled":                 c.Subagents.Providers.OpenCLIChatGPT.Enabled,
+					"executable":              c.Subagents.Providers.OpenCLIChatGPT.Executable,
+					"timeout_seconds":         c.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds,
+					"submit_interval_seconds": c.Subagents.Providers.OpenCLIChatGPT.SubmitIntervalSeconds,
+					"default_project":         c.Subagents.Providers.OpenCLIChatGPT.DefaultProject,
+					"archive_project":         c.Subagents.Providers.OpenCLIChatGPT.ArchiveProject,
+				},
+				"opencli_gemini": map[string]any{
+					"enabled":                 c.Subagents.Providers.OpenCLIGemini.Enabled,
+					"executable":              c.Subagents.Providers.OpenCLIGemini.Executable,
+					"browser_executable":      c.Subagents.Providers.OpenCLIGemini.BrowserExecutable,
+					"timeout_seconds":         c.Subagents.Providers.OpenCLIGemini.TimeoutSeconds,
+					"submit_interval_seconds": c.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds,
 				},
 			},
 		},
@@ -1129,14 +1159,32 @@ func validateSubagentsConfig(cfg SubagentsConfig) error {
 	if cfg.MaxPendingPerAgent <= 0 {
 		return errors.New("subagents.max_pending_per_agent must be greater than zero")
 	}
+	if cfg.SameAgentPollIntervalSeconds < 0 {
+		return errors.New("subagents.same_agent_poll_interval_seconds must not be negative")
+	}
+	if cfg.DifferentAgentPollIntervalSeconds < 0 {
+		return errors.New("subagents.different_agent_poll_interval_seconds must not be negative")
+	}
 	if cfg.Providers.OpenCLIChatGPT.TimeoutSeconds <= 0 {
 		return errors.New("subagents.providers.opencli_chatgpt.timeout_seconds must be greater than zero")
+	}
+	if cfg.Providers.OpenCLIGemini.TimeoutSeconds <= 0 {
+		return errors.New("subagents.providers.opencli_gemini.timeout_seconds must be greater than zero")
+	}
+	if cfg.Providers.OpenCLIChatGPT.SubmitIntervalSeconds < 0 {
+		return errors.New("subagents.providers.opencli_chatgpt.submit_interval_seconds must not be negative")
+	}
+	if cfg.Providers.OpenCLIGemini.SubmitIntervalSeconds < 0 {
+		return errors.New("subagents.providers.opencli_gemini.submit_interval_seconds must not be negative")
 	}
 	if cfg.Enabled && strings.TrimSpace(cfg.DefaultProvider) == "" {
 		return errors.New("subagents.default_provider is required when subagents.enabled is true")
 	}
-	if cfg.Enabled && cfg.DefaultProvider == "opencli_chatgpt" && strings.TrimSpace(cfg.Providers.OpenCLIChatGPT.Executable) == "" {
-		return errors.New("subagents.providers.opencli_chatgpt.executable is required when opencli_chatgpt is the default provider")
+	if cfg.Enabled && (cfg.DefaultProvider == "opencli_chatgpt" || cfg.Providers.OpenCLIChatGPT.Enabled) && strings.TrimSpace(cfg.Providers.OpenCLIChatGPT.Executable) == "" {
+		return errors.New("subagents.providers.opencli_chatgpt.executable is required when opencli_chatgpt is enabled or the default provider")
+	}
+	if cfg.Enabled && (cfg.DefaultProvider == "opencli_gemini" || cfg.Providers.OpenCLIGemini.Enabled) && strings.TrimSpace(cfg.Providers.OpenCLIGemini.Executable) == "" && strings.TrimSpace(cfg.Providers.OpenCLIGemini.BrowserExecutable) == "" {
+		return errors.New("subagents.providers.opencli_gemini.browser_executable is required when using the built-in Gemini adapter")
 	}
 	return nil
 }

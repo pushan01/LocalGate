@@ -613,7 +613,9 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 
 ### Subagents
 
-首个 Provider 使用 OpenCLI 驱动已经登录的 ChatGPT Web。建议先在 ChatGPT 中创建一个专用 Project，再把 Project ID 或 `/g/g-p-...` URL 配给 `default_project`，这样新建 subagent 会话不会散落在普通聊天列表中：
+Browser-backed Provider 使用 OpenCLI 驱动已经登录的 ChatGPT Web 或 Gemini Web。可以同时启用多个 Provider，并在 `subagent_spawn` 里通过 `provider` 选择；`default_provider` 只决定省略 `provider` 时使用哪一个。ChatGPT 建议先创建一个专用 Project，再把 Project ID 或 `/g/g-p-...` URL 配给 `default_project`：
+
+`subagent_spawn` 还支持可选的 `subagent_type`，用于标记 Provider 无关的逻辑角色，例如 `coder`、`reviewer`、`researcher`。它和 `name`、`provider` 是独立概念：`name` 是实例显示名，`subagent_type` 是角色分类，`provider` 是实际承载该会话的后端。`subagent_type` 会随 `sg_*` 映射持久化，并在 `subagent_get` / `subagent_list` 中返回；旧记录没有该字段时仍可正常加载。
 
 ```yaml
 subagents:
@@ -622,17 +624,30 @@ subagents:
   max_agents: 32
   max_concurrency: 4
   max_pending_per_agent: 8
+  same_agent_poll_interval_seconds: 10
+  different_agent_poll_interval_seconds: 5
   providers:
     opencli_chatgpt:
+      enabled: true
       executable: opencli
       timeout_seconds: 120
+      submit_interval_seconds: 0
       default_project: deadbeef
       archive_project: cafebabe
+    opencli_gemini:
+      enabled: true
+      browser_executable: opencli
+      timeout_seconds: 120
+      submit_interval_seconds: 5
 ```
 
-创建时有 Project 就调用 `opencli chatgpt ask --project ... --wait false`，只等 conversation ID/URL 建立；后续消息通过 `opencli chatgpt send --conversation ...` 注入同一对话，不等待 assistant 回复。`subagent_poll` / `subagent_wait` 使用 `chatgpt detail` 读取远端状态和 reply。LocalGate 不把 OpenCLI browser session 或 tab target 当作持久身份。
+创建时有 Project 就调用 upstream `opencli chatgpt ask --project ... --wait false`，只等 conversation ID/URL 建立；后续消息通过 upstream `opencli chatgpt send --conversation ...` 注入同一对话，不等待 assistant 回复。`subagent_poll` / `subagent_wait` 则使用 LocalGate 内置的 ChatGPT `inspect` DOM adapter，通过通用 OpenCLI Browser Bridge 非阻塞读取远端 turns 与 generating 状态，避免依赖 upstream `chatgpt detail` 的页面加载等待行为。LocalGate 不把 OpenCLI browser session 或 tab target 当作持久身份。
 
-OpenCLI ChatGPT adapter 使用一个 persistent site session，同一 browser surface 上的 `ask/send/detail/project-move` 都可能导航当前 tab。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 persistent tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。显式 `subagent_wait` 会占用该 surface 更久，所以协调多个 Agent 时优先使用非阻塞 `subagent_poll`。
+ChatGPT 的普通 `ask/send` 使用 upstream OpenCLI；状态 `inspect` 与 upstream 当前没有的 `project-move` 由同一个 LocalGate 内置 adapter runner 实现。`project-move` 通过通用 OpenCLI Browser Bridge 打开 conversation 的项目菜单，并读取 Browser Bridge 捕获到的 ChatGPT conversation/project network response 验证真实 Project membership；不会仅凭 project-looking URL 判断移动成功。因此 LocalGate 不要求安装包含私有 ChatGPT subagent 命令的 OpenCLI fork。
+
+Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go:embed` 发布。启动时 LocalGate 会把 runner 释放到 `log_store/runtime/adapters/<content-hash>/localgate-adapter.mjs`；runner 只依赖 OpenCLI 的通用 `browser open/eval/keys` Browser Bridge，因此不要求用户安装带 `gemini submit/inspect` 私有分叉的 OpenCLI。`browser_executable` 指向这个通用 browser backend；`executable` 仅保留为开发/兼容用的自定义 adapter runner override。Gemini 仍复用同一套 `spawn → busy → poll/wait → ready → send` 生命周期、持久化 `sg_*` 映射和状态查询节流。Gemini 没有 ChatGPT Project/`project-move` 对应语义，所以当前 `subagent_archive` 对 `opencli_gemini` 返回 archive unsupported；`subagent_close` 仍是逻辑关闭，不删除 Gemini 历史会话。
+
+ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect/project-move` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
 
 每个 `(provider, conversation_id)` 在 Manager 中只能有一个 `sg_*` owner。若 Provider 异常返回一个已经被其他 `sg_*` 使用的 conversation，新的 spawn 会失败并返回 `subagent_conversation_conflict`，不会静默制造两个角色共享同一 ChatGPT 会话。Pending turn 对账使用“提交前最后观察到的 message index + 规范化展示文本 fingerprint”；因此 ChatGPT DOM 去掉 Markdown 反引号、粗体等展示符后仍能识别原 User turn，同时发送后短暂读到旧 DOM 时也不会过早变成 ready。
 
@@ -642,7 +657,11 @@ OpenCLI ChatGPT adapter 使用一个 persistent site session，同一 browser su
 
 `max_pending_per_agent` 限制单个 subagent 同时等待串行 Provider 操作的本地调用数量；超过上限会直接返回 queue full，而不是无限堆积 goroutine。LocalGate 重启后，从磁盘加载的 subagent 会在首次需要 Provider I/O 的 send/poll/wait 前执行 Recover/Validate。若 OpenCLI 已经启动并可能完成了远端创建/消息提交，但随后发生超时、取消或无法确认 JSON 结果，调用会返回 `outcome_unknown`；已有 subagent 会标记为 `degraded`，并保留可用的 pending turn 对账信息。调用方不应自动重放同一次 spawn/send。
 
-`subagent_archive` 归档前始终先 Poll；若 conversation 仍在生成则返回 `subagent_archive_busy` 并保留映射。配置了 `archive_project` 时，它会使用 OpenCLI `chatgpt project-move`，成功路径是“确认不再生成 → 移动到 `archive_project` → 确认迁移成功 → 删除本地 `sg_*`”。未配置 `archive_project` 时则跳过远端 move，conversation 保持在原来的 Project/位置，只删除本地 `sg_*`。远端 move 或结果确认失败时不会删除本地记录；如果 move 已发生但响应丢失，会返回 `subagent_outcome_unknown`，后续显式重试会先确认 conversation 是否已经在目标 Project，从而避免盲目重复移动。
+状态查询默认做两层节流：同一个 subagent 的远端状态刷新至少间隔 `same_agent_poll_interval_seconds`（默认 10 秒）；切换到不同 subagent 时，两次远端状态刷新至少间隔 `different_agent_poll_interval_seconds`（默认 5 秒）。`subagent_poll` 和 `subagent_get(refresh=true)` 在间隔未到时直接返回最近一次本地状态，并返回 `refreshed=false` 与 `retry_after_ms`，不会继续请求 ChatGPT；`subagent_wait` 会等待到允许的时间点再继续检查。两项设为 `0` 可关闭对应节流。
+
+消息提交节流是 provider 级配置：`subagents.providers.<provider>.submit_interval_seconds` 控制该 provider 下所有 `subagent_spawn` / `subagent_send` 的最小冷却时间，`0` 表示关闭。冷却从上一条提交命令完成后开始计算；如果下一次提交来得太早，Provider 会等待到允许的时间再执行，而不是返回 rate-limit 错误。ChatGPT 与 Gemini 各自维护独立的提交节流状态，`poll/inspect/archive` 不受这个配置影响。
+
+`subagent_archive` 归档前始终先 Poll；若 conversation 仍在生成则返回 `subagent_archive_busy` 并保留映射。配置了 `archive_project` 时，它会使用 LocalGate 内置的 ChatGPT `project-move` adapter，成功路径是“确认不再生成 → 移动到 `archive_project` → 通过 network response 确认真实 Project membership → 删除本地 `sg_*`”。未配置 `archive_project` 时则跳过远端 move，conversation 保持在原来的 Project/位置，只删除本地 `sg_*`。远端 move 或结果确认失败时不会删除本地记录；如果 move 已发生但响应丢失，会返回 `subagent_outcome_unknown`，后续显式重试会先确认 conversation 是否已经在目标 Project，从而避免盲目重复移动。
 
 ### HTTP 鉴权
 

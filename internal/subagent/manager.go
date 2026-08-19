@@ -22,10 +22,12 @@ var (
 )
 
 type Options struct {
-	DefaultProvider    string
-	MaxAgents          int
-	MaxConcurrency     int
-	MaxPendingPerAgent int
+	DefaultProvider            string
+	MaxAgents                  int
+	MaxConcurrency             int
+	MaxPendingPerAgent         int
+	SameAgentPollInterval      time.Duration
+	DifferentAgentPollInterval time.Duration
 }
 
 type agentEntry struct {
@@ -37,17 +39,24 @@ type agentEntry struct {
 }
 
 type Manager struct {
-	mu                 sync.RWMutex
-	store              *Store
-	providers          map[string]Provider
-	agents             map[string]*agentEntry
-	conversationOwners map[string]string
-	defaultProvider    string
-	maxAgents          int
-	maxPendingPerAgent int
-	creating           int
-	sem                chan struct{}
-	closed             bool
+	mu                         sync.RWMutex
+	pollMu                     sync.Mutex
+	store                      *Store
+	providers                  map[string]Provider
+	agents                     map[string]*agentEntry
+	conversationOwners         map[string]string
+	defaultProvider            string
+	maxAgents                  int
+	maxPendingPerAgent         int
+	sameAgentPollInterval      time.Duration
+	differentAgentPollInterval time.Duration
+	lastPollByAgent            map[string]time.Time
+	lastPollAgentID            string
+	lastPollCompletedAt        time.Time
+	pollSerial                 chan struct{}
+	creating                   int
+	sem                        chan struct{}
+	closed                     bool
 }
 
 func NewManager(store *Store, options Options) (*Manager, error) {
@@ -68,13 +77,17 @@ func NewManager(store *Store, options Options) (*Manager, error) {
 		return nil, fmt.Errorf("load subagents: %w", err)
 	}
 	m := &Manager{
-		store:              store,
-		providers:          map[string]Provider{},
-		agents:             make(map[string]*agentEntry, len(loaded)),
-		conversationOwners: make(map[string]string, len(loaded)),
-		defaultProvider:    strings.TrimSpace(options.DefaultProvider),
-		maxAgents:          options.MaxAgents,
-		sem:                make(chan struct{}, options.MaxConcurrency),
+		store:                      store,
+		providers:                  map[string]Provider{},
+		agents:                     make(map[string]*agentEntry, len(loaded)),
+		conversationOwners:         make(map[string]string, len(loaded)),
+		defaultProvider:            strings.TrimSpace(options.DefaultProvider),
+		maxAgents:                  options.MaxAgents,
+		sameAgentPollInterval:      options.SameAgentPollInterval,
+		differentAgentPollInterval: options.DifferentAgentPollInterval,
+		lastPollByAgent:            make(map[string]time.Time),
+		pollSerial:                 make(chan struct{}, 1),
+		sem:                        make(chan struct{}, options.MaxConcurrency),
 	}
 	for _, agent := range loaded {
 		needsRecovery := agent.Status != StatusClosed
@@ -84,6 +97,7 @@ func NewManager(store *Store, options Options) (*Manager, error) {
 				conflict := &ConversationConflictError{ConversationID: agent.ProviderState.ConversationID, OwnerID: ownerID}
 				agent.Status = StatusDegraded
 				agent.LastError = conflict.Error()
+				agent.LastErrorCode = errorCode(conflict)
 				agent.UpdatedAt = time.Now().UTC()
 				needsRecovery = false
 				if err := store.Save(agent); err != nil {
@@ -147,6 +161,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 	agent := Subagent{
 		ID:            m.newID(),
 		Name:          strings.TrimSpace(req.Name),
+		SubagentType:  strings.TrimSpace(req.SubagentType),
 		Provider:      providerName,
 		Status:        StatusBusy,
 		WorkspaceID:   workspaceID,
@@ -232,6 +247,7 @@ func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Su
 	entry.mu.Lock()
 	entry.agent.Status = StatusBusy
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	busySnapshot := cloneSubagent(entry.agent)
 	entry.mu.Unlock()
@@ -260,6 +276,7 @@ func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Su
 	entry.agent.ProviderState = cloneProviderState(nextState)
 	entry.agent.Status = StatusBusy
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	snapshot := cloneSubagent(entry.agent)
 	entry.mu.Unlock()
@@ -313,39 +330,54 @@ func (m *Manager) observe(ctx context.Context, workspaceID, id string, wait bool
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	if err := m.acquire(ctx); err != nil {
-		return ObserveResult{}, err
-	}
-	var nextState ProviderState
-	var observation Observation
-	if wait {
-		nextState, observation, err = provider.Wait(ctx, state)
-	} else {
-		nextState, observation, err = provider.Poll(ctx, state)
-	}
-	m.release()
-	if err != nil {
-		m.markEntryFailure(entry, err)
-		return ObserveResult{}, err
-	}
 
-	observedAt := time.Now().UTC()
-	entry.mu.Lock()
-	entry.agent.ProviderState = cloneProviderState(nextState)
-	if observation.Generating {
-		entry.agent.Status = StatusBusy
-	} else {
-		entry.agent.Status = StatusReady
+	for {
+		retryAfter, acquired, slotErr := m.acquirePollSlot(ctx, id, wait)
+		if slotErr != nil {
+			return ObserveResult{}, slotErr
+		}
+		if !acquired {
+			entry.mu.Lock()
+			snapshot := cloneSubagent(entry.agent)
+			entry.mu.Unlock()
+			return ObserveResult{Subagent: snapshot, Refreshed: false, RetryAfter: retryAfter}, nil
+		}
+
+		if err := m.acquire(ctx); err != nil {
+			m.releasePollSlot(id, false)
+			return ObserveResult{}, err
+		}
+		nextState, observation, pollErr := provider.Poll(ctx, state)
+		m.release()
+		m.releasePollSlot(id, true)
+		if pollErr != nil {
+			m.markEntryFailure(entry, pollErr)
+			return ObserveResult{}, pollErr
+		}
+
+		observedAt := time.Now().UTC()
+		entry.mu.Lock()
+		entry.agent.ProviderState = cloneProviderState(nextState)
+		if observation.Generating {
+			entry.agent.Status = StatusBusy
+		} else {
+			entry.agent.Status = StatusReady
+		}
+		entry.agent.LastError = ""
+		entry.agent.LastErrorCode = ""
+		entry.agent.UpdatedAt = observedAt
+		entry.agent.LastObservedAt = observedAt
+		snapshot := cloneSubagent(entry.agent)
+		entry.mu.Unlock()
+		if err := m.store.Save(snapshot); err != nil {
+			return ObserveResult{}, fmt.Errorf("persist subagent observation: %w", err)
+		}
+		result := ObserveResult{Subagent: snapshot, Reply: observation.Reply, Refreshed: true}
+		if !wait || !observation.Generating {
+			return result, nil
+		}
+		state = cloneProviderState(nextState)
 	}
-	entry.agent.LastError = ""
-	entry.agent.UpdatedAt = observedAt
-	entry.agent.LastObservedAt = observedAt
-	snapshot := cloneSubagent(entry.agent)
-	entry.mu.Unlock()
-	if err := m.store.Save(snapshot); err != nil {
-		return ObserveResult{}, fmt.Errorf("persist subagent observation: %w", err)
-	}
-	return ObserveResult{Subagent: snapshot, Reply: observation.Reply}, nil
 }
 
 func (m *Manager) Get(workspaceID, id string) (Subagent, error) {
@@ -432,6 +464,7 @@ func (m *Manager) CloseAgent(ctx context.Context, workspaceID, id string) (Subag
 	}
 	entry.agent.Status = StatusClosed
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	entry.needsRecovery = false
 	snapshot := cloneSubagent(entry.agent)
@@ -487,11 +520,16 @@ func (m *Manager) Archive(ctx context.Context, workspaceID, id string) (Subagent
 	// A logical close does not stop an already-running remote generation. Poll
 	// immediately before the move so archive never knowingly relocates a turn
 	// whose outcome is still in flight.
+	if _, _, err := m.acquirePollSlot(ctx, id, true); err != nil {
+		return Subagent{}, err
+	}
 	if err := m.acquire(ctx); err != nil {
+		m.releasePollSlot(id, false)
 		return Subagent{}, err
 	}
 	polledState, observation, pollErr := provider.Poll(ctx, state)
 	m.release()
+	m.releasePollSlot(id, true)
 	if pollErr != nil {
 		m.markEntryFailure(entry, pollErr)
 		return Subagent{}, pollErr
@@ -500,6 +538,7 @@ func (m *Manager) Archive(ctx context.Context, workspaceID, id string) (Subagent
 	entry.mu.Lock()
 	entry.agent.ProviderState = cloneProviderState(state)
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	if entry.agent.Status != StatusClosed {
 		if observation.Generating {
@@ -531,6 +570,7 @@ func (m *Manager) Archive(ctx context.Context, workspaceID, id string) (Subagent
 	entry.agent.ProviderState = cloneProviderState(archivedState)
 	entry.agent.Status = StatusClosed
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	entry.needsRecovery = false
 	archived := cloneSubagent(entry.agent)
@@ -710,6 +750,102 @@ func (m *Manager) release() {
 	<-m.sem
 }
 
+func (m *Manager) acquirePollSlot(ctx context.Context, agentID string, wait bool) (time.Duration, bool, error) {
+	for {
+		delay := m.pollDelay(agentID, time.Now())
+		if delay > 0 {
+			if !wait {
+				return delay, false, nil
+			}
+			if err := waitContext(ctx, delay); err != nil {
+				return 0, false, err
+			}
+			continue
+		}
+
+		if wait {
+			select {
+			case m.pollSerial <- struct{}{}:
+			case <-ctx.Done():
+				return 0, false, ctx.Err()
+			}
+		} else {
+			select {
+			case m.pollSerial <- struct{}{}:
+			default:
+				return m.concurrentPollRetryAfter(), false, nil
+			}
+		}
+
+		delay = m.pollDelay(agentID, time.Now())
+		if delay <= 0 {
+			return 0, true, nil
+		}
+		<-m.pollSerial
+		if !wait {
+			return delay, false, nil
+		}
+		if err := waitContext(ctx, delay); err != nil {
+			return 0, false, err
+		}
+	}
+}
+
+func (m *Manager) releasePollSlot(agentID string, attempted bool) {
+	m.pollMu.Lock()
+	if attempted {
+		now := time.Now()
+		m.lastPollByAgent[agentID] = now
+		m.lastPollAgentID = agentID
+		m.lastPollCompletedAt = now
+	}
+	<-m.pollSerial
+	m.pollMu.Unlock()
+}
+
+func (m *Manager) concurrentPollRetryAfter() time.Duration {
+	if m.sameAgentPollInterval > m.differentAgentPollInterval {
+		return m.sameAgentPollInterval
+	}
+	return m.differentAgentPollInterval
+}
+
+func (m *Manager) pollDelay(agentID string, now time.Time) time.Duration {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
+
+	var earliest time.Time
+	if m.sameAgentPollInterval > 0 {
+		if last := m.lastPollByAgent[agentID]; !last.IsZero() {
+			earliest = last.Add(m.sameAgentPollInterval)
+		}
+	}
+	if m.differentAgentPollInterval > 0 && m.lastPollAgentID != "" && m.lastPollAgentID != agentID && !m.lastPollCompletedAt.IsZero() {
+		cross := m.lastPollCompletedAt.Add(m.differentAgentPollInterval)
+		if cross.After(earliest) {
+			earliest = cross
+		}
+	}
+	if earliest.IsZero() || !earliest.After(now) {
+		return 0
+	}
+	return earliest.Sub(now)
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func newAgentEntry(agent Subagent, maxPending int, needsRecovery bool) *agentEntry {
 	return &agentEntry{
 		agent:         cloneSubagent(agent),
@@ -758,6 +894,7 @@ func (m *Manager) recoverEntry(ctx context.Context, entry *agentEntry, provider 
 	entry.mu.Lock()
 	entry.agent.ProviderState = cloneProviderState(state)
 	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
 	entry.needsRecovery = false
 	recoveredSnapshot := cloneSubagent(entry.agent)
@@ -774,10 +911,22 @@ func (m *Manager) markEntryFailure(entry *agentEntry, cause error) {
 	entry.mu.Lock()
 	entry.agent.Status = StatusDegraded
 	entry.agent.LastError = cause.Error()
+	entry.agent.LastErrorCode = errorCode(cause)
 	entry.agent.UpdatedAt = time.Now().UTC()
 	snapshot := cloneSubagent(entry.agent)
 	entry.mu.Unlock()
 	_ = m.store.Save(snapshot)
+}
+
+func errorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) {
+		return strings.TrimSpace(coded.ErrorCode())
+	}
+	return ""
 }
 
 func (m *Manager) restoreEntryReady(entry *agentEntry) {

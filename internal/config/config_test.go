@@ -1266,12 +1266,22 @@ subagents:
   max_agents: 7
   max_concurrency: 2
   max_pending_per_agent: 3
+  same_agent_poll_interval_seconds: 13
+  different_agent_poll_interval_seconds: 7
   providers:
     opencli_chatgpt:
+      enabled: true
       executable: /opt/local/bin/opencli
       timeout_seconds: 45
+      submit_interval_seconds: 3
       default_project: deadbeef
       archive_project: cafebabe
+    opencli_gemini:
+      enabled: true
+      executable: /opt/local/bin/opencli-gemini
+      browser_executable: /opt/local/bin/opencli-browser
+      timeout_seconds: 55
+      submit_interval_seconds: 7
 workspaces:
   - id: ws
     roots: ["."]
@@ -1283,20 +1293,66 @@ workspaces:
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.Subagents.Enabled || cfg.Subagents.DefaultProvider != "fake" || cfg.Subagents.MaxAgents != 7 || cfg.Subagents.MaxConcurrency != 2 || cfg.Subagents.MaxPendingPerAgent != 3 {
+	if !cfg.Subagents.Enabled || cfg.Subagents.DefaultProvider != "fake" || cfg.Subagents.MaxAgents != 7 || cfg.Subagents.MaxConcurrency != 2 || cfg.Subagents.MaxPendingPerAgent != 3 || cfg.Subagents.SameAgentPollIntervalSeconds != 13 || cfg.Subagents.DifferentAgentPollIntervalSeconds != 7 {
 		t.Fatalf("unexpected subagent config: %#v", cfg.Subagents)
 	}
-	if cfg.Subagents.Providers.OpenCLIChatGPT.Executable != "/opt/local/bin/opencli" || cfg.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds != 45 || cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject != "deadbeef" || cfg.Subagents.Providers.OpenCLIChatGPT.ArchiveProject != "cafebabe" {
+	if !cfg.Subagents.Providers.OpenCLIChatGPT.Enabled || cfg.Subagents.Providers.OpenCLIChatGPT.Executable != "/opt/local/bin/opencli" || cfg.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds != 45 || cfg.Subagents.Providers.OpenCLIChatGPT.SubmitIntervalSeconds != 3 || cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject != "deadbeef" || cfg.Subagents.Providers.OpenCLIChatGPT.ArchiveProject != "cafebabe" {
 		t.Fatalf("unexpected opencli provider config: %#v", cfg.Subagents.Providers.OpenCLIChatGPT)
 	}
+	if !cfg.Subagents.Providers.OpenCLIGemini.Enabled || cfg.Subagents.Providers.OpenCLIGemini.Executable != "/opt/local/bin/opencli-gemini" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "/opt/local/bin/opencli-browser" || cfg.Subagents.Providers.OpenCLIGemini.TimeoutSeconds != 55 || cfg.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds != 7 {
+		t.Fatalf("unexpected Gemini provider config: %#v", cfg.Subagents.Providers.OpenCLIGemini)
+	}
 	summary := cfg.SafeSummary()["subagents"].(map[string]any)
-	if summary["default_provider"] != "fake" || summary["max_agents"] != 7 || summary["max_concurrency"] != 2 || summary["max_pending_per_agent"] != 3 {
+	if summary["default_provider"] != "fake" || summary["max_agents"] != 7 || summary["max_concurrency"] != 2 || summary["max_pending_per_agent"] != 3 || summary["same_agent_poll_interval_seconds"] != 13 || summary["different_agent_poll_interval_seconds"] != 7 {
 		t.Fatalf("unexpected subagent summary: %#v", summary)
 	}
 	providers := summary["providers"].(map[string]any)
 	opencliSummary := providers["opencli_chatgpt"].(map[string]any)
-	if opencliSummary["executable"] != "/opt/local/bin/opencli" || opencliSummary["timeout_seconds"] != 45 || opencliSummary["default_project"] != "deadbeef" || opencliSummary["archive_project"] != "cafebabe" {
+	if opencliSummary["enabled"] != true || opencliSummary["executable"] != "/opt/local/bin/opencli" || opencliSummary["timeout_seconds"] != 45 || opencliSummary["submit_interval_seconds"] != 3 || opencliSummary["default_project"] != "deadbeef" || opencliSummary["archive_project"] != "cafebabe" {
 		t.Fatalf("unexpected opencli provider summary: %#v", opencliSummary)
+	}
+	geminiSummary := providers["opencli_gemini"].(map[string]any)
+	if geminiSummary["enabled"] != true || geminiSummary["executable"] != "/opt/local/bin/opencli-gemini" || geminiSummary["browser_executable"] != "/opt/local/bin/opencli-browser" || geminiSummary["timeout_seconds"] != 55 || geminiSummary["submit_interval_seconds"] != 7 {
+		t.Fatalf("unexpected Gemini provider summary: %#v", geminiSummary)
+	}
+}
+
+func TestValidateSubagentsRejectsNegativeProviderSubmitInterval(t *testing.T) {
+	cfg := Default().Subagents
+	cfg.Providers.OpenCLIChatGPT.SubmitIntervalSeconds = -1
+	if err := validateSubagentsConfig(cfg); err == nil || !strings.Contains(err.Error(), "opencli_chatgpt.submit_interval_seconds") {
+		t.Fatalf("expected ChatGPT submit interval validation error, got %v", err)
+	}
+	cfg = Default().Subagents
+	cfg.Providers.OpenCLIGemini.SubmitIntervalSeconds = -1
+	if err := validateSubagentsConfig(cfg); err == nil || !strings.Contains(err.Error(), "opencli_gemini.submit_interval_seconds") {
+		t.Fatalf("expected Gemini submit interval validation error, got %v", err)
+	}
+}
+
+func TestLoadSubagentsAllowsBundledGeminiAdapter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+subagents:
+  enabled: true
+  default_provider: opencli_gemini
+  providers:
+    opencli_gemini:
+      enabled: true
+      browser_executable: opencli
+workspaces:
+  - id: ws
+    roots: ["."]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load bundled Gemini config: %v", err)
+	}
+	if cfg.Subagents.Providers.OpenCLIGemini.Executable != "" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "opencli" {
+		t.Fatalf("unexpected bundled Gemini config: %#v", cfg.Subagents.Providers.OpenCLIGemini)
 	}
 }
 

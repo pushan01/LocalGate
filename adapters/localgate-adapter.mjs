@@ -1,0 +1,837 @@
+#!/usr/bin/env node
+
+import { spawnSync } from 'node:child_process';
+
+const GEMINI_APP_URL = 'https://gemini.google.com/app';
+const GEMINI_DOMAIN = 'gemini.google.com';
+const DEFAULT_SUBMISSION_TIMEOUT_SECONDS = 8;
+const browserExecutable = (process.env.LOCALGATE_BROWSER_EXECUTABLE || 'opencli').trim() || 'opencli';
+let activeSite = 'gemini';
+
+function browserSession() {
+  const override = String(process.env.LOCALGATE_BROWSER_SESSION || '').trim();
+  return override || `localgate-${activeSite}-adapter`;
+}
+
+function fail(message, detail = '') {
+  const text = detail ? `${message}: ${detail}` : message;
+  process.stderr.write(`${text}\n`);
+  process.exit(1);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runBrowser(args, { parseJSON = true } = {}) {
+  const result = spawnSync(browserExecutable, ['browser', browserSession(), ...args], {
+    encoding: 'utf8',
+    maxBuffer: 8 << 20,
+    env: process.env,
+  });
+  if (result.error) {
+    throw new Error(`failed to start browser backend ${browserExecutable}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || '').trim();
+    const stdout = String(result.stdout || '').trim();
+    throw new Error(stderr || stdout || `browser backend exited with status ${result.status}`);
+  }
+  const stdout = String(result.stdout || '').trim();
+  if (!parseJSON) return stdout;
+  if (!stdout) return null;
+  try {
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`browser backend returned invalid JSON: ${error.message}`);
+  }
+}
+
+function browserOpen(url) {
+  return runBrowser(['open', url, '--window', 'background']);
+}
+
+function browserEval(script) {
+  return runBrowser(['eval', script]);
+}
+
+function browserKeys(key) {
+  return runBrowser(['keys', key]);
+}
+
+function browserNetworkRaw(since = '15s') {
+  return runBrowser(['network', '--since', since, '--raw']);
+}
+
+function extractGeminiID(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^[a-zA-Z0-9_-]{6,}$/.test(raw) && !raw.includes('/')) return raw;
+  try {
+    const url = new URL(raw, GEMINI_APP_URL);
+    if (url.hostname !== GEMINI_DOMAIN && !url.hostname.endsWith(`.${GEMINI_DOMAIN}`)) return '';
+    const match = url.pathname.match(/^\/app\/([^/?#]+)/);
+    return match ? match[1] : '';
+  } catch {
+    const match = raw.match(/(?:^|\/app\/)([a-zA-Z0-9_-]{6,})(?:[/?#]|$)/);
+    return match ? match[1] : '';
+  }
+}
+
+function conversationURL(value) {
+  const id = extractGeminiID(value);
+  if (!id) throw new Error('Gemini conversation must be an id or /app/<id> URL');
+  return { id, url: `${GEMINI_APP_URL}/${id}` };
+}
+
+function normalizeFingerprintText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function promptMatchesTurn(prompt, turnText) {
+  const want = normalizeFingerprintText(prompt);
+  const got = normalizeFingerprintText(turnText);
+  if (!want || !got) return false;
+  if (got === want) return true;
+  return got.startsWith(want) && [...got].length - [...want].length <= 32;
+}
+
+function parseArgs(argv) {
+  const positional = [];
+  const flags = new Map();
+  for (let i = 0; i < argv.length; i += 1) {
+    const item = argv[i];
+    if (!item.startsWith('--')) {
+      positional.push(item);
+      continue;
+    }
+    const key = item.slice(2);
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith('--')) {
+      flags.set(key, next);
+      i += 1;
+    } else {
+      flags.set(key, 'true');
+    }
+  }
+  return { positional, flags };
+}
+
+function boolFlag(value) {
+  return ['true', '1', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function intFlag(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const snapshotScript = String.raw`
+(() => {
+  /* LOCALGATE_GEMINI_SNAPSHOT */
+  const clean = (value) => String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const isVisible = (el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const composerSelectors = [
+    '.ql-editor[contenteditable="true"]',
+    '.ql-editor[role="textbox"]',
+    '.ql-editor[aria-label*="Gemini"]',
+    '[contenteditable="true"][aria-label*="Gemini"]',
+    '[aria-label="Enter a prompt for Gemini"]',
+    '[aria-label*="prompt for Gemini"]',
+  ];
+  const composer = composerSelectors
+    .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+    .find((node) => node instanceof HTMLElement && isVisible(node)) || null;
+
+  const nodes = Array.from(document.querySelectorAll('.query-text, .model-response-text'))
+    .filter((node) => node instanceof HTMLElement && isVisible(node))
+    .sort((left, right) => {
+      if (left === right) return 0;
+      const relation = left.compareDocumentPosition(right);
+      if (relation & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (relation & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+
+  const stripUserPrefix = (text) => clean(text)
+    .replace(/^(?:You said|You asked|User|你说|你问|您说)\s*/i, '')
+    .trim();
+  const stripAssistantPrefix = (text) => clean(text)
+    .replace(/^(?:Gemini said|Gemini|Assistant|Gemini 回答)\s*/i, '')
+    .trim();
+
+  const turns = [];
+  for (const node of nodes) {
+    const isUser = node.matches('.query-text');
+    const role = isUser ? 'User' : 'Assistant';
+    const text = isUser
+      ? stripUserPrefix(node.innerText || node.textContent || '')
+      : stripAssistantPrefix(node.innerText || node.textContent || '');
+    if (!text) continue;
+    const previous = turns[turns.length - 1];
+    if (previous && previous.Role === role) {
+      if (previous.Text === text) continue;
+      if (previous.Text.includes(text)) continue;
+      if (text.includes(previous.Text)) {
+        previous.Text = text;
+        continue;
+      }
+      previous.Text += '\n' + text;
+      continue;
+    }
+    turns.push({ Role: role, Text: text });
+  }
+
+  const generating = Array.from(document.querySelectorAll('button, [role="button"]')).some((node) => {
+    if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+    const text = clean(node.textContent).toLocaleLowerCase();
+    const aria = clean(node.getAttribute('aria-label')).toLocaleLowerCase();
+    return text === 'stop response'
+      || aria === 'stop response'
+      || text === '停止回答'
+      || aria === '停止回答'
+      || text === '停止生成'
+      || aria === '停止生成';
+  });
+
+  const signIn = Array.from(document.querySelectorAll('a, button, [role="button"]')).some((node) => {
+    if (!(node instanceof HTMLElement) || !isVisible(node)) return false;
+    const text = clean(node.textContent).toLocaleLowerCase();
+    const aria = clean(node.getAttribute('aria-label')).toLocaleLowerCase();
+    const href = node.getAttribute('href') || '';
+    return text === 'sign in'
+      || aria === 'sign in'
+      || text === '登录'
+      || aria === '登录'
+      || href.includes('accounts.google.com/ServiceLogin');
+  });
+
+  const bodyText = clean((document.body && document.body.innerText) || '').slice(0, 12000);
+  let blocker = '';
+  if (signIn && !composer) blocker = 'auth';
+  else if (/captcha|verify (?:that )?you(?:'re| are) human|验证您是真人|完成验证/i.test(bodyText) && !composer) blocker = 'challenge';
+  else if (/too many requests|rate limit|usage limit|usage cap|quota|达到.*(?:上限|限额)|请求过于频繁/i.test(bodyText) && !generating) blocker = 'quota';
+
+  return {
+    url: window.location.href,
+    title: document.title || '',
+    turns,
+    composerHasText: !!(composer && clean(composer.innerText || composer.textContent || '')),
+    canSend: !!composer,
+    generating,
+    blocker,
+  };
+})()
+`;
+
+function insertPromptScript(text) {
+  return String.raw`
+((inputText) => {
+  /* LOCALGATE_GEMINI_INSERT */
+  const isVisible = (el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const selectors = [
+    '.ql-editor[contenteditable="true"]',
+    '.ql-editor[role="textbox"]',
+    '.ql-editor[aria-label*="Gemini"]',
+    '[contenteditable="true"][aria-label*="Gemini"]',
+    '[aria-label="Enter a prompt for Gemini"]',
+    '[aria-label*="prompt for Gemini"]',
+  ];
+  const composer = selectors
+    .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+    .find((node) => node instanceof HTMLElement && isVisible(node));
+  if (!(composer instanceof HTMLElement)) return { ok: false, reason: 'Gemini sign in required or composer not found' };
+
+  composer.focus();
+  try {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(composer);
+    range.collapse(false);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    composer.textContent = '';
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteContentBackward' }));
+  } catch {}
+
+  let inserted = false;
+  try {
+    inserted = typeof document.execCommand === 'function'
+      ? document.execCommand('insertText', false, inputText)
+      : false;
+  } catch {}
+
+  if (!inserted) {
+    const paragraph = document.createElement('p');
+    const lines = String(inputText).split(/\n/);
+    for (const [index, line] of lines.entries()) {
+      if (index > 0) paragraph.appendChild(document.createElement('br'));
+      paragraph.appendChild(document.createTextNode(line));
+    }
+    composer.replaceChildren(paragraph);
+  }
+
+  try {
+    composer.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, data: inputText, inputType: 'insertText' }));
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: inputText, inputType: 'insertText' }));
+  } catch {
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const actual = String(composer.innerText || composer.textContent || '').trim();
+  return { ok: actual.length > 0, actual };
+})(${JSON.stringify(text)})
+`;
+}
+
+const submitScript = String.raw`
+(() => {
+  /* LOCALGATE_GEMINI_SUBMIT */
+  const isVisible = (el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const selectors = [
+    '.ql-editor[contenteditable="true"]',
+    '.ql-editor[role="textbox"]',
+    '.ql-editor[aria-label*="Gemini"]',
+    '[contenteditable="true"][aria-label*="Gemini"]',
+    '[aria-label="Enter a prompt for Gemini"]',
+    '[aria-label*="prompt for Gemini"]',
+  ];
+  const composer = selectors
+    .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+    .find((node) => node instanceof HTMLElement && isVisible(node));
+  if (!(composer instanceof HTMLElement)) return { ok: false, reason: 'Gemini composer not found' };
+
+  const composerRect = composer.getBoundingClientRect();
+  const roots = [
+    composer.closest('form'),
+    composer.closest('[role="form"]'),
+    composer.closest('.input-area-container'),
+    composer.closest('.textbox-container'),
+    composer.closest('.input-wrapper'),
+    composer.parentElement,
+    composer.parentElement?.parentElement,
+  ].filter(Boolean);
+
+  const excluded = /main menu|主菜单|microphone|麦克风|upload|上传|mode|模式|tools|工具|settings|临时对话|new chat|新对话/i;
+  const submitPattern = /send|发送|傳送|submit|提交/i;
+  const seen = new Set();
+  let best = null;
+  let bestScore = -1;
+  for (const root of roots) {
+    for (const node of root.querySelectorAll('button, [role="button"]')) {
+      if (!(node instanceof HTMLElement) || seen.has(node) || !isVisible(node)) continue;
+      seen.add(node);
+      if (node instanceof HTMLButtonElement && node.disabled) continue;
+      if (node.getAttribute('aria-disabled') === 'true') continue;
+      const label = ((node.getAttribute('aria-label') || '') + ' ' + ((node.textContent || '').trim())).trim();
+      if (excluded.test(label)) continue;
+      const rect = node.getBoundingClientRect();
+      const verticalDistance = Math.abs((rect.top + rect.bottom) / 2 - (composerRect.top + composerRect.bottom) / 2);
+      if (verticalDistance > 160) continue;
+      let score = 0;
+      if (submitPattern.test(label)) score += 10;
+      if (rect.left >= composerRect.right - 160) score += 3;
+      if (rect.left >= composerRect.left) score += 1;
+      if (rect.width <= 96 && rect.height <= 96) score += 1;
+      if (score > bestScore) {
+        best = node;
+        bestScore = score;
+      }
+    }
+  }
+  if (best instanceof HTMLElement && bestScore >= 3) {
+    best.click();
+    return { ok: true, action: 'button' };
+  }
+  composer.focus();
+  return { ok: true, action: 'enter' };
+})()
+`;
+
+function readSnapshot() {
+  const snapshot = browserEval(snapshotScript);
+  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.turns)) {
+    throw new Error('Gemini snapshot returned malformed data');
+  }
+  if (snapshot.blocker === 'auth') throw new Error('Gemini sign in required');
+  if (snapshot.blocker === 'challenge') throw new Error('Gemini challenge required');
+  if (snapshot.blocker === 'quota') throw new Error('Gemini rate limit or quota reached');
+  return snapshot;
+}
+
+async function ensureGemini(url) {
+  browserOpen(url);
+  await sleep(700);
+  const snapshot = readSnapshot();
+  const current = String(snapshot.url || '');
+  try {
+    const parsed = new URL(current);
+    if (parsed.hostname !== GEMINI_DOMAIN && !parsed.hostname.endsWith(`.${GEMINI_DOMAIN}`)) {
+      throw new Error(`Gemini browser navigation landed on unexpected host ${parsed.hostname}`);
+    }
+  } catch (error) {
+    if (error instanceof TypeError) throw new Error(`Gemini browser navigation returned invalid URL ${current}`);
+    throw error;
+  }
+  return snapshot;
+}
+
+async function submitGemini(argv) {
+  const { positional, flags } = parseArgs(argv);
+  const prompt = String(positional[0] || '').trim();
+  if (!prompt) throw new Error('Gemini prompt is required');
+
+  const fresh = boolFlag(flags.get('new'));
+  const conversation = String(flags.get('conversation') || '').trim();
+  if (fresh && conversation) throw new Error('Gemini --new cannot be combined with --conversation');
+  const timeoutSeconds = intFlag(flags.get('submission-timeout'), DEFAULT_SUBMISSION_TIMEOUT_SECONDS);
+  if (timeoutSeconds < 1 || timeoutSeconds > 60) throw new Error('Gemini submission timeout must be between 1 and 60 seconds');
+
+  let before;
+  let expectedID = '';
+  if (fresh) {
+    before = await ensureGemini(GEMINI_APP_URL);
+  } else if (conversation) {
+    const target = conversationURL(conversation);
+    expectedID = target.id;
+    before = await ensureGemini(target.url);
+    const observedID = extractGeminiID(before.url);
+    if (observedID && observedID !== expectedID) {
+      throw new Error(`Gemini conversation navigation mismatch: expected ${expectedID}, observed ${observedID}`);
+    }
+  } else {
+    before = await ensureGemini(GEMINI_APP_URL);
+  }
+
+  if (!before.canSend) throw new Error('Gemini sign in required or composer unavailable');
+  const inserted = browserEval(insertPromptScript(prompt));
+  if (!inserted || inserted.ok !== true) {
+    throw new Error(inserted?.reason || 'failed to insert prompt into Gemini composer');
+  }
+
+  const submit = browserEval(submitScript);
+  if (!submit || submit.ok !== true) {
+    throw new Error(submit?.reason || 'failed to submit Gemini prompt');
+  }
+  if (submit.action === 'enter') browserKeys('Enter');
+
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let current = before;
+  let confirmed = false;
+  while (Date.now() <= deadline) {
+    await sleep(500);
+    current = readSnapshot();
+    const newTurns = current.turns.slice(before.turns.length);
+    const hasPromptTurn = newTurns.some((turn) => turn?.Role === 'User' && promptMatchesTurn(prompt, turn?.Text));
+    const lastUser = [...current.turns].reverse().find((turn) => turn?.Role === 'User');
+    if (hasPromptTurn || (lastUser && promptMatchesTurn(prompt, lastUser.Text))) {
+      confirmed = true;
+      break;
+    }
+    if (!current.composerHasText && current.generating) {
+      confirmed = true;
+      break;
+    }
+  }
+  if (!confirmed) throw new Error('Gemini prompt submission could not be confirmed before timeout');
+
+  let url = String(current.url || '').trim();
+  let id = extractGeminiID(url);
+  const idDeadline = Date.now() + 5000;
+  while (!id && Date.now() <= idDeadline) {
+    await sleep(500);
+    const settled = readSnapshot();
+    url = String(settled.url || '').trim();
+    id = extractGeminiID(url);
+    current = settled;
+  }
+  if (!id) throw new Error('Gemini accepted the prompt but no conversation id was observable');
+  if (expectedID && id !== expectedID) throw new Error(`Gemini submit changed conversation id from ${expectedID} to ${id}`);
+
+  process.stdout.write(`${JSON.stringify({
+    Status: 'Submitted',
+    ConversationId: id,
+    ConversationUrl: url || `${GEMINI_APP_URL}/${id}`,
+    Generating: !!current.generating,
+  })}\n`);
+}
+
+async function inspectGemini(argv) {
+  const { positional } = parseArgs(argv);
+  const target = conversationURL(positional[0]);
+  const snapshot = await ensureGemini(target.url);
+  const observedID = extractGeminiID(snapshot.url);
+  if (observedID && observedID !== target.id) {
+    throw new Error(`Gemini inspect conversation mismatch: expected ${target.id}, observed ${observedID}`);
+  }
+  process.stdout.write(`${JSON.stringify({
+    ConversationId: target.id,
+    ConversationUrl: String(snapshot.url || target.url),
+    Generating: !!snapshot.generating,
+    Turns: snapshot.turns.map((turn, index) => ({
+      Index: index + 1,
+      Role: String(turn?.Role || 'System'),
+      Text: String(turn?.Text || ''),
+    })),
+  })}\n`);
+}
+
+function extractChatGPTConversationID(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^[a-zA-Z0-9_-]{8,}$/.test(raw) && !raw.includes('/')) return raw;
+  try {
+    const url = new URL(raw, 'https://chatgpt.com');
+    if (url.hostname !== 'chatgpt.com' && !url.hostname.endsWith('.chatgpt.com')) return '';
+    const match = url.pathname.match(/\/(?:g\/g-p-[^/]+\/)?c\/([a-zA-Z0-9_-]{8,})\/?$/);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeChatGPTProjectID(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let candidate = raw;
+  if (/^[a-fA-F0-9]{8,}$/.test(candidate)) return candidate.toLowerCase();
+  if (candidate.startsWith('g-p-')) {
+    candidate = candidate.slice(4).split('-')[0];
+    return /^[a-fA-F0-9]{8,}$/.test(candidate) ? candidate.toLowerCase() : '';
+  }
+  try {
+    const url = new URL(candidate, 'https://chatgpt.com');
+    const match = url.pathname.match(/^\/g\/g-p-([a-fA-F0-9]{8,})(?:[-/]|$)/);
+    return match ? match[1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+function projectIDFromConversationPayload(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  for (const value of [payload.gizmo_id, payload.project_id, payload.project?.id, payload.gizmo?.id, payload.conversation_template_id]) {
+    const normalized = normalizeChatGPTProjectID(value);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function networkEntries(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object' && Array.isArray(payload.entries)) return payload.entries;
+  return [];
+}
+
+function observeChatGPTConversationProjectFromNetwork(conversationID, since = '15s') {
+  const suffix = `/backend-api/conversation/${conversationID}`;
+  const entries = networkEntries(browserNetworkRaw(since));
+  let projectID = '';
+  for (const entry of entries) {
+    if (!entry || Number(entry.status ?? entry.responseStatus ?? 0) !== 200) continue;
+    let pathname = '';
+    try { pathname = new URL(String(entry.url || '')).pathname; } catch {}
+    if (pathname !== suffix) continue;
+    const observed = projectIDFromConversationPayload(entry.body);
+    if (observed) projectID = observed;
+  }
+  return projectID;
+}
+
+function projectConversationIDs(payload) {
+  const items = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(payload?.conversations)
+        ? payload.conversations
+        : [];
+  return items
+    .map((item) => String(item?.id || item?.conversation_id || item?.conversationId || '').trim())
+    .filter(Boolean);
+}
+
+function observeChatGPTProjectListingFromNetwork(projectID, conversationID, since = '15s') {
+  const token = `g-p-${projectID}`;
+  const prefix = `/backend-api/gizmos/${token}/conversations`;
+  const entries = networkEntries(browserNetworkRaw(since));
+  for (const entry of entries) {
+    if (!entry || Number(entry.status ?? entry.responseStatus ?? 0) !== 200) continue;
+    let pathname = '';
+    try { pathname = new URL(String(entry.url || '')).pathname; } catch {}
+    if (pathname !== prefix) continue;
+    if (projectConversationIDs(entry.body).includes(conversationID)) return true;
+  }
+  return false;
+}
+
+function chatGPTAuthStateScript() {
+  return String.raw`
+(() => {
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const login = Array.from(document.querySelectorAll('a,button,[role="button"]')).some((node) => {
+    if (!(node instanceof HTMLElement) || !visible(node)) return false;
+    const text = ((node.textContent || '') + ' ' + (node.getAttribute('aria-label') || '')).trim().toLowerCase();
+    return text === 'log in' || text === 'sign in' || text === '登录' || text === '登陆';
+  });
+  return { url: location.href, login };
+})()
+`;
+}
+
+const openChatGPTOptionsScript = String.raw`
+(() => {
+  /* LOCALGATE_CHATGPT_PROJECT_MOVE_OPTIONS */
+  const button = document.querySelector('[data-testid="conversation-options-button"]');
+  if (!(button instanceof HTMLElement)) return { found: false };
+  button.click();
+  return { found: true };
+})()
+`;
+
+const openChatGPTProjectSubmenuScript = String.raw`
+(() => {
+  /* LOCALGATE_CHATGPT_PROJECT_MOVE_SUBMENU */
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const candidates = Array.from(document.querySelectorAll('[role="menuitem"][data-has-submenu]')).filter(visible);
+  let item = null;
+  if (candidates.length === 1) item = candidates[0];
+  if (!item) {
+    item = candidates.find((node) => /move to project|移至项目|移动到项目|移動至專案/i.test((node.textContent || '').trim())) || null;
+  }
+  if (!(item instanceof HTMLElement)) return { found: false, count: candidates.length };
+  item.click();
+  return { found: true };
+})()
+`;
+
+function selectChatGPTProjectScript(projectID) {
+  return String.raw`
+((expectedProjectID) => {
+  /* LOCALGATE_CHATGPT_PROJECT_MOVE_TARGET */
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const projectIDFromHref = (href) => {
+    try {
+      const url = new URL(String(href || ''), location.origin);
+      const match = url.pathname.match(/^\/g\/g-p-([a-f0-9]{8,})(?:[-/]|$)/i);
+      return match ? match[1].toLowerCase() : '';
+    } catch {
+      return '';
+    }
+  };
+  const candidates = Array.from(document.querySelectorAll('[role="menuitem"][href*="/g/g-p-"]')).filter(visible);
+  const item = candidates.find((node) => projectIDFromHref(node.getAttribute('href')) === expectedProjectID);
+  if (!(item instanceof HTMLElement)) {
+    return { found: false, availableProjectIDs: candidates.map((node) => projectIDFromHref(node.getAttribute('href'))).filter(Boolean) };
+  }
+  item.click();
+  return { found: true };
+})(${JSON.stringify(projectID)})
+`;
+}
+
+async function openChatGPTConversation(conversationID) {
+  browserOpen(`https://chatgpt.com/c/${conversationID}`);
+  await sleep(900);
+  const state = browserEval(chatGPTAuthStateScript());
+  if (state?.login) throw new Error('ChatGPT sign in required');
+  return state;
+}
+
+async function verifyChatGPTProjectMembership(conversationID, projectID) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    browserOpen(`https://chatgpt.com/g/g-p-${projectID}`);
+    await sleep(900);
+    if (observeChatGPTProjectListingFromNetwork(projectID, conversationID, '10s')) return projectID;
+
+    browserOpen(`https://chatgpt.com/c/${conversationID}`);
+    await sleep(1100);
+    const observed = observeChatGPTConversationProjectFromNetwork(conversationID, '10s');
+    if (observed === projectID) return observed;
+    if (attempt < 2) await sleep(500);
+  }
+  return '';
+}
+
+async function moveChatGPTProject(argv) {
+  const { positional, flags } = parseArgs(argv);
+  const conversationID = extractChatGPTConversationID(positional[0]);
+  if (!conversationID) throw new Error('ChatGPT project-move conversation id is required');
+  const projectID = normalizeChatGPTProjectID(flags.get('project'));
+  if (!projectID) throw new Error('ChatGPT project-move target project is invalid');
+  const targetURL = `https://chatgpt.com/g/g-p-${projectID}/c/${conversationID}`;
+
+  await openChatGPTConversation(conversationID);
+  const existingProjectID = observeChatGPTConversationProjectFromNetwork(conversationID, '10s');
+  if (existingProjectID === projectID) {
+    process.stdout.write(`${JSON.stringify({
+      conversationId: conversationID,
+      projectId: projectID,
+      membershipProjectId: existingProjectID,
+      verified: true,
+      url: targetURL,
+      status: 'Already moved',
+    })}\n`);
+    return;
+  }
+
+  const opened = browserEval(openChatGPTOptionsScript);
+  if (!opened?.found) throw new Error('Could not open the ChatGPT conversation options menu');
+  await sleep(300);
+  const submenu = browserEval(openChatGPTProjectSubmenuScript);
+  if (!submenu?.found) throw new Error('Could not find the ChatGPT project-move submenu');
+  await sleep(300);
+  const selected = browserEval(selectChatGPTProjectScript(projectID));
+  if (!selected?.found) {
+    throw new Error(`Could not find target ChatGPT project g-p-${projectID} in the move menu`);
+  }
+  await sleep(700);
+
+  const membershipProjectID = await verifyChatGPTProjectMembership(conversationID, projectID);
+  if (membershipProjectID !== projectID) {
+    throw new Error('ChatGPT project move could not be verified; remote outcome may be unknown');
+  }
+  process.stdout.write(`${JSON.stringify({
+    conversationId: conversationID,
+    projectId: projectID,
+    membershipProjectId: membershipProjectID,
+    verified: true,
+    url: targetURL,
+    status: 'Moved',
+  })}\n`);
+}
+
+const chatGPTInspectScript = String.raw`
+(() => {
+  /* LOCALGATE_CHATGPT_INSPECT */
+  const clean = (value) => String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const messages = Array.from(document.querySelectorAll('[data-message-author-role]'))
+    .filter((node) => node instanceof HTMLElement && visible(node))
+    .map((node) => {
+      const rawRole = String(node.getAttribute('data-message-author-role') || '').toLowerCase();
+      const role = rawRole === 'user' ? 'User' : rawRole === 'assistant' ? 'Assistant' : '';
+      return role ? { Role: role, Text: clean(node.innerText || node.textContent || '') } : null;
+    })
+    .filter((row) => row && row.Text);
+
+  const generating = Array.from(document.querySelectorAll('button, [role="button"]')).some((node) => {
+    if (!(node instanceof HTMLElement) || !visible(node)) return false;
+    if (node.getAttribute('data-testid') === 'stop-button') return true;
+    const label = clean((node.getAttribute('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
+    return /stop (?:generating|response)|停止(?:生成|回答)|停止回应|停止回覆/.test(label);
+  });
+
+  const signIn = Array.from(document.querySelectorAll('a, button, [role="button"]')).some((node) => {
+    if (!(node instanceof HTMLElement) || !visible(node)) return false;
+    const label = clean((node.getAttribute('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
+    return label === 'log in' || label === 'sign in' || label === '登录' || label === '登陆';
+  });
+  const bodyText = clean((document.body && document.body.innerText) || '').slice(0, 16000);
+  let blocker = '';
+  if (signIn && messages.length === 0) blocker = 'auth';
+  else if (/captcha|verify (?:that )?you(?:'re| are) human|验证您是真人|完成验证/i.test(bodyText) && messages.length === 0) blocker = 'challenge';
+  else if (/too many requests|rate limit|usage limit|usage cap|quota|达到.*(?:上限|限额)|请求过于频繁/i.test(bodyText) && !generating) blocker = 'quota';
+
+  return {
+    url: location.href,
+    messages,
+    generating,
+    blocker,
+  };
+})()
+`;
+
+async function inspectChatGPT(argv) {
+  const { positional } = parseArgs(argv);
+  const conversationID = extractChatGPTConversationID(positional[0]);
+  if (!conversationID) throw new Error('ChatGPT inspect conversation id is required');
+  browserOpen(`https://chatgpt.com/c/${conversationID}`);
+  await sleep(800);
+  const snapshot = browserEval(chatGPTInspectScript);
+  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.messages)) {
+    throw new Error('ChatGPT inspect returned malformed browser data');
+  }
+  if (snapshot.blocker === 'auth') throw new Error('ChatGPT sign in required');
+  if (snapshot.blocker === 'challenge') throw new Error('ChatGPT challenge required');
+  if (snapshot.blocker === 'quota') throw new Error('ChatGPT rate limit or quota reached');
+  if (snapshot.messages.length === 0) throw new Error('No visible ChatGPT messages were found');
+  process.stdout.write(`${JSON.stringify(snapshot.messages.map((message, index) => ({
+    Index: index + 1,
+    Role: String(message.Role || ''),
+    Text: String(message.Text || ''),
+    Generating: !!snapshot.generating,
+    StableSeconds: 0,
+  })))}\n`);
+}
+
+async function main() {
+  const [site, command, ...rest] = process.argv.slice(2);
+  activeSite = site || 'unknown';
+  if (site === 'gemini') {
+    if (command === 'submit') return submitGemini(rest);
+    if (command === 'inspect') return inspectGemini(rest);
+    throw new Error(`unsupported LocalGate Gemini adapter command ${command || '<empty>'}`);
+  }
+  if (site === 'chatgpt') {
+    if (command === 'inspect') return inspectChatGPT(rest);
+    if (command === 'project-move') return moveChatGPTProject(rest);
+    throw new Error(`unsupported LocalGate ChatGPT adapter command ${command || '<empty>'}`);
+  }
+  throw new Error(`unsupported LocalGate adapter site ${site || '<empty>'}`);
+}
+
+try {
+  await main();
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}

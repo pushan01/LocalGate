@@ -142,6 +142,35 @@ printf '%%s\n' '[{"Status":"Success","InjectedText":"continue"}]'
 	}
 }
 
+func TestSubmitIntervalPacesCreateAndSendPerProvider(t *testing.T) {
+	executable := writeFakeExecutable(t, `
+case "${2:-}" in
+  ask)
+    printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/c/conversation123","response":""}]'
+    ;;
+  send)
+    printf '%s\n' '[{"Status":"Success","InjectedText":"continue"}]'
+    ;;
+  *) exit 2 ;;
+esac
+`)
+	p, err := New(Config{Executable: executable, SubmitInterval: 80 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := p.Create(context.Background(), subagent.ProviderCreateRequest{Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if _, err := p.Send(context.Background(), state, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 60*time.Millisecond {
+		t.Fatalf("send was not provider-paced: elapsed=%s", elapsed)
+	}
+}
+
 func TestArchiveMovesConversationToConfiguredProject(t *testing.T) {
 	dir := t.TempDir()
 	capture := filepath.Join(dir, "args.bin")
@@ -173,6 +202,48 @@ printf '%%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","mem
 	want := []string{"chatgpt", "project-move", "conversation123", "--project", "cafebabe", "--format", "json"}
 	if fmt.Sprint(args) != fmt.Sprint(want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestArchiveUsesBundledAdapterWithOpenCLIAsBrowserBackend(t *testing.T) {
+	mainExecutable := writeFakeExecutable(t, `
+printf '%s\n' 'main OpenCLI should not receive project-move' >&2
+exit 9
+`)
+	resolvedMain, err := resolveExecutable(mainExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterExecutable := writeFakeExecutable(t, fmt.Sprintf(`
+if [ "${LOCALGATE_BROWSER_EXECUTABLE:-}" != %q ]; then
+  printf 'unexpected browser backend: %%s\n' "${LOCALGATE_BROWSER_EXECUTABLE:-}" >&2
+  exit 8
+fi
+printf '%%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","membershipProjectId":"cafebabe","verified":true,"url":"https://chatgpt.com/g/g-p-cafebabe/c/conversation123","status":"Moved"}]'
+`, resolvedMain))
+	p, err := New(Config{
+		Executable:        mainExecutable,
+		AdapterExecutable: adapterExecutable,
+		ArchiveProject:    "cafebabe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := p.Archive(context.Background(), subagent.ProviderState{
+		ConversationID: "conversation123",
+		ProjectID:      "deadbeef",
+	})
+	if err != nil {
+		var unknown *subagent.OutcomeUnknownError
+		if errors.As(err, &unknown) {
+			if providerErr, ok := unknown.Cause.(*ProviderError); ok {
+				t.Fatalf("archive via bundled adapter: %v stderr=%q", err, providerErr.Stderr)
+			}
+		}
+		t.Fatal(err)
+	}
+	if next.ProjectID != "cafebabe" {
+		t.Fatalf("unexpected archived state: %#v", next)
 	}
 }
 
@@ -397,6 +468,46 @@ printf '%s\n' '[{"Index":1,"Role":"User","Text":"读取 PROJECT_HANDOFF.md","Gen
 	}
 }
 
+func TestPollDetectsConnectorReconnectBlocker(t *testing.T) {
+	executable := writeConnectorAuthFakeExecutable(t)
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID:  "conversation123",
+		ConversationURL: "https://chatgpt.com/c/conversation123",
+		Hints:           withPendingMarker(nil, "hello"),
+	}
+	_, observation, err := p.Poll(context.Background(), state)
+	if errorKind(err) != ErrorConnectorAuth {
+		t.Fatalf("connector blocker error kind = %q, err=%v", errorKind(err), err)
+	}
+	if !observation.Generating {
+		t.Fatal("blocked pending turn should remain pending until authorization is restored")
+	}
+	if !strings.Contains(err.Error(), "MacGate1") {
+		t.Fatalf("connector blocker error should identify connector: %v", err)
+	}
+}
+
+func TestWaitDetectsConnectorReconnectBlockerBetweenWaitSlices(t *testing.T) {
+	executable := writeConnectorAuthFakeExecutable(t)
+	p, err := New(Config{Executable: executable, Timeout: 15 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID:  "conversation123",
+		ConversationURL: "https://chatgpt.com/c/conversation123",
+		Hints:           withPendingMarker(nil, "hello"),
+	}
+	_, _, err = p.Wait(context.Background(), state)
+	if errorKind(err) != ErrorConnectorAuth {
+		t.Fatalf("wait connector blocker error kind = %q, err=%v", errorKind(err), err)
+	}
+}
+
 func TestWaitUsesDetailWaitAndReturnsCompletedReply(t *testing.T) {
 	dir := t.TempDir()
 	capture := filepath.Join(dir, "args.bin")
@@ -417,7 +528,7 @@ printf '%%s\n' '[{"Index":1,"Role":"User","Text":"hello","Generating":false,"Sta
 		t.Fatalf("unexpected wait result: next=%#v observation=%#v", next, observation)
 	}
 	args := readCapturedArgs(t, capture)
-	want := []string{"chatgpt", "detail", "conversation123", "--wait", "true", "--timeout", "15", "--format", "json"}
+	want := []string{"chatgpt", "detail", "conversation123", "--wait", "true", "--timeout", "9", "--format", "json"}
 	if fmt.Sprint(args) != fmt.Sprint(want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -525,6 +636,38 @@ func writeFakeExecutable(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeConnectorAuthFakeExecutable(t *testing.T) string {
+	t.Helper()
+	return writeFakeExecutable(t, `
+if [ "$1" = "chatgpt" ] && [ "$2" = "detail" ]; then
+  case " $* " in
+    *" --wait true "*)
+      printf '%s\n' 'Conversation did not finish or stabilize before timeout.' >&2
+      exit 2
+      ;;
+  esac
+  printf '%s\n' '[{"Index":1,"Role":"User","Text":"hello","Generating":false,"StableSeconds":0}]'
+  exit 0
+fi
+if [ "$1" = "browser" ]; then
+  case "$3" in
+    open)
+      printf '%s\n' '{"opened":true}'
+      ;;
+    eval)
+      printf '%s\n' '{"blocked":true,"kind":"connector_auth_required","connector":"MacGate1","evidence":"重新连接 MacGate1 你与 MacGate1 的连接已过期"}'
+      ;;
+    close)
+      printf '%s\n' '{"closed":true}'
+      ;;
+  esac
+  exit 0
+fi
+printf '%s\n' 'unexpected fake opencli invocation' >&2
+exit 2
+`)
 }
 
 func readCapturedArgs(t *testing.T, path string) []string {

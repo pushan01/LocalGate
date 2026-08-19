@@ -57,6 +57,19 @@ func (pollErrorProvider) Poll(_ context.Context, state runtime.ProviderState) (r
 	return state, runtime.Observation{}, errors.New("remote observation failed")
 }
 
+type connectorAuthProvider struct{ fakeProvider }
+
+type connectorAuthError struct{}
+
+func (connectorAuthError) Error() string {
+	return "ChatGPT connector MacGate1 authorization has expired; open the subagent ChatGPT conversation and complete authorization to continue"
+}
+func (connectorAuthError) ErrorCode() string { return "connector_auth_required" }
+
+func (connectorAuthProvider) Poll(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return state, runtime.Observation{Generating: true}, connectorAuthError{}
+}
+
 func newToolTestManager(t *testing.T) *runtime.Manager {
 	t.Helper()
 	m, err := runtime.NewManager(runtime.NewStore(filepath.Join(t.TempDir(), "subagents")), runtime.Options{
@@ -106,15 +119,16 @@ func TestSubagentToolsFlow(t *testing.T) {
 	}
 	ic := core.InvokeContext{WorkspaceID: "ws-a", Requester: "tester"}
 	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{
-		"name":        "reviewer",
-		"instruction": "review code",
-		"project":     "deadbeef",
+		"name":          "reviewer",
+		"subagent_type": "reviewer",
+		"instruction":   "review code",
+		"project":       "deadbeef",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	id, _ := spawned["subagent_id"].(string)
-	if id == "" || spawned["provider"] != "fake" || spawned["accepted"] != true || spawned["status"] != string(runtime.StatusBusy) {
+	if id == "" || spawned["subagent_type"] != "reviewer" || spawned["provider"] != "fake" || spawned["accepted"] != true || spawned["status"] != string(runtime.StatusBusy) {
 		t.Fatalf("unexpected spawn result: %#v", spawned)
 	}
 	polled, err := byName["subagent_poll"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
@@ -149,7 +163,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 	}
 	agent, ok := got["subagent"].(map[string]any)
 	conversationID, _ := agent["conversation_id"].(string)
-	if !ok || conversationID == "" || agent["project_id"] != "deadbeef" {
+	if !ok || conversationID == "" || agent["subagent_type"] != "reviewer" || agent["project_id"] != "deadbeef" {
 		t.Fatalf("unexpected get result: %#v", got)
 	}
 
@@ -158,7 +172,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, ok := listed["subagents"].([]map[string]any)
-	if !ok || len(items) != 1 || items[0]["subagent_id"] != id {
+	if !ok || len(items) != 1 || items[0]["subagent_id"] != id || items[0]["subagent_type"] != "reviewer" {
 		t.Fatalf("unexpected list result: %#v", listed)
 	}
 
@@ -263,6 +277,26 @@ func TestSubagentGetReturnsDiagnosticStateWhenRefreshFails(t *testing.T) {
 	conversationID, _ := agent["conversation_id"].(string)
 	if agent["status"] != string(runtime.StatusDegraded) || agent["phase"] != "degraded" || agent["next_action"] != "poll" || conversationID == "" {
 		t.Fatalf("refresh failure lost diagnostic mapping: %#v", agent)
+	}
+}
+
+func TestSubagentGetSurfacesConnectorAuthorizeAction(t *testing.T) {
+	m := newToolTestManagerWithProvider(t, connectorAuthProvider{})
+	spawn := SpawnTool{manager: m}
+	get := GetTool{manager: m}
+	ic := core.InvokeContext{WorkspaceID: "ws"}
+	spawned, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := spawned["subagent_id"].(string)
+	result, err := get.Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatalf("diagnostic get should surface connector blocker: %v", err)
+	}
+	agent := result["subagent"].(map[string]any)
+	if agent["status"] != string(runtime.StatusDegraded) || agent["phase"] != "connector_auth_required" || agent["next_action"] != "authorize" || agent["last_error_code"] != "connector_auth_required" {
+		t.Fatalf("connector blocker was not surfaced structurally: %#v", agent)
 	}
 }
 

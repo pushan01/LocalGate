@@ -80,20 +80,35 @@ session_cleanup:
   sweep_interval_ms: 60000
 
 subagents:
-  # 首版 Subagent Runtime 默认关闭；启用前先确保 opencli 可执行且 Chrome 已登录 ChatGPT。
+  # Subagent Runtime 默认关闭；启用 browser provider 前先确保 opencli 可执行且 Chrome 已登录对应站点。
   enabled: false
   default_provider: "opencli_chatgpt"
   max_agents: 32
   max_concurrency: 4
   max_pending_per_agent: 8
+  same_agent_poll_interval_seconds: 10
+  different_agent_poll_interval_seconds: 5
   providers:
     opencli_chatgpt:
+      enabled: true
       executable: "opencli"
       timeout_seconds: 120
+      # 同一 provider 的 spawn/send 提交冷却时间；0 表示关闭。
+      submit_interval_seconds: 0
       # 建议填写一个专用 ChatGPT Project ID 或 /g/g-p-... URL，避免 subagent 会话散落在普通聊天列表。
       default_project: ""
       # 可选：配置后 subagent_archive 会先把 conversation 移到这里并验证成功；留空则不移动远端 conversation，只删除本地 sg_* 映射。
       archive_project: ""
+    # 可同时启用 Gemini；保持 default_provider=opencli_chatgpt 时，可在 subagent_spawn 中显式 provider=opencli_gemini。
+    opencli_gemini:
+      enabled: false
+      # Gemini 的 DOM adapter 随 LocalGate 内置；这里只配置它调用的通用 OpenCLI browser backend。
+      browser_executable: "opencli"
+      # 可选：仅用于开发/兼容场景，覆盖 LocalGate 内置的 Gemini adapter runner。
+      # executable: "/path/to/custom-adapter"
+      timeout_seconds: 120
+      # 同一 Gemini provider 的所有 spawn/send 至少间隔这么多秒；0 表示关闭。
+      submit_interval_seconds: 0
 
 workspaces:
   - id: "default"
