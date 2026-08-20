@@ -56,26 +56,29 @@ func TestGetToolSchemaTool(t *testing.T) {
 }
 
 func TestGetToolSchemaToolRejectsBootstrapTool(t *testing.T) {
-	for _, name := range []string{"get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema"} {
+	for _, name := range []string{"get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema", "invoke_tool"} {
 		reg := core.NewRegistry(nil)
 		reg.Register(dummyTool{name: name, desc: "bootstrap"})
 		tool := NewGetToolSchemaTool(reg)
 
 		_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": name})
-		if err == nil || err.Error() != "bootstrap tools do not have HTTP-callable schemas" {
+		if err == nil || err.Error() != "bootstrap tools do not have Registry invocation schemas" {
 			t.Fatalf("bootstrap tool %q returned unexpected error: %v", name, err)
 		}
 	}
 }
 
-func TestGetToolSchemaToolRequiresVisibleTool(t *testing.T) {
+func TestGetToolSchemaToolAllowsHiddenRegisteredTool(t *testing.T) {
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	reg.Hide("read_file")
 	tool := NewGetToolSchemaTool(reg)
 
-	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": "read_file"})
-	if err == nil || err.Error() != "tool not found" {
-		t.Fatalf("unexpected error: %v", err)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": "read_file"})
+	if err != nil {
+		t.Fatalf("hidden registered tool should remain progressively discoverable: %v", err)
+	}
+	if res["name"] != "read_file" {
+		t.Fatalf("unexpected result: %#v", res)
 	}
 }

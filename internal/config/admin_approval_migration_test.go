@@ -15,12 +15,12 @@ func TestRejectLegacyApprovalConfigLocations(t *testing.T) {
 	}{
 		{
 			name:    "top-level approval",
-			content: "approval:\n  enabled: true\nworkspaces:\n  - id: ws\n",
+			content: "approval:\n  enabled: true\nroot: /tmp\n",
 			want:    "admin.approval",
 		},
 		{
 			name:    "nested approval base URL",
-			content: "admin:\n  approval:\n    base_url: https://admin.example.test\nworkspaces:\n  - id: ws\n",
+			content: "admin:\n  approval:\n    base_url: https://admin.example.test\nroot: /tmp\n",
 			want:    "admin.base_url",
 		},
 	}
@@ -49,7 +49,7 @@ func TestRejectLegacyApprovalBaseURLEnvironmentVariable(t *testing.T) {
 
 func TestAdminDisabledDisablesApprovalSubfeature(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "localgate.yaml")
-	content := "admin:\n  enabled: false\n  approval:\n    enabled: true\nworkspaces:\n  - id: ws\n"
+	content := "admin:\n  enabled: false\n  approval:\n    enabled: true\nroot: /tmp\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

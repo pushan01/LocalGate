@@ -21,7 +21,6 @@ func (a *API) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
-	workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
 	requester := strings.TrimSpace(r.URL.Query().Get("requester"))
 	limit := parseLimit(r, 50)
 	items := make([]approval.Request, 0, limit)
@@ -33,9 +32,6 @@ func (a *API) handleApprovals(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if tool != "" && request.Tool != tool {
-			continue
-		}
-		if workspaceID != "" && request.WorkspaceID != workspaceID {
 			continue
 		}
 		if requester != "" && request.Requester != requester {

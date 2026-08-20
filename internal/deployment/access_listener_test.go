@@ -17,7 +17,7 @@ func TestAccessListenersSeparateApplicationsAndDeploymentLists(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "managed")), nil, "")
 	manager.ConfigureAppHosting("https://apps.test", "https://private.apps.test", AccessPrivate)
-	workspace := config.Workspace{ID: "ws", Roots: []string{root}, CWD: root}
+	workspace := config.Root{Path: root}
 
 	deployStaticForAccessTest(t, manager, workspace, root, "public-app", AccessPublic, "public body")
 	deployStaticForAccessTest(t, manager, workspace, root, "private-app", AccessPrivate, "private body")
@@ -74,7 +74,7 @@ func TestAccessSwitchMovesDeploymentBetweenListeners(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "managed")), nil, "")
 	manager.ConfigureAppHosting("https://apps.test", "https://private.apps.test", AccessPrivate)
-	workspace := config.Workspace{ID: "ws", Roots: []string{root}, CWD: root}
+	workspace := config.Root{Path: root}
 	deployStaticForAccessTest(t, manager, workspace, root, "move-me", AccessPublic, "move body")
 
 	publicHandler := manager.HandlerForAccess(AccessPublic)
@@ -98,7 +98,7 @@ func TestAccessSwitchMovesDeploymentBetweenListeners(t *testing.T) {
 	}
 }
 
-func deployStaticForAccessTest(t *testing.T, manager *Manager, workspace config.Workspace, root, name, access, body string) {
+func deployStaticForAccessTest(t *testing.T, manager *Manager, workspace config.Root, root, name, access, body string) {
 	t.Helper()
 	source := filepath.Join(root, name)
 	if err := os.MkdirAll(source, 0o755); err != nil {
@@ -108,7 +108,7 @@ func deployStaticForAccessTest(t *testing.T, manager *Manager, workspace config.
 		t.Fatal(err)
 	}
 	if _, err := manager.Deploy(context.Background(), DeployRequest{
-		Type: TypeStatic, Name: name, Source: source, Workspace: workspace,
+		Type: TypeStatic, Name: name, Source: source, Root: workspace,
 		Options: DeployOptions{PreserveSource: true, Access: access},
 	}); err != nil {
 		t.Fatalf("deploy %s: %v", name, err)

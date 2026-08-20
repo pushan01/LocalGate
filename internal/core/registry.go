@@ -12,7 +12,6 @@ import (
 
 type InvokeContext struct {
 	TaskID          string
-	WorkspaceID     string
 	Requester       string
 	ApprovalID      string
 	Transport       string
@@ -53,6 +52,14 @@ type ToolOutputSchemaProvider interface {
 
 type ToolAnnotationsProvider interface {
 	ToolAnnotations() map[string]any
+}
+
+// ToolNativeContentProvider lets a transport adapter preserve protocol-native
+// content blocks produced by a wrapped capability (for example a downstream
+// MCP relay) without coupling the core Registry package to one MCP library.
+// Each returned map must be one complete MCP-style content object.
+type ToolNativeContentProvider interface {
+	NativeContent(result map[string]any) []map[string]any
 }
 
 func ToolMetadata(t Tool) map[string]any {
@@ -119,6 +126,29 @@ func ToolAnnotations(t Tool) map[string]any {
 	out := make(map[string]any, len(annotations))
 	for k, v := range annotations {
 		out[k] = v
+	}
+	return out
+}
+
+func ToolNativeContent(t Tool, result map[string]any) []map[string]any {
+	if t == nil || result == nil {
+		return nil
+	}
+	p, ok := t.(ToolNativeContentProvider)
+	if !ok {
+		return nil
+	}
+	blocks := p.NativeContent(result)
+	out := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		if len(block) == 0 {
+			continue
+		}
+		copyBlock := make(map[string]any, len(block))
+		for key, value := range block {
+			copyBlock[key] = value
+		}
+		out = append(out, copyBlock)
 	}
 	return out
 }

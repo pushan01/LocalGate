@@ -1,5 +1,139 @@
 # Plan
 
+## Single Root：移除 Workspace 多安全域模型
+
+- **状态**：已完成（CH-ROOT-001 ～ CH-ROOT-004）
+- **规划日期**：2026-08-20
+- **分支**：`work/localgate-next`
+- **目标**：一个 LocalGate 实例只对应一个受控根目录，不再支持多 workspace。配置改为顶层 `root` 与实例级 path/command/env/shell/approval policy；App 只保留一个 Registry；MCP、REST、Admin、Task、Session、Subagent、Deployment、Tool Access 不再携带或选择 `workspace_id`。
+- **安全不变量**：所有文件路径、Shell cwd/workdir、deployment source 和本地导出源在 symlink 解析后都必须位于配置的单一 `root` 内；移除 workspace 选择不能降低现有路径、命令、环境变量、审批和资源生命周期检查。
+- **兼容策略**：这是有意的配置/API breaking change。旧 `workspaces:` 配置启动时明确报错并提示改用顶层 `root`；不保留“第一个 workspace 作为 default”的隐式兼容。现有持久化 Task/Session/Subagent/Deployment 记录中的旧 `workspace_id` 只在需要安全迁移时做向后读取，不再写入新记录或暴露为新 API 字段。
+
+### CH-ROOT-001：单 Root 配置与 App 单 Registry
+
+- **状态**：已完成
+- **开始日期**：2026-08-20
+- **完成日期**：2026-08-20
+- **优先级**：P0
+- **目标**：删除外部 `workspaces` 配置与 `DefaultWSID/Workspaces/Registries` App 模型，建立顶层 `root` + 单 `App.Registry`，并让 filesystem/shell/deployment 等工具绑定同一 root policy。
+- **非目标**：本 Change 暂不删除 Task/Session/Subagent 持久化结构中的 workspace 字段，也不改所有 HTTP/Admin 请求结构；这些在后续 Change 处理。
+- **预计规模**：约 500–900 行有效 diff，配置测试中的批量 fixture 迁移作为机械变化单独看待。
+- **验收条件**：`Config` 必须有一个绝对 root；旧 `workspaces` 明确拒绝；root policy 在启动时校验；App 只构建一次 Registry；MCP 使用单 Registry 且不再持有 WSID。
+- **验证方式**：`go test ./internal/config ./internal/app ./internal/security ./internal/capabilities/filesystem ./internal/capabilities/shell ./internal/mcpgo`、`git diff --check`。
+- **实际实现**：配置改为顶层 `root` 与实例级 path/command/env/shell/approval policy；旧 `workspaces:` 明确拒绝。`App` 只持有一个 `Root` 和一个 `Registry`，filesystem/shell/deployment/MCP 全部绑定该单一 root，不再构建 workspace map 或选择默认 workspace。
+- **验证结果**：配置、App、安全、filesystem、shell、MCP 定向测试通过；后续全量验证由 CH-ROOT-004 统一记录。
+
+### CH-ROOT-002：Task / Session / Subagent 去 Workspace ownership 参数
+
+- **状态**：已完成
+- **开始日期**：2026-08-20
+- **完成日期**：2026-08-20
+- **依赖**：CH-ROOT-001
+- **优先级**：P0
+- **目标**：删除 invocation/task/session/subagent 新模型中的 workspace 传播和 cross-workspace API，资源身份直接限定在当前 LocalGate 实例。
+- **非目标**：不改变 Task 状态机、Session cursor 或 Subagent Provider 行为。
+- **预计规模**：约 500–900 行有效 diff。
+- **验收条件**：Task lifecycle、Session read/write/close、Subagent get/list/send/poll/wait/archive/close 均无需 workspace 参数；新持久化记录不再写 `workspace_id`。
+- **验证方式**：相关 core/capability/subagent 测试、`go test ./internal/core ./internal/capabilities/task ./internal/capabilities/shell ./internal/subagent ./internal/capabilities/subagent`。
+- **实际实现**：Task、Invocation、Session、Subagent 和相关 Manager/API 删除 workspace ownership 字段与 cross-workspace 方法；资源身份直接属于当前 LocalGate 实例，旧持久化 JSON 中额外的 `workspace_id` 可被 Go JSON 解码安全忽略。
+- **验证结果**：Core、Task、Shell、Subagent capability/runtime 定向测试通过，原 cross-workspace 测试改为单实例下仍有效的 not-found、生命周期和隔离不变量。
+
+### CH-ROOT-003：HTTP / Admin / File Browser / Tool Access 去 Workspace 路由
+
+- **状态**：已完成
+- **开始日期**：2026-08-20
+- **完成日期**：2026-08-20
+- **依赖**：CH-ROOT-001、CH-ROOT-002
+- **优先级**：P0
+- **目标**：REST、Tool HTTP、Admin/File Browser 不再接受或返回 `workspace_id`，File Browser 直接围绕单 root + relative path 工作，Tool Access grant 不再绑定 workspace。
+- **预计规模**：约 600–1000 行有效 diff；前端/API fixture 的机械字段删除单独计量。
+- **验收条件**：不存在 workspace selector/registry resolver；Tool HTTP token 只授权当前实例；File Browser API 不需要 workspace 参数且仍不能逃逸 root。
+- **验证方式**：`go test ./internal/httpapi ./internal/adminapi ./internal/filebrowser ./internal/toolaccess`，前端测试/构建按仓库既有方式执行。
+- **实际实现**：REST、Tool HTTP、Admin/File Browser 全部删除 workspace selector、registry resolver 与 `workspace_id/root_id` API 字段；File Browser 只接受 root-relative `path`，Admin Files 的 Tab/Git/Terminal 前端状态也收敛为 path-only；Tool Access grant 只授权当前实例。
+- **验证结果**：HTTP/Admin/FileBrowser/ToolAccess 定向测试通过；Admin 前端 18 个 Node 测试、源码语法检查和 dist 重建通过。
+
+### CH-ROOT-004：Deployment / 持久化 / 文档收口
+
+- **状态**：已完成
+- **开始日期**：2026-08-20
+- **完成日期**：2026-08-20
+- **依赖**：CH-ROOT-001 ～ CH-ROOT-003
+- **优先级**：P0
+- **目标**：删除 Dynamic/Subagent/Task 等剩余 workspace 持久化语义和 Deployment workspace ownership 字段，更新 README、Builtin Skills、示例配置与 API 文档为单 Root 模型。
+- **预计规模**：约 500–1000 行有效 diff，加历史设计文档中的说明性机械更新。
+- **验收条件**：生产代码不再存在 `WorkspaceID` / `workspace_id` / `DefaultWSID` / `Workspaces` / `Registries` 概念；示例配置只有 `root`；全量测试和静态检查通过。
+- **验证方式**：`rg` 残留检查、`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：Deployment/Dynamic、Task、Session、Subagent、Tool Access 和文件传输持久化的新模型均不再写入 workspace ownership；旧 JSON 中额外的 `workspace_id` 继续由兼容读取测试覆盖。README、HTTP/MCP Skills、Builtin Skills、示例配置、Admin Files 前端和当前 API 命令文档全部改为单 Root 语义；旧设计计划文档在文件顶部明确标记为历史多 Workspace 模型。
+- **验证结果**：生产 Go 源码中 `workspace_id` / `WorkspaceID` / `DefaultWSID` / `Workspaces` / `Registries` 残留为 0；现行 README、example、Skills、Builtin Skills、Admin 前端源码/生成产物中 `workspace` 旧模型表述为 0。`go test ./...`、`go vet ./...`、`web/admin npm run check`（18 个 Node 测试 + 源码/生成 JS 检查 + dist 重建）和 `git diff --check` 全部通过。
+
+## MCP 渐进式工具披露：稳定核心面 + Builtin Skill + Registry Invoke
+
+- **状态**：已实施（CH-MCP-001 ～ CH-MCP-003）
+- **规划日期**：2026-08-20
+- **分支**：`work/localgate-next`
+- **目标**：把 MCP 从“Registry visible tools 全量平铺”收敛为稳定的小型协议面；高频基础能力和 MCP Host 原生文件桥继续直接暴露，其余 Registry 能力通过 Builtin Skill 渐进披露，并由统一 `invoke_tool` 入口执行，保持原有 Task / Approval / Audit / Workspace 安全链路。
+- **目标 MCP 常驻面（普通模式）**：`get_startup_instructions`、`get_skill`、`get_tool_schema`、`invoke_tool`、`read_file`、`apply_patch`、`run_command`、`upload_file`、`export_file`。
+- **核心设计原则**：
+  - MCP exposure 与 Registry capability 分离；Registry 中存在且允许渐进调用的工具不必成为顶层 MCP tool。
+  - Builtin Skill 提供能力域、调用顺序、状态机和安全语义；`get_tool_schema` 提供运行时精确 schema，Skill 不复制完整 JSON Schema。
+  - `invoke_tool` 只做 transport dispatch，必须把目标工具名和原始参数交给 `App.SubmitToolTaskWithMeta`，审批、审计、任务结果和 workspace 语义均以目标工具为准，不能只记录 `invoke_tool`。
+  - `upload_file` 保持直接 MCP 暴露以保留 `openai/fileParams` Host 注入语义；`export_file` 保持直接 MCP 暴露以保留 output schema / annotations / `resource_link` 语义。
+  - Tool HTTP Mode 继续作为独立 bootstrap transport，不强行改造成 `invoke_tool`；普通 MCP 模式与 Tool HTTP Mode 都共享同一 Registry capability catalog。
+  - 下游 MCP relay 不再默认铺平到顶层 MCP；后续经 capability catalog / Skill / `invoke_tool` 渐进访问。
+
+### CH-MCP-001：`invoke_tool` 与稳定 MCP Core 骨架
+
+- **状态**：已完成
+- **开始日期**：2026-08-20
+- **完成日期**：2026-08-20
+- **优先级**：P0
+- **目标**：增加通用渐进调用入口，并把普通 MCP 的 Registry 业务工具收敛到目标 9 工具核心面；为避免迁移中断，本 Change 暂时继续直接暴露现有 5 个 Task lifecycle helper，CH-MCP-002 完成后再从 14 个过渡工具收敛到最终 9 个。
+- **非目标**：本 Change 不把 Task lifecycle 五个 helper 迁入 Registry，不重写 Builtin Skill 正文，不改变 Tool HTTP Mode 的四工具 bootstrap 行为。
+- **涉及范围**：`internal/mcpgo`、`internal/capabilities/toolaccess`、`internal/core`/`internal/app` 的最小 capability 查询支持、相关测试。
+- **预计规模**：约 350–700 行有效 diff。
+- **验收条件**：
+  - 普通 MCP `tools/list` 只包含目标 9 个核心工具加迁移期 5 个 Task lifecycle helper；Deployment / Session / Subagent / Notification / relay 等业务工具不再直接注册。
+  - `invoke_tool(tool, arguments, async?)` 能调用一个未直接 MCP 暴露但允许渐进调用的 Registry tool。
+  - 审批规则按目标工具名匹配；创建的 Task `tool` 字段和审计 invocation 记录目标工具名，不是 `invoke_tool`。
+  - `invoke_tool` 拒绝递归调用 bootstrap/core dispatch 工具以及不存在/不可渐进调用的工具。
+  - 同步、异步、审批等待和目标工具 `resource_link` 结果继续沿用现有 MCP task result 语义。
+- **验证方式**：`go test ./internal/capabilities/toolaccess ./internal/core ./internal/app ./internal/mcpgo`、相关 MCP HTTP tools/list 场景、`git diff --check`。
+- **实际实现**：普通 MCP 不再遍历并桥接全部 `Registry.ListVisible()`；集中定义稳定直接 MCP allowlist，并新增 transport 级 `invoke_tool(tool, arguments, async?)`。`invoke_tool` 最终调用 `App.SubmitToolTaskWithMeta` 的仍是目标 Registry tool，因此 Approval、Task、Audit 和 workspace 语义保留真实工具名。`get_tool_schema` 改为可读取已注册但未顶层暴露的渐进工具 schema，并禁止 bootstrap/dispatch 工具递归调用。
+- **验证结果**：定向 toolaccess/MCP/App 测试通过；Deployment 与 Subagent 回归确认未直接 MCP 暴露但可通过 `invoke_tool` 执行，Deployment 审批和审计仍记录 `deploy_tool`。
+
+### CH-MCP-002：Task lifecycle 下沉 Registry
+
+- **状态**：已完成
+- **完成日期**：2026-08-20
+- **依赖**：CH-MCP-001
+- **优先级**：P0
+- **目标**：把 `task_status`、`task_logs`、`task_cancel`、`task_result`、`wait_task_finish` 从 `mcpgo.Server` 特制工具迁移为 LocalGate 标准 Registry tools，使它们可由 `localgate-task-session` + `invoke_tool` 渐进调用，并供 HTTP/CLI 复用。
+- **非目标**：不改变 Task 状态机、不增加新的恢复语义或持久化模型。
+- **预计规模**：约 300–600 行有效 diff。
+- **验收条件**：五个 lifecycle 工具从 MCP 顶层消失但可被 `get_tool_schema` / `invoke_tool` 调用；行为、错误和输出兼容现有 MCP helper；普通 MCP 顶层仍保持 9 个。
+- **验证方式**：Task capability 单测、App/HTTP/MCP invoke 测试、`go test ./...`、`git diff --check`。
+- **实际实现**：新增 `internal/capabilities/task`，把五个 lifecycle helper 注册到每个 workspace Registry；删除 `mcpgo.Server` 中对应的特制注册和 handler。普通 MCP 顶层因此正式收敛到目标 9 工具，Task helper 由 `localgate-task-session` + `get_tool_schema` + `invoke_tool` 渐进访问。
+- **验证结果**：新增 Task result/stream、workspace 隔离和 wait completion 单测；MCP 回归覆盖通过 `invoke_tool` 使用 `wait_task_finish`，相关 App/MCP 测试通过。
+
+### CH-MCP-003：Builtin Skill / startup / relay 渐进披露收口
+
+- **状态**：已完成
+- **完成日期**：2026-08-20
+- **依赖**：CH-MCP-001、CH-MCP-002
+- **优先级**：P0
+- **目标**：让 startup 按完整 Registry capability 而不是 MCP exposure 决定 Builtin Skill 可见性；补 `localgate-filesystem`、`localgate-notification`，更新 deployment/subagent/task/file-transfer/mcp-relay Skill 使用 `get_tool_schema → invoke_tool`；停止下游 relay 工具顶层平铺。
+- **非目标**：不改变下游 MCP 本身的协议和 schema，不引入动态 MCP `tools/list_changed`。
+- **预计规模**：约 400–800 行有效 diff。
+- **验收条件**：
+  - 即使 Deployment/Subagent 等工具不在顶层 MCP，相关 Builtin Skill 仍按当前 Registry capability 正确出现。
+  - startup 清楚区分“常驻 MCP tools”和“可渐进调用 capabilities”，不再暗示 Registry visible 等于 MCP surface。
+  - relay 工具可以通过 schema + invoke 路径使用而不进入顶层 MCP tools/list。
+  - README / example usage 与新暴露模型一致。
+- **验证方式**：meta/skill、relay、MCP tools/list、HTTP capability 定向测试；`go test ./...`、`go vet ./...`、`git diff --check`。
+- **实际实现**：startup 在普通 MCP 模式下只摘要直接 MCP 工具，同时用完整 Registry capability 决定 Builtin Skill 路由；Tool HTTP 模式仍严格按 HTTP 可调用 visible list 生成 skill，避免推荐 hidden-only capability。新增 `localgate-filesystem`、`localgate-notification`，并更新 deployment/file-transfer/task-session/subagents/mcp-relay Skills 使用渐进调用协议。下游 MCP 工具包装成 `server__tool` Registry capability，不再顶层平铺，并通过 transport-neutral native-content provider 保留下游 MCP text/image/audio/resource content。
+- **验证结果**：普通 MCP 回归明确断言启用 file export 时 `tools/list` 恰为 9 个目标工具；Relay 回归确认不直接暴露、schema/invoke 可用且原生 MCP content 保留；README 和 `skills/localgate-mcp-tools` 已同步。`go test ./...` 全部通过，后续模式边界修正后的 meta/MCP/Task 定向测试、`go vet ./...` 与 `git diff --check` 均通过。
+
+
 ## Subagent Runtime：基于 OpenCLI + ChatGPT Web 的会话型子 Agent
 
 - **状态**：已实施（CH-SUB-001 ～ CH-SUB-008）

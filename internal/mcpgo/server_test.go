@@ -15,6 +15,7 @@ import (
 	"localgate/internal/app"
 	"localgate/internal/approval"
 	"localgate/internal/config"
+	"localgate/internal/core"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -64,7 +65,52 @@ func TestRegisterCoreToolsAddsAsyncSchema(t *testing.T) {
 	}
 }
 
-func TestSubagentSpawnRegisteredAndInvokableInMCPGo(t *testing.T) {
+func TestNormalMCPExposesStableNineToolSurface(t *testing.T) {
+	root := t.TempDir()
+	s := newTestServerWithConfig(t, config.Config{
+		LogStore:         t.TempDir(),
+		DefaultTimeoutMs: 10_000,
+		HTTP:             config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		FileExports: config.FileExports{
+			Enabled:           true,
+			BaseURL:           "http://127.0.0.1:8000",
+			DefaultTTLSeconds: 300,
+			MaxTTLSeconds:     600,
+			MaxFileBytes:      1 << 20,
+		},
+		Root: config.Root{Path: root,
+			CommandAllowlist: []string{"echo"},
+		},
+	})
+
+	want := map[string]bool{
+		"get_startup_instructions": true,
+		"get_skill":                true,
+		"get_tool_schema":          true,
+		"invoke_tool":              true,
+		"read_file":                true,
+		"apply_patch":              true,
+		"run_command":              true,
+		"upload_file":              true,
+		"export_file":              true,
+	}
+	got := s.impl.ListTools()
+	if len(got) != len(want) {
+		t.Fatalf("expected stable %d-tool MCP surface, got %d: %#v", len(want), len(got), got)
+	}
+	for name := range want {
+		if got[name] == nil {
+			t.Fatalf("missing direct MCP tool %q: %#v", name, got)
+		}
+	}
+	for _, progressive := range []string{"write_file", "exec_command", "task_result", "deploy_tool", "send_notification"} {
+		if got[progressive] != nil {
+			t.Fatalf("progressive tool %q should not be directly MCP-exposed", progressive)
+		}
+	}
+}
+
+func TestSubagentSpawnProgressivelyInvokableInMCPGo(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "opencli-fake")
 	if err := os.WriteFile(executable, []byte(`#!/bin/sh
@@ -79,15 +125,21 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
 	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
 	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	s := newTestServerWithConfig(t, cfg)
-	if s.impl.ListTools()["subagent_spawn"] == nil || s.impl.ListTools()["subagent_send"] == nil || s.impl.ListTools()["subagent_poll"] == nil || s.impl.ListTools()["subagent_wait"] == nil || s.impl.ListTools()["subagent_archive"] == nil {
-		t.Fatalf("subagent tools not registered: %#v", s.impl.ListTools())
+	if s.impl.ListTools()["subagent_spawn"] != nil || s.impl.ListTools()["subagent_send"] != nil || s.impl.ListTools()["subagent_poll"] != nil || s.impl.ListTools()["subagent_wait"] != nil || s.impl.ListTools()["subagent_archive"] != nil {
+		t.Fatalf("subagent tools should not be directly MCP-exposed: %#v", s.impl.ListTools())
+	}
+	if s.impl.ListTools()["invoke_tool"] == nil {
+		t.Fatal("invoke_tool should be registered")
 	}
 
-	res, err := s.makeInvokeHandler("subagent_spawn")(context.Background(), callReq(map[string]any{
-		"name":        "reviewer",
-		"instruction": "review code",
+	res, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool": "subagent_spawn",
+		"arguments": map[string]any{
+			"name":        "reviewer",
+			"instruction": "review code",
+		},
 	}))
 	if err != nil {
 		t.Fatalf("invoke subagent_spawn: %v", err)
@@ -108,12 +160,9 @@ func TestRegisterCoreToolsExposeOnlyBase64dataSchemaWhenEnabled(t *testing.T) {
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:               "ws",
-			Roots:            []string{root},
-			CWD:              root,
+		Root: config.Root{Path: root,
 			CommandAllowlist: []string{"echo", "sh"},
-		}},
+		},
 	})
 
 	tool := s.impl.ListTools()["run_command"]
@@ -297,11 +346,7 @@ func TestToolHTTPModeOnlyRegistersBootstrapToolsInMCPGo(t *testing.T) {
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 	})
 
 	tools := s.impl.ListTools()
@@ -347,12 +392,9 @@ func TestUploadFileKeepsOriginalSchemaInBase64ModeInMCPGo(t *testing.T) {
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:               "ws",
-			Roots:            []string{root},
-			CWD:              root,
+		Root: config.Root{Path: root,
 			CommandAllowlist: []string{"echo", "sh"},
-		}},
+		},
 	})
 	tool := s.impl.ListTools()["upload_file"]
 	if tool == nil {
@@ -380,12 +422,9 @@ func TestStartupInstructionsKeepsOriginalSchemaInBase64ModeInMCPGo(t *testing.T)
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:               "ws",
-			Roots:            []string{root},
-			CWD:              root,
+		Root: config.Root{Path: root,
 			CommandAllowlist: []string{"echo", "sh"},
-		}},
+		},
 	})
 	tool := s.impl.ListTools()["get_startup_instructions"]
 	if tool == nil {
@@ -412,12 +451,9 @@ func TestGetToolSchemaKeepsOriginalSchemaInBase64ModeInMCPGo(t *testing.T) {
 		ToolHTTPMode:     config.ToolHTTPMode{Enabled: true, AccessTokenTTLSeconds: 600},
 		HTTP:             config.HTTP{BaseURL: "http://127.0.0.1:8000"},
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:               "ws",
-			Roots:            []string{root},
-			CWD:              root,
+		Root: config.Root{Path: root,
 			CommandAllowlist: []string{"echo", "sh"},
-		}},
+		},
 	})
 	for name, property := range map[string]string{"get_tool_schema": "tool", "get_skill": "name"} {
 		tool := s.impl.ListTools()[name]
@@ -580,11 +616,7 @@ func TestInvokeHandlerAcceptsBase64ArgumentsWhenEnabled(t *testing.T) {
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root:             config.Root{Path: root},
 	})
 
 	raw, _ := json.Marshal(map[string]any{"path": target})
@@ -613,11 +645,7 @@ func TestInvokeHandlerAcceptsBase64EnvelopeArgumentsWhenEnabled(t *testing.T) {
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
 		ToolArguments:    config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root:             config.Root{Path: root},
 	})
 
 	raw, _ := json.Marshal(map[string]any{"path": target})
@@ -645,11 +673,7 @@ func TestInvokeHandlerRejectsBase64ArgumentsWhenDisabled(t *testing.T) {
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root:             config.Root{Path: root},
 	})
 
 	raw, _ := json.Marshal(map[string]any{"path": target})
@@ -710,14 +734,21 @@ func TestWaitTaskFinishReturnsTerminalStatusWithoutResult(t *testing.T) {
 		t.Fatalf("missing task_id: %#v", payload)
 	}
 
-	waitRes, err := s.handleWaitTaskFinish(context.Background(), callReq(map[string]any{
-		"task_id":    taskID,
-		"timeout_ms": 2000,
+	waitRes, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool": "wait_task_finish",
+		"arguments": map[string]any{
+			"task_id":    taskID,
+			"timeout_ms": 2000,
+		},
 	}))
 	if err != nil {
 		t.Fatalf("wait_task_finish: %v", err)
 	}
-	waitPayload := payloadFromResult(t, waitRes)
+	waitEnvelope := payloadFromResult(t, waitRes)
+	waitPayload, _ := waitEnvelope["result"].(map[string]any)
+	if waitPayload == nil {
+		t.Fatalf("missing progressive wait result: %#v", waitEnvelope)
+	}
 	if ready, _ := waitPayload["ready"].(bool); !ready {
 		t.Fatalf("expected ready=true: %#v", waitPayload)
 	}
@@ -732,7 +763,7 @@ func TestWaitTaskFinishReturnsTerminalStatusWithoutResult(t *testing.T) {
 	}
 }
 
-func TestRegisterCoreToolsIncludesRelayTools(t *testing.T) {
+func TestRegisterCoreToolsDoesNotDirectlyExposeRelayTools(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore:         t.TempDir(),
@@ -742,30 +773,15 @@ func TestRegisterCoreToolsIncludesRelayTools(t *testing.T) {
 			Command: "go",
 			Args:    []string{"run", fakeServerDir(t)},
 		}},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 	})
 
-	tool := s.impl.ListTools()["fake__echo_remote"]
-	if tool == nil {
-		t.Fatalf("expected relay tool to be registered")
-	}
-	if tool.Tool.Description == "" {
-		t.Fatalf("relay tool description should not be empty")
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(tool.Tool.RawInputSchema, &schema); err != nil {
-		t.Fatalf("unmarshal relay tool schema: %v", err)
-	}
-	if schema["type"] != "object" {
-		t.Fatalf("unexpected relay schema: %#v", schema)
+	if tool := s.impl.ListTools()["fake__echo_remote"]; tool != nil {
+		t.Fatalf("relay tool should not be directly MCP-exposed")
 	}
 }
 
-func TestRelayInvokeHandlerReturnsDownstreamResult(t *testing.T) {
+func TestRelayToolProgressivelyInvokesAndPreservesNativeContent(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{
 		LogStore:         t.TempDir(),
@@ -775,27 +791,39 @@ func TestRelayInvokeHandlerReturnsDownstreamResult(t *testing.T) {
 			Command: "go",
 			Args:    []string{"run", fakeServerDir(t)},
 		}},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 	})
 
-	res, err := s.makeRelayInvokeHandler(s.App.Relays["fake"])(context.Background(), mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      "fake__echo_remote",
-			Arguments: map[string]any{"text": "hello"},
-		},
-	})
+	if s.impl.ListTools()["fake__echo_remote"] != nil {
+		t.Fatal("relay capability should not be directly MCP-exposed")
+	}
+	if _, ok := s.App.Registry.Get("fake__echo_remote"); !ok {
+		t.Fatal("relay capability should be registered for progressive invocation")
+	}
+	res, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool":      "fake__echo_remote",
+		"arguments": map[string]any{"text": "hello"},
+	}))
 	if err != nil {
 		t.Fatalf("invoke relay tool: %v", err)
 	}
 	if res.IsError {
 		t.Fatalf("relay call should succeed: %#v", res)
 	}
-	if got, ok := res.StructuredContent.(map[string]any); !ok || got["echo"] != "hello" {
-		t.Fatalf("unexpected structured content: %#v", res.StructuredContent)
+	payload := payloadFromResult(t, res)
+	result, _ := payload["result"].(map[string]any)
+	structured, _ := result["structured_content"].(map[string]any)
+	if structured["echo"] != "hello" {
+		t.Fatalf("unexpected relay structured result: %#v", payload)
+	}
+	foundNativeText := false
+	for _, content := range res.Content {
+		if text, ok := content.(mcp.TextContent); ok && text.Text == "echo:hello" {
+			foundNativeText = true
+		}
+	}
+	if !foundNativeText {
+		t.Fatalf("relay native MCP text content should be preserved: %#v", res.Content)
 	}
 }
 
@@ -808,11 +836,7 @@ func TestFailedRelayNotRegisteredInMCPGo(t *testing.T) {
 			Name:    "broken",
 			Command: "definitely-not-a-real-command",
 		}},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 	})
 
 	if tool := s.impl.ListTools()["broken__echo_remote"]; tool != nil {
@@ -825,13 +849,8 @@ func newTestServer(t *testing.T, root string, allowlist []string) *Server {
 	return newTestServerWithConfig(t, config.Config{
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
-		Workspaces: []config.Workspace{
-			{
-				ID:               "ws",
-				Roots:            []string{root},
-				CWD:              root,
-				CommandAllowlist: allowlist,
-			},
+		Root: config.Root{Path: root,
+			CommandAllowlist: allowlist,
 		},
 	})
 }
@@ -843,7 +862,7 @@ func newTestServerWithConfig(t *testing.T, cfg config.Config) *Server {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	s, err := New(application, "localgate", "test", "ws")
+	s, err := New(application, "localgate", "test")
 	if err != nil {
 		t.Fatalf("mcpgo.New: %v", err)
 	}
@@ -878,15 +897,15 @@ func waitForTaskResult(t *testing.T, s *Server, taskID string, timeout time.Dura
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		res, err := s.handleTaskResult(context.Background(), callReq(map[string]any{
-			"task_id": taskID,
-		}))
+		task, err := s.App.Tasks.Get(taskID)
 		if err != nil {
 			t.Fatalf("task_result: %v", err)
 		}
-		payload := payloadFromResult(t, res)
-		if ready, _ := payload["ready"].(bool); ready {
-			return res
+		if isTerminalStatus(task.Status) {
+			payload := buildTaskPayload(task)
+			payload["ready"] = true
+			appendTaskStreams(payload, s.App.Sink, taskID, true)
+			return newStructuredToolResult(payload, isErrorStatus(task.Status))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -903,7 +922,7 @@ func fakeServerDir(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "testutil", "fake_mcp_server"))
 }
 
-func TestDeployToolRegisteredAndWorksInMCPGo(t *testing.T) {
+func TestDeployToolProgressivelyInvokableInMCPGo(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	storeRoot := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{
@@ -916,26 +935,26 @@ func TestDeployToolRegisteredAndWorksInMCPGo(t *testing.T) {
 				MaxFileBytes:  1 << 20,
 			},
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{workspaceRoot},
-			CWD:   workspaceRoot,
-		}},
+		Root: config.Root{Path: workspaceRoot},
 	})
 
-	registered := s.impl.ListTools()["deploy_tool"]
-	if registered == nil {
-		t.Fatal("deploy_tool should be registered in standard MCP")
+	if registered := s.impl.ListTools()["deploy_tool"]; registered != nil {
+		t.Fatal("deploy_tool should not be directly exposed in standard MCP")
 	}
-	var schema map[string]any
-	if err := json.Unmarshal(registered.Tool.RawInputSchema, &schema); err != nil {
-		t.Fatalf("unmarshal deploy schema: %v", err)
+	schemaTool, ok := s.App.Registry.Get("get_tool_schema")
+	if !ok {
+		t.Fatal("get_tool_schema missing from registry")
 	}
+	schemaRes, err := schemaTool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"tool": "deploy_tool"})
+	if err != nil {
+		t.Fatalf("get deploy schema: %v", err)
+	}
+	schema, _ := schemaRes["schema"].(map[string]any)
 	properties, _ := schema["properties"].(map[string]any)
 	options, _ := properties["options"].(map[string]any)
 	optionProperties, _ := options["properties"].(map[string]any)
 	if optionProperties["preserve_source"] == nil {
-		t.Fatalf("deploy schema should expose preserve_source: %#v", schema)
+		t.Fatalf("deploy schema should expose preserve_source: %#v", schemaRes)
 	}
 
 	source := filepath.Join(workspaceRoot, "dist")
@@ -946,12 +965,15 @@ func TestDeployToolRegisteredAndWorksInMCPGo(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	res, err := s.makeInvokeHandler("deploy_tool")(context.Background(), callReq(map[string]any{
-		"type":   "static",
-		"name":   "mcp-site",
-		"source": source,
-		"options": map[string]any{
-			"preserve_source": true,
+	res, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool": "deploy_tool",
+		"arguments": map[string]any{
+			"type":   "static",
+			"name":   "mcp-site",
+			"source": source,
+			"options": map[string]any{
+				"preserve_source": true,
+			},
 		},
 	}))
 	if err != nil {
@@ -1010,11 +1032,7 @@ func TestDeployToolReturnsPendingApprovalInMCPGo(t *testing.T) {
 				RequireApproval: true,
 			},
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{workspaceRoot},
-			CWD:   workspaceRoot,
-		}},
+		Root: config.Root{Path: workspaceRoot},
 	})
 
 	source := filepath.Join(workspaceRoot, "dist")
@@ -1025,10 +1043,13 @@ func TestDeployToolReturnsPendingApprovalInMCPGo(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	res, err := s.makeInvokeHandler("deploy_tool")(context.Background(), callReq(map[string]any{
-		"type":   "static",
-		"name":   "pending-site",
-		"source": source,
+	res, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool": "deploy_tool",
+		"arguments": map[string]any{
+			"type":   "static",
+			"name":   "pending-site",
+			"source": source,
+		},
 	}))
 	if err != nil {
 		t.Fatalf("invoke deploy_tool: %v", err)
@@ -1078,11 +1099,7 @@ func TestDeployToolWaitsForApprovalAndReturnsResultInMCPGo(t *testing.T) {
 				RequireApproval: true,
 			},
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{workspaceRoot},
-			CWD:   workspaceRoot,
-		}},
+		Root: config.Root{Path: workspaceRoot},
 	})
 
 	source := filepath.Join(workspaceRoot, "dist")
@@ -1099,10 +1116,13 @@ func TestDeployToolWaitsForApprovalAndReturnsResultInMCPGo(t *testing.T) {
 	}
 	resultCh := make(chan invokeResult, 1)
 	go func() {
-		result, err := s.makeInvokeHandler("deploy_tool")(context.Background(), callReq(map[string]any{
-			"type":   "static",
-			"name":   "inline-approved-site",
-			"source": source,
+		result, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+			"tool": "deploy_tool",
+			"arguments": map[string]any{
+				"type":   "static",
+				"name":   "inline-approved-site",
+				"source": source,
+			},
 		}))
 		resultCh <- invokeResult{result: result, err: err}
 	}()
@@ -1110,7 +1130,7 @@ func TestDeployToolWaitsForApprovalAndReturnsResultInMCPGo(t *testing.T) {
 	var request approval.Request
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		pending, err := s.App.Approvals.List("pending")
+		pending, err := s.App.Approvals.List("")
 		if err != nil {
 			t.Fatalf("list approvals: %v", err)
 		}

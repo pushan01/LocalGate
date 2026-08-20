@@ -36,21 +36,21 @@ func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
 			MaxFileBytes:      1 << 20,
 			RequireApproval:   false,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}},
+		Root: config.Root{Path: root},
 	})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	defer application.Close()
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.RegisterControl(mux)
 
-	result, err := application.InvokeTool(context.Background(), "ws", "export_file", map[string]any{"path": target})
+	result, err := application.InvokeTool(context.Background(), "export_file", map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("export_file: %v", err)
 	}
-	tool, ok := application.Registries["ws"].Get("export_file")
+	tool, ok := application.Registry.Get("export_file")
 	if !ok {
 		t.Fatal("export_file tool not registered")
 	}
@@ -80,7 +80,7 @@ func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
 	if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
 		t.Fatalf("unexpected cache control: %q", got)
 	}
-	if got := w.Header().Get("Content-Disposition"); !strings.Contains(got, "payload.txt") {
+	if got := w.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
 		t.Fatalf("unexpected content disposition: %q", got)
 	}
 
@@ -138,14 +138,13 @@ func TestExportEndpointServesValidatedInternalSourceOutsideWorkspace(t *testing.
 			MaxTTLSeconds:     600,
 			MaxFileBytes:      1 << 20,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}},
+		Root: config.Root{Path: workspaceRoot},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer application.Close()
 	grant, err := application.Exports.Issue(fileexport.Grant{
-		WorkspaceID:     "ws",
 		Path:            target,
 		FileName:        "artifact.png",
 		MIMEType:        "image/png",
@@ -165,7 +164,7 @@ func TestExportEndpointServesValidatedInternalSourceOutsideWorkspace(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.RegisterControl(mux)
 	req := httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil)

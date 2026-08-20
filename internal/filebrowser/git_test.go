@@ -26,7 +26,7 @@ func TestGitStatusAndDiff(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "new.txt"), "new\n")
 
 	svc := gitTestService(root)
-	status, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"})
+	status, err := svc.GitStatus(context.Background(), PathRequest{})
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
@@ -41,14 +41,14 @@ func TestGitStatusAndDiff(t *testing.T) {
 		t.Fatalf("unexpected untracked status: %#v", got)
 	}
 
-	staged, err := svc.GitDiff(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "tracked.txt"}, true)
+	staged, err := svc.GitDiff(context.Background(), PathRequest{Path: "tracked.txt"}, true)
 	if err != nil {
 		t.Fatalf("staged diff: %v", err)
 	}
 	if !strings.Contains(staged.Diff, "+staged") || strings.Contains(staged.Diff, "+worktree") {
 		t.Fatalf("unexpected staged diff: %s", staged.Diff)
 	}
-	unstaged, err := svc.GitDiff(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "tracked.txt"}, false)
+	unstaged, err := svc.GitDiff(context.Background(), PathRequest{Path: "tracked.txt"}, false)
 	if err != nil {
 		t.Fatalf("unstaged diff: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestGitStatusScopesDirectoryAndPrefixesNestedRepository(t *testing.T) {
 	mustWrite(t, filepath.Join(repo, "outside.txt"), "outside\n")
 
 	svc := gitTestService(root)
-	status, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "repo/inside"})
+	status, err := svc.GitStatus(context.Background(), PathRequest{Path: "repo/inside"})
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGitDiffSupportsDeletedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := gitTestService(root)
-	working, err := svc.GitDiff(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "deleted.txt"}, false)
+	working, err := svc.GitDiff(context.Background(), PathRequest{Path: "deleted.txt"}, false)
 	if err != nil {
 		t.Fatalf("deleted working diff: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestGitDiffSupportsDeletedFiles(t *testing.T) {
 		t.Fatalf("unexpected deleted working diff: %s", working.Diff)
 	}
 	runTestGit(t, root, "add", "deleted.txt")
-	staged, err := svc.GitDiff(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "deleted.txt"}, true)
+	staged, err := svc.GitDiff(context.Background(), PathRequest{Path: "deleted.txt"}, true)
 	if err != nil {
 		t.Fatalf("deleted staged diff: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestGitDiffSupportsDeletedFiles(t *testing.T) {
 func TestGitStatusReportsNonRepository(t *testing.T) {
 	requireGit(t)
 	svc, _ := testService(t)
-	status, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"})
+	status, err := svc.GitStatus(context.Background(), PathRequest{})
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestGitRepositoryOutsideSelectedRootIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := gitTestService(child)
-	_, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"})
+	_, err := svc.GitStatus(context.Background(), PathRequest{})
 	if !errors.Is(err, ErrGitRepositoryOutsideRoot) {
 		t.Fatalf("expected outside-root error, got %v", err)
 	}
@@ -143,7 +143,7 @@ func TestGitMetadataOutsideSelectedRootIsRejected(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "worktree")
 	runTestGit(t, mainRepo, "worktree", "add", "-q", "-b", "test-worktree", worktree)
 	svc := gitTestService(worktree)
-	_, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"})
+	_, err := svc.GitStatus(context.Background(), PathRequest{})
 	if !errors.Is(err, ErrGitRepositoryOutsideRoot) {
 		t.Fatalf("expected metadata outside-root error, got %v", err)
 	}
@@ -168,10 +168,10 @@ func TestGitDoesNotRunExternalDiffOrFSMonitor(t *testing.T) {
 	runTestGit(t, root, "config", "core.fsmonitor", script)
 
 	svc := gitTestService(root)
-	if _, err := svc.GitStatus(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"}); err != nil {
+	if _, err := svc.GitStatus(context.Background(), PathRequest{}); err != nil {
 		t.Fatalf("git status: %v", err)
 	}
-	if _, err := svc.GitDiff(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "tracked.txt"}, false); err != nil {
+	if _, err := svc.GitDiff(context.Background(), PathRequest{Path: "tracked.txt"}, false); err != nil {
 		t.Fatalf("git diff: %v", err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -185,7 +185,7 @@ func TestGitStatusHonorsCanceledContext(t *testing.T) {
 	initGitRepository(t, root)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := gitTestService(root).GitStatus(ctx, PathRequest{WorkspaceID: "ws", RootID: "0"})
+	_, err := gitTestService(root).GitStatus(ctx, PathRequest{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
@@ -209,7 +209,7 @@ func TestParseGitStatusRenameAndLimitedBuffer(t *testing.T) {
 func gitTestService(root string) *Service {
 	cfg := config.Default().FileBrowser
 	cfg.Enabled = true
-	return NewService(cfg, map[string]config.Workspace{"ws": {ID: "ws", Roots: []string{root}}})
+	return NewService(cfg, config.Root{Path: root})
 }
 
 func initGitRepository(t *testing.T, root string) {

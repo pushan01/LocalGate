@@ -20,7 +20,7 @@ type Options struct {
 	AllowNonExist bool
 }
 
-func ValidatePath(p string, ws config.Workspace, opt Options) Decision {
+func ValidatePath(p string, root config.Root, opt Options) Decision {
 	if p == "" {
 		return Decision{Allowed: false, Reason: "empty path"}
 	}
@@ -45,7 +45,7 @@ func ValidatePath(p string, ws config.Workspace, opt Options) Decision {
 	}
 	realAbs := abs(real)
 	// denylist first
-	for _, d := range ws.PathDenylist {
+	for _, d := range root.PathDenylist {
 		dd := abs(d)
 		if opt.FollowSymlink {
 			if r, err := filepath.EvalSymlinks(dd); err == nil {
@@ -56,17 +56,15 @@ func ValidatePath(p string, ws config.Workspace, opt Options) Decision {
 			return Decision{Allowed: false, Reason: "denylist", Path: realAbs}
 		}
 	}
-	// must be under one of roots
-	for _, r := range ws.Roots {
-		rAbs := abs(r)
-		if opt.FollowSymlink {
-			if rr, err := filepath.EvalSymlinks(rAbs); err == nil {
-				rAbs = rr
-			}
+	// must be under the configured root
+	rAbs := abs(root.Path)
+	if opt.FollowSymlink {
+		if rr, err := filepath.EvalSymlinks(rAbs); err == nil {
+			rAbs = rr
 		}
-		if within(realAbs, rAbs) {
-			return Decision{Allowed: true, Path: realAbs, Root: rAbs}
-		}
+	}
+	if within(realAbs, rAbs) {
+		return Decision{Allowed: true, Path: realAbs, Root: rAbs}
 	}
 	return Decision{Allowed: false, Reason: "outside_roots", Path: realAbs}
 }

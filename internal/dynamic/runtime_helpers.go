@@ -33,7 +33,7 @@ func (s *Service) emit(ctx context.Context, action string, deployment Deployment
 		return
 	}
 	event := Event{
-		Action: action, Name: deployment.Name, WorkspaceID: deployment.WorkspaceID,
+		Action: action, Name: deployment.Name,
 		ReleaseID: deployment.ActiveRelease, Executable: deployment.Executable,
 		Hostname: s.hostnameForAccess(deployment.Name, deployment.Access), HealthPath: deployment.HealthPath,
 		RestartCount: deployment.RestartCount, Details: details,
@@ -172,7 +172,7 @@ func (s *Service) retryRegistryPersistence(name, updatedAt string) {
 
 func writeReleaseMetadata(releaseRoot string, deployment Deployment) error {
 	metadata := releaseMetadata{
-		Name: deployment.Name, Type: Type, WorkspaceID: deployment.WorkspaceID,
+		Name: deployment.Name, Type: Type,
 		ReleaseID: deployment.ActiveRelease, CreatedAt: nowString(),
 		FileCount: deployment.FileCount, TotalBytes: deployment.TotalBytes,
 		Executable: deployment.Executable, Argv: append([]string(nil), deployment.Argv...),
@@ -221,10 +221,6 @@ func readReleaseMetadata(releaseRoot string) (releaseMetadata, error) {
 }
 
 func (s *Service) validatePendingSourceCleanup(deployment Deployment) (string, error) {
-	workspace, ok := s.workspaces[deployment.WorkspaceID]
-	if !ok {
-		return "", errors.New("workspace is unavailable")
-	}
 	path := filepath.Clean(strings.TrimSpace(deployment.SourceCleanupPath))
 	if path == "" || !filepath.IsAbs(path) || !strings.HasPrefix(filepath.Base(path), ".localgate-source-") {
 		return "", errors.New("cleanup path is invalid")
@@ -236,23 +232,17 @@ func (s *Service) validatePendingSourceCleanup(deployment Deployment) (string, e
 	if err != nil {
 		return "", err
 	}
-	allowed := false
-	for _, root := range workspace.Roots {
-		absolute, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(filepath.Clean(absolute))
-		if err != nil {
-			continue
-		}
-		if withinRoot(parent, resolved) && filepath.Clean(path) != filepath.Clean(resolved) {
-			allowed = true
-			break
-		}
+	absolute, err := filepath.Abs(s.executionRoot.Path)
+	if err != nil {
+		return "", err
 	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(absolute))
+	if err != nil {
+		return "", err
+	}
+	allowed := withinRoot(parent, resolved) && filepath.Clean(path) != filepath.Clean(resolved)
 	if !allowed {
-		return "", errors.New("cleanup path is outside the workspace")
+		return "", errors.New("cleanup path is outside the LocalGate root")
 	}
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("cleanup path is a symbolic link")

@@ -34,7 +34,6 @@ type Meta struct {
 	SessionIDSource string `json:"session_id_source,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
 	Requester       string `json:"requester,omitempty"`
-	WorkspaceID     string `json:"workspace_id,omitempty"`
 }
 
 func (m Meta) Normalize() Meta {
@@ -44,7 +43,6 @@ func (m Meta) Normalize() Meta {
 	m.SessionIDSource = strings.TrimSpace(m.SessionIDSource)
 	m.RequestID = strings.TrimSpace(m.RequestID)
 	m.Requester = strings.TrimSpace(m.Requester)
-	m.WorkspaceID = strings.TrimSpace(m.WorkspaceID)
 
 	if m.SessionMode == "" {
 		m.SessionMode = SessionModeNone

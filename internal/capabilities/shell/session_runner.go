@@ -23,12 +23,12 @@ import (
 )
 
 type SessionRunner struct {
-	WS       config.Workspace
+	WS       config.Root
 	Sessions *core.SessionManager
 }
 
 func (r SessionRunner) StartSession(ctx context.Context, requester, command, cwd string, env map[string]string, shell string, login, tty bool) (core.Session, error) {
-	return r.StartSessionWithInvokeContext(ctx, core.InvokeContext{WorkspaceID: r.WS.ID, Requester: requester}, command, cwd, env, shell, login, tty)
+	return r.StartSessionWithInvokeContext(ctx, core.InvokeContext{Requester: requester}, command, cwd, env, shell, login, tty)
 }
 
 func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic core.InvokeContext, command, cwd string, env map[string]string, shell string, login, tty bool) (core.Session, error) {
@@ -62,7 +62,6 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 	session := r.Sessions.Create(core.Session{
 		TaskID:          ic.TaskID,
 		Requester:       ic.Requester,
-		WorkspaceID:     r.WS.ID,
 		Transport:       ic.Transport,
 		MCPSessionID:    ic.MCPSessionID,
 		SessionMode:     ic.SessionMode,
@@ -126,7 +125,6 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext,
 	session := r.Sessions.Create(core.Session{
 		TaskID:          ic.TaskID,
 		Requester:       ic.Requester,
-		WorkspaceID:     r.WS.ID,
 		Transport:       ic.Transport,
 		MCPSessionID:    ic.MCPSessionID,
 		SessionMode:     ic.SessionMode,
@@ -180,30 +178,30 @@ func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext,
 }
 
 func (r SessionRunner) WriteStdin(sessionID, chars string, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
-	return r.WriteStdinForWorkspace(context.Background(), sessionID, r.WS.ID, chars, 0, wait, maxItems)
+	return r.WriteStdinContext(context.Background(), sessionID, chars, 0, wait, maxItems)
 }
 
-func (r SessionRunner) WriteStdinForWorkspace(ctx context.Context, sessionID, workspaceID, chars string, cursor int, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
-	if err := r.Sessions.WriteStdinForWorkspaceContext(ctx, sessionID, workspaceID, chars); err != nil {
+func (r SessionRunner) WriteStdinContext(ctx context.Context, sessionID, chars string, cursor int, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
+	if err := r.Sessions.WriteStdinContext(ctx, sessionID, chars); err != nil {
 		return core.Session{}, core.SessionReadResult{}, err
 	}
-	return r.Sessions.WaitReadForWorkspace(ctx, sessionID, workspaceID, cursor, maxItems, wait)
+	return r.Sessions.WaitRead(ctx, sessionID, cursor, maxItems, wait)
 }
 
 func (r SessionRunner) ReadSession(sessionID string, maxItems int) (core.Session, core.SessionReadResult, error) {
-	return r.ReadSessionForWorkspace(sessionID, r.WS.ID, 0, maxItems)
+	return r.ReadSessionAt(sessionID, 0, maxItems)
 }
 
-func (r SessionRunner) ReadSessionForWorkspace(sessionID, workspaceID string, cursor, maxItems int) (core.Session, core.SessionReadResult, error) {
-	return r.Sessions.ReadSnapshotForWorkspace(sessionID, workspaceID, cursor, maxItems)
+func (r SessionRunner) ReadSessionAt(sessionID string, cursor, maxItems int) (core.Session, core.SessionReadResult, error) {
+	return r.Sessions.ReadSnapshot(sessionID, cursor, maxItems)
 }
 
-func (r SessionRunner) WaitReadSessionForWorkspace(ctx context.Context, sessionID, workspaceID string, cursor, maxItems int, wait time.Duration) (core.Session, core.SessionReadResult, error) {
-	return r.Sessions.WaitReadForWorkspace(ctx, sessionID, workspaceID, cursor, maxItems, wait)
+func (r SessionRunner) WaitReadSession(ctx context.Context, sessionID string, cursor, maxItems int, wait time.Duration) (core.Session, core.SessionReadResult, error) {
+	return r.Sessions.WaitRead(ctx, sessionID, cursor, maxItems, wait)
 }
 
 func (r SessionRunner) CloseSession(sessionID string) (core.Session, error) {
-	return r.Sessions.CloseForWorkspace(sessionID, r.WS.ID)
+	return r.Sessions.Close(sessionID)
 }
 
 func (r SessionRunner) streamSessionOutput(sessionID, stream string, src io.Reader) {
@@ -313,9 +311,9 @@ func terminateProcess(pid int) {
 	_ = exec.Command("kill", "-KILL", fmt.Sprintf("%d", pid)).Run()
 }
 
-func resolveWorkdir(cwd string, ws config.Workspace) (string, error) {
+func resolveWorkdir(cwd string, ws config.Root) (string, error) {
 	if cwd == "" {
-		cwd = ws.CWD
+		cwd = ws.Path
 	}
 	if cwd == "" {
 		return "", nil

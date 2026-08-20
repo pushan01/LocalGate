@@ -8,25 +8,25 @@ import (
 
 func TestIssueAndGet(t *testing.T) {
 	svc := NewService()
-	grant, err := svc.Issue("ws", time.Minute)
+	grant, err := svc.Issue(time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if grant.WorkspaceID != "ws" {
-		t.Fatalf("unexpected workspace id: %#v", grant)
+	if grant.AuthValue == "" {
+		t.Fatalf("expected auth value")
 	}
 	got, err := svc.Get(grant.AuthValue)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.AuthValue != grant.AuthValue || got.WorkspaceID != "ws" {
+	if got.AuthValue != grant.AuthValue {
 		t.Fatalf("unexpected grant: %#v", got)
 	}
 }
 
 func TestGetExpired(t *testing.T) {
 	svc := NewService()
-	grant, err := svc.Issue("ws", time.Millisecond)
+	grant, err := svc.Issue(time.Millisecond)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}

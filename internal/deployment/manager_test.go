@@ -25,10 +25,10 @@ func TestManagerStaticLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "managed")), nil, "https://apps.test/")
-	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	workspace := config.Root{Path: workspaceRoot}
 
 	result, err := manager.Deploy(context.Background(), DeployRequest{
-		Type: TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Type: TypeStatic, Name: "demo", Source: source, Root: workspace,
 		Options: DeployOptions{PreserveSource: true},
 	})
 	if err != nil {
@@ -61,8 +61,8 @@ func TestManagerRejectsWorkspaceRootRemoval(t *testing.T) {
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "managed")), nil, "https://apps.test")
 	_, err := manager.Deploy(context.Background(), DeployRequest{
 		Type: TypeStatic, Name: "demo", Source: workspaceRoot,
-		Workspace: config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot},
-		Options:   DeployOptions{PreserveSource: false},
+		Root:    config.Root{Path: workspaceRoot},
+		Options: DeployOptions{PreserveSource: false},
 	})
 	if !errors.Is(err, ErrUnsafeSourceRemoval) {
 		t.Fatalf("expected unsafe removal error, got %v", err)
@@ -82,9 +82,9 @@ func TestManagerServesStaticDeploymentByAppHostname(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "managed")), nil, "https://apps.test")
-	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	workspace := config.Root{Path: workspaceRoot}
 	if _, err := manager.Deploy(context.Background(), DeployRequest{
-		Type: TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Type: TypeStatic, Name: "demo", Source: source, Root: workspace,
 		Options: DeployOptions{PreserveSource: true},
 	}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -127,7 +127,7 @@ func TestManagerRejectsDynamicDeploymentUsingStaticName(t *testing.T) {
 	if _, err := staticService.DeploySite(context.Background(), "demo", source, false); err != nil {
 		t.Fatalf("seed static deployment: %v", err)
 	}
-	dynamicService, err := dynamic.NewService(filepath.Join(t.TempDir(), "dynamic"), config.DynamicHosting{}, nil, false)
+	dynamicService, err := dynamic.NewService(filepath.Join(t.TempDir(), "dynamic"), config.DynamicHosting{}, config.Root{}, false)
 	if err != nil {
 		t.Fatalf("new dynamic service: %v", err)
 	}
@@ -135,8 +135,8 @@ func TestManagerRejectsDynamicDeploymentUsingStaticName(t *testing.T) {
 	manager := NewManager(staticService, dynamicService, "https://apps.test")
 	_, err = manager.Deploy(context.Background(), DeployRequest{
 		Type: TypeDynamic, Name: "demo", Source: source,
-		Workspace: config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot},
-		Runtime:   &dynamic.RuntimeSpec{Argv: []string{"unused"}},
+		Root:    config.Root{Path: workspaceRoot},
+		Runtime: &dynamic.RuntimeSpec{Argv: []string{"unused"}},
 	})
 	if !errors.Is(err, ErrDeploymentNameConflict) {
 		t.Fatalf("expected cross-type name conflict, got %v", err)
@@ -154,10 +154,10 @@ func TestManagerRejectsReservedAndControlHostNamesForStaticDeployments(t *testin
 	}
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), nil, "https://apps.test")
 	manager.ConfigureAppRouting("https://control.apps.test", []string{"admin"})
-	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	workspace := config.Root{Path: workspaceRoot}
 	for _, name := range []string{"admin", "control", "deploys"} {
 		_, err := manager.Deploy(context.Background(), DeployRequest{
-			Type: TypeStatic, Name: name, Source: source, Workspace: workspace,
+			Type: TypeStatic, Name: name, Source: source, Root: workspace,
 			Options: DeployOptions{PreserveSource: true},
 		})
 		if !errors.Is(err, ErrDeploymentNameBlocked) {
@@ -177,9 +177,9 @@ func TestManagerRoutesStaticDeploymentByAccessAndCanSwitch(t *testing.T) {
 	}
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), nil, "")
 	manager.ConfigureAppHosting("https://public.test", "http://private.test", AccessPrivate)
-	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	workspace := config.Root{Path: workspaceRoot}
 	result, err := manager.Deploy(context.Background(), DeployRequest{
-		Type: TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Type: TypeStatic, Name: "demo", Source: source, Root: workspace,
 		Options: DeployOptions{PreserveSource: true},
 	})
 	if err != nil {
@@ -223,9 +223,9 @@ func TestManagerRoutesStaticDeploymentWithDomainSuffix(t *testing.T) {
 	}
 	manager := NewManager(static.NewServiceAt(filepath.Join(t.TempDir(), "static")), nil, "")
 	manager.ConfigureAppHostingWithSuffixes("https://apps.test", "https://private.apps.test", AccessPrivate, "site", "app")
-	workspace := config.Workspace{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}
+	workspace := config.Root{Path: workspaceRoot}
 	result, err := manager.Deploy(context.Background(), DeployRequest{
-		Type: TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Type: TypeStatic, Name: "demo", Source: source, Root: workspace,
 		Options: DeployOptions{PreserveSource: true},
 	})
 	if err != nil {
@@ -256,7 +256,7 @@ func TestManagerRoutesDynamicDeploymentWithSeparateDomainSuffix(t *testing.T) {
 	}
 	dynamicService, err := dynamic.NewService(dynamicRoot, config.DynamicHosting{
 		Enabled: true, DomainSuffix: "app", PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: AccessPrivate,
-	}, nil, false)
+	}, config.Root{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

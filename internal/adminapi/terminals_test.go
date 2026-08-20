@@ -24,16 +24,13 @@ func TestFileTerminalStartsInCurrentDirectoryAndReadsOutput(t *testing.T) {
 	if err := os.MkdirAll(docs, 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
 	}
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{
+		Path:             root,
 		CommandAllowlist: []string{"printf", "cat", "sh", "/bin/sh"},
 	}}, false)
 
 	start := createFileTerminal(t, mux, createFileTerminalRequest{
-		WorkspaceID: "ws",
-		RootID:      "0",
+
 		Path:        "docs",
 		Command:     "printf hello",
 		TTY:         boolPtr(false),
@@ -44,7 +41,7 @@ func TestFileTerminalStartsInCurrentDirectoryAndReadsOutput(t *testing.T) {
 	if sessionID == "" {
 		t.Fatalf("missing session id: %#v", task.Result)
 	}
-	session, err := application.Sessions.GetForWorkspace(sessionID, "ws")
+	session, err := application.Sessions.Get(sessionID)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
@@ -62,7 +59,7 @@ func TestFileTerminalStartsInCurrentDirectoryAndReadsOutput(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+sessionID+"?workspace_id=ws&cursor=0", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+sessionID+"?cursor=0", nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -84,16 +81,13 @@ func TestFileTerminalStartsInCurrentDirectoryAndReadsOutput(t *testing.T) {
 	}
 }
 
-func TestFileTerminalStdinCloseAndWorkspaceOwnership(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{
-		{ID: "ws-a", Roots: []string{rootA}, CWD: rootA, CommandAllowlist: []string{"cat", "sh", "/bin/sh"}},
-		{ID: "ws-b", Roots: []string{rootB}, CWD: rootB, CommandAllowlist: []string{"cat", "sh", "/bin/sh"}},
-	}, false)
+func TestFileTerminalStdinAndClose(t *testing.T) {
+	root := t.TempDir()
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{
+		Path: root, CommandAllowlist: []string{"cat", "sh", "/bin/sh"},
+	}}, false)
 	start := createFileTerminal(t, mux, createFileTerminalRequest{
-		WorkspaceID: "ws-a",
-		RootID:      "0",
+
 		Command:     "cat",
 		TTY:         boolPtr(false),
 		YieldTimeMS: 20,
@@ -104,14 +98,7 @@ func TestFileTerminalStdinCloseAndWorkspaceOwnership(t *testing.T) {
 		t.Fatalf("missing session id: %#v", task.Result)
 	}
 
-	wrongReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+sessionID+"?workspace_id=ws-b", nil)
-	wrongW := httptest.NewRecorder()
-	mux.ServeHTTP(wrongW, wrongReq)
-	if wrongW.Code != http.StatusForbidden {
-		t.Fatalf("cross-workspace read expected 403, got %d body=%s", wrongW.Code, wrongW.Body.String())
-	}
-
-	inputBody, _ := json.Marshal(fileTerminalInputRequest{WorkspaceID: "ws-a", Chars: "hello\n", Cursor: 0, WaitMS: 100})
+	inputBody, _ := json.Marshal(fileTerminalInputRequest{Chars: "hello\n", Cursor: 0, WaitMS: 100})
 	inputReq := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/terminals/"+sessionID+"/stdin", bytes.NewReader(inputBody))
 	inputReq.Header.Set("Content-Type", "application/json")
 	inputReq.Header.Set("Origin", "https://admin.test")
@@ -130,7 +117,7 @@ func TestFileTerminalStdinCloseAndWorkspaceOwnership(t *testing.T) {
 		t.Fatalf("stdin output missing: %#v", inputResult.Items)
 	}
 
-	closeBody, _ := json.Marshal(fileTerminalCloseRequest{WorkspaceID: "ws-a"})
+	closeBody, _ := json.Marshal(fileTerminalCloseRequest{})
 	closeReq := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/terminals/"+sessionID+"/close", bytes.NewReader(closeBody))
 	closeReq.Header.Set("Content-Type", "application/json")
 	closeReq.Header.Set("Origin", "https://admin.test")
@@ -139,7 +126,7 @@ func TestFileTerminalStdinCloseAndWorkspaceOwnership(t *testing.T) {
 	if closeW.Code != http.StatusAccepted {
 		t.Fatalf("close expected 202, got %d body=%s", closeW.Code, closeW.Body.String())
 	}
-	closed, err := application.Sessions.GetForWorkspace(sessionID, "ws-a")
+	closed, err := application.Sessions.Get(sessionID)
 	if err != nil {
 		t.Fatalf("get closed session: %v", err)
 	}
@@ -150,17 +137,14 @@ func TestFileTerminalStdinCloseAndWorkspaceOwnership(t *testing.T) {
 
 func TestFileTerminalReturnsApprovalTaskContext(t *testing.T) {
 	root := t.TempDir()
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{
+		Path:             root,
 		CommandAllowlist: []string{"printf", "sh", "/bin/sh"},
 	}}, true)
 	start := createFileTerminal(t, mux, createFileTerminalRequest{
-		WorkspaceID: "ws",
-		RootID:      "0",
-		Command:     "printf hello",
-		TTY:         boolPtr(false),
+
+		Command: "printf hello",
+		TTY:     boolPtr(false),
 	})
 	if start.Status != core.StatusAwaitingApproval || start.Approval == nil || start.Approval.ID == "" {
 		t.Fatalf("expected approval response: %#v", start)
@@ -169,7 +153,7 @@ func TestFileTerminalReturnsApprovalTaskContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.Status != core.StatusAwaitingApproval || task.ApprovalID != start.Approval.ID || task.WorkspaceID != "ws" {
+	if task.Status != core.StatusAwaitingApproval || task.ApprovalID != start.Approval.ID {
 		t.Fatalf("unexpected approval task: %#v", task)
 	}
 }
@@ -179,13 +163,11 @@ func TestFileTerminalRejectsNonDirectoryAndCrossSiteMutation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write note: %v", err)
 	}
-	_, mux := newFileTerminalTestAPI(t, []config.Workspace{{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	_, mux := newFileTerminalTestAPI(t, []config.Root{{
+		Path:             root,
 		CommandAllowlist: []string{"printf", "sh", "/bin/sh"},
 	}}, false)
-	body, _ := json.Marshal(createFileTerminalRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Command: "printf hello"})
+	body, _ := json.Marshal(createFileTerminalRequest{Path: "note.txt", Command: "printf hello"})
 	req := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/terminals", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "https://admin.test")
@@ -208,15 +190,15 @@ func TestFileTerminalRejectsNonDirectoryAndCrossSiteMutation(t *testing.T) {
 
 func TestFileTerminalStreamPushesOutputAndFinalState(t *testing.T) {
 	root := t.TempDir()
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}, false)
-	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{Path: root}}, false)
+	session := application.Sessions.Create(core.Session{}, core.SessionController{})
 	if err := application.Sessions.Start(session.ID); err != nil {
 		t.Fatalf("start session: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws&cursor=0", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?cursor=0", nil).WithContext(ctx)
 	w := newTerminalStreamWriter()
 	done := make(chan struct{})
 	go func() {
@@ -257,19 +239,12 @@ func TestFileTerminalStreamPushesOutputAndFinalState(t *testing.T) {
 	}
 }
 
-func TestFileTerminalStreamRejectsWorkspaceAndInvalidCursor(t *testing.T) {
+func TestFileTerminalStreamRejectsInvalidCursor(t *testing.T) {
 	root := t.TempDir()
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}, {ID: "other", Roots: []string{t.TempDir()}}}, false)
-	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{Path: root}}, false)
+	session := application.Sessions.Create(core.Session{}, core.SessionController{})
 
-	wrongReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=other", nil)
-	wrongW := httptest.NewRecorder()
-	mux.ServeHTTP(wrongW, wrongReq)
-	if wrongW.Code != http.StatusForbidden {
-		t.Fatalf("cross-workspace stream expected 403, got %d body=%s", wrongW.Code, wrongW.Body.String())
-	}
-
-	invalidReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws&cursor=-1", nil)
+	invalidReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?cursor=-1", nil)
 	invalidW := httptest.NewRecorder()
 	mux.ServeHTTP(invalidW, invalidReq)
 	if invalidW.Code != http.StatusBadRequest {
@@ -279,9 +254,9 @@ func TestFileTerminalStreamRejectsWorkspaceAndInvalidCursor(t *testing.T) {
 
 func TestFileTerminalStreamRequiresFlusher(t *testing.T) {
 	root := t.TempDir()
-	application, mux := newFileTerminalTestAPI(t, []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}, false)
-	session := application.Sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
-	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream?workspace_id=ws", nil)
+	application, mux := newFileTerminalTestAPI(t, []config.Root{{Path: root}}, false)
+	session := application.Sessions.Create(core.Session{}, core.SessionController{})
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/terminals/"+session.ID+"/stream", nil)
 	w := &terminalNonFlushingWriter{header: make(http.Header)}
 	mux.ServeHTTP(w, req)
 	if w.status != http.StatusInternalServerError || !strings.Contains(w.body.String(), "streaming is not supported") {
@@ -365,14 +340,17 @@ type fileTerminalStartResponse struct {
 	} `json:"approval"`
 }
 
-func newFileTerminalTestAPI(t *testing.T, workspaces []config.Workspace, approvals bool) (*app.App, *http.ServeMux) {
+func newFileTerminalTestAPI(t *testing.T, workspaces []config.Root, approvals bool) (*app.App, *http.ServeMux) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = approvals
 	cfg.FileBrowser.Enabled = true
-	cfg.Workspaces = workspaces
+	if len(workspaces) == 0 {
+		t.Fatal("test root required")
+	}
+	cfg.Root = workspaces[0]
 	if approvals {
 		cfg.Admin.Approval.Rules = []config.ApprovalRule{{
 			ID:     "terminal",
@@ -387,11 +365,7 @@ func newFileTerminalTestAPI(t *testing.T, workspaces []config.Workspace, approva
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	defaultWS := ""
-	if len(workspaces) > 0 {
-		defaultWS = workspaces[0].ID
-	}
-	(&API{App: application, DefaultWSID: defaultWS, BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 	return application, mux
 }
 

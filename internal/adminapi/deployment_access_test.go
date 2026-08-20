@@ -33,23 +33,22 @@ func TestAdminDeploymentAccessMutation(t *testing.T) {
 	cfg.Deployments.PublicBaseURL = "https://public.test"
 	cfg.Deployments.PrivateBaseURL = "https://private.test"
 	cfg.Deployments.DefaultAccess = deployment.AccessPublic
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	workspace := cfg.Workspaces[0]
 	if _, err := application.DeploymentManager.Deploy(context.Background(), deployment.DeployRequest{
-		Type: deployment.TypeStatic, Name: "demo", Source: source, Workspace: workspace,
+		Type: deployment.TypeStatic, Name: "demo", Source: source, Root: cfg.Root,
 		Options: deployment.DeployOptions{PreserveSource: true, Access: deployment.AccessPublic},
 	}); err != nil {
 		t.Fatalf("deploy static site: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 	req := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/deployments/static/demo/set-private", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

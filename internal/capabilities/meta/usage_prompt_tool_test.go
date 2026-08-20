@@ -42,11 +42,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	writeLocalSkillFixture(t, workspace, "shadow", "---\nname: alpha\ndescription: Shadowed local skill\n---\n")
 	writeLocalSkillFixture(t, workspace, "local-only", "---\nname: local-only\ndescription: Local only skill\n---\n")
 	writeLocalSkillFixture(t, workspace, "hidden", "---\nname: hidden\ndescription: Hidden skill\ndisable-model-invocation: true\n---\n")
-	ws := config.Workspace{
-		ID:    "ws",
-		Roots: []string{workspace},
-		CWD:   workspace,
-	}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	reg.Register(dummyTool{name: "write_file", desc: "Write content to a file"})
@@ -56,7 +52,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -119,16 +115,19 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if len(tools) != 2 {
 		t.Fatalf("unexpected tools len: %#v", tools)
 	}
-	if tools[0]["name"] != "read_file" || tools[1]["name"] != "write_file" {
-		t.Fatalf("tools should be sorted and visible only: %#v", tools)
+	if tools[0]["name"] != "invoke_tool" || tools[1]["name"] != "read_file" {
+		t.Fatalf("tools should contain only the stable direct MCP summary: %#v", tools)
 	}
-	if tools[0]["description"] != "Read file contents" || tools[1]["description"] != "Write content to a file" {
+	if tools[0]["description"] == "" || tools[1]["description"] != "Read file contents" {
 		t.Fatalf("tool descriptions should be preserved in result payload: %#v", tools)
 	}
 	for _, tool := range tools {
-		if tool["name"] == "run_argv" {
-			t.Fatalf("hidden tool should not appear in visible tool list: %#v", tools)
+		if tool["name"] == "run_argv" || tool["name"] == "write_file" {
+			t.Fatalf("progressive tool should not appear in direct MCP list: %#v", tools)
 		}
+	}
+	if !strings.Contains(prompt, "`localgate-filesystem`") {
+		t.Fatalf("progressive filesystem capability should route through its built-in skill: %q", prompt)
 	}
 	if len(res) != 2 {
 		t.Fatalf("startup instructions should only return prompt and tools: %#v", res)
@@ -138,7 +137,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	for _, tool := range []dummyTool{
 		{name: "apply_patch", desc: "Apply a patch"},
@@ -159,7 +158,7 @@ func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -189,7 +188,7 @@ func TestStartupInstructionsToolOnlyGuidesVisibleTools(t *testing.T) {
 func TestStartupInstructionsToolRedactsMCPEnvironmentValues(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	workspace := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{
@@ -203,7 +202,7 @@ func TestStartupInstructionsToolRedactsMCPEnvironmentValues(t *testing.T) {
 	})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -232,11 +231,7 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
 	writeGlobalSkillFixture(t, home, "gamma", "---\nname: gamma\ndescription: Gamma skill\n---\n")
-	ws := config.Workspace{
-		ID:    "ws",
-		Roots: []string{workspace},
-		CWD:   workspace,
-	}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	reg.Register(dummyTool{name: "run_command", desc: "Run a shell command"})
@@ -247,7 +242,7 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -260,26 +255,24 @@ func TestRenderEmbeddedPromptTemplate(t *testing.T) {
 			t.Fatalf("deployment detail %q should not be in startup: %q", movedToSkill, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "status=pending_approval") || !strings.Contains(prompt, "不要重复提交原操作") || !strings.Contains(prompt, "task_result") {
+	if !strings.Contains(prompt, "status=pending_approval") || !strings.Contains(prompt, "不要重复提交原操作") || !strings.Contains(prompt, "invoke_tool") || !strings.Contains(prompt, "get_tool_schema") {
 		t.Fatalf("missing approval continuation guidance in rendered prompt: %q", prompt)
 	}
 	if !strings.Contains(prompt, "Gamma skill") {
 		t.Fatalf("missing dynamic skill description in rendered prompt: %q", prompt)
 	}
-	if !strings.Contains(prompt, "LocalGate Registry 可见工具的摘要") || !strings.Contains(prompt, "task lifecycle") {
+	if !strings.Contains(prompt, "完整 Registry 能力通过 Builtin Skill 渐进披露") || !strings.Contains(prompt, "Task lifecycle") {
 		t.Fatalf("missing registry/host tool boundary guidance: %q", prompt)
 	}
 }
 
 func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	ws := config.Workspace{
-		ID:    "ws",
-		Roots: []string{t.TempDir()},
-		CWD:   t.TempDir(),
-	}
+	ws := config.Root{Path: t.TempDir()}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
+	reg.Register(dummyTool{name: "write_file", desc: "Write file contents"})
+	reg.Hide("write_file")
 	reg.Register(dummyTool{name: "get_temporary_access_token", desc: "Issue tool credential"})
 	reg.Register(dummyTool{name: "get_tool_schema", desc: "Read tool schema"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{
@@ -288,7 +281,7 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -314,6 +307,9 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 	if strings.Contains(prompt, "`upload_file`") {
 		t.Fatalf("hidden HTTP tool guidance should be omitted: %q", prompt)
 	}
+	if strings.Contains(prompt, "`localgate-filesystem`") {
+		t.Fatalf("tool HTTP mode should not route to hidden-only progressive capabilities: %q", prompt)
+	}
 	tools, ok := res["tools"].([]map[string]any)
 	if !ok {
 		t.Fatalf("unexpected tools type: %#v", res["tools"])
@@ -328,13 +324,13 @@ func TestStartupInstructionsToolToolHTTPMode(t *testing.T) {
 
 func TestStartupInstructionsSurfacesSubagentSkillOnlyWithSubagentTools(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	ws := config.Workspace{ID: "ws", CWD: t.TempDir(), Roots: []string{t.TempDir()}}
+	ws := config.Root{Path: t.TempDir()}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read files"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +341,7 @@ func TestStartupInstructionsSurfacesSubagentSkillOnlyWithSubagentTools(t *testin
 
 	reg.Register(dummyTool{name: "subagent_spawn", desc: "Create subagent"})
 	reg.Register(dummyTool{name: "subagent_send", desc: "Send to subagent"})
-	res, err = tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err = tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,11 +353,7 @@ func TestStartupInstructionsSurfacesSubagentSkillOnlyWithSubagentTools(t *testin
 
 func TestStartupInstructionsToolRequiresBase64WhenEnabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	ws := config.Workspace{
-		ID:    "ws",
-		Roots: []string{t.TempDir()},
-		CWD:   t.TempDir(),
-	}
+	ws := config.Root{Path: t.TempDir()}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read file contents"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{
@@ -371,7 +363,7 @@ func TestStartupInstructionsToolRequiresBase64WhenEnabled(t *testing.T) {
 	})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -476,13 +468,15 @@ func TestLoadAllSkillsFollowsSkillSymlinks(t *testing.T) {
 
 func TestBuiltinSkillsEmbeddedAndLoadable(t *testing.T) {
 	loaded := loadBuiltinSkills()
-	if len(loaded) != 6 {
-		t.Fatalf("expected 6 built-in skills, got %#v", loaded)
+	if len(loaded) != 8 {
+		t.Fatalf("expected 8 built-in skills, got %#v", loaded)
 	}
 	wantNames := []string{
 		"localgate-deployment",
 		"localgate-file-transfer",
+		"localgate-filesystem",
 		"localgate-mcp-relay",
+		"localgate-notification",
 		"localgate-subagents",
 		"localgate-task-session",
 		"localgate-tool-http",
@@ -584,13 +578,13 @@ func TestStartupBuiltinSkillWinsOverExternalNameCollision(t *testing.T) {
 	workspace := t.TempDir()
 	writeLocalSkillFixture(t, workspace, "collision", "---\nname: localgate-deployment\ndescription: External collision should not win\n---\n")
 
-	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "deploy_tool", desc: "Deploy"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -609,13 +603,13 @@ func TestStartupSuppressesExternalCollisionWhenBuiltinIsNotRelevant(t *testing.T
 	workspace := t.TempDir()
 	writeLocalSkillFixture(t, workspace, "collision", "---\nname: localgate-deployment\ndescription: External deployment collision\n---\n")
 
-	ws := config.Workspace{ID: "ws", Roots: []string{workspace}, CWD: workspace}
+	ws := config.Root{Path: workspace}
 	reg := core.NewRegistry(nil)
 	reg.Register(dummyTool{name: "read_file", desc: "Read"})
 	tool := NewStartupInstructionsTool(ws, reg, StartupPromptOptions{})
 	reg.Register(tool)
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, nil)
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

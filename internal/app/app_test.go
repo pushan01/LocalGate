@@ -82,7 +82,7 @@ func TestDynamicLifecycleEventsAreAudited(t *testing.T) {
 	cfg.Deployments.Dynamic.AllowedExecutables = []string{executable}
 	cfg.Deployments.Dynamic.EnvAllowlist = []string{"LOCALGATE_APP_DYNAMIC_HELPER"}
 	cfg.Deployments.Dynamic.RestartPolicy = "never"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -92,9 +92,9 @@ func TestDynamicLifecycleEventsAreAudited(t *testing.T) {
 	ctx := dynamic.WithOperation(context.Background(), dynamic.Operation{TaskID: "task-audit", Requester: "tester", Tool: "deploy_tool"})
 	_, err = a.DeploymentManager.Deploy(ctx, deployment.DeployRequest{
 		Type: deployment.TypeDynamic, Name: "audit-demo", Source: source,
-		Workspace: cfg.Workspaces[0],
-		Runtime:   &dynamic.RuntimeSpec{Argv: []string{executable, "-test.run=^TestAppDynamicHelperProcess$"}, Env: map[string]string{"LOCALGATE_APP_DYNAMIC_HELPER": "1"}},
-		Options:   deployment.DeployOptions{PreserveSource: true, HealthPath: "/healthz", RestartPolicy: "never"},
+		Root:    cfg.Root,
+		Runtime: &dynamic.RuntimeSpec{Argv: []string{executable, "-test.run=^TestAppDynamicHelperProcess$"}, Env: map[string]string{"LOCALGATE_APP_DYNAMIC_HELPER": "1"}},
+		Options: deployment.DeployOptions{PreserveSource: true, HealthPath: "/healthz", RestartPolicy: "never"},
 	})
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -149,18 +149,14 @@ func TestGlobalApprovalSwitchBypassesDeployApproval(t *testing.T) {
 	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
 	cfg.Deployments.DefaultAccess = "public"
 	cfg.HTTP.BaseURL = "https://control.test"
-	cfg.Workspaces = []config.Workspace{{
-		ID:    "ws",
-		Roots: []string{workspaceRoot},
-		CWD:   workspaceRoot,
-	}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
 	}
 	defer a.Close()
 
-	submission, err := a.SubmitToolTask("ws", "test", "deploy_tool", map[string]any{
+	submission, err := a.SubmitToolTask("test", "deploy_tool", map[string]any{
 		"type":   "static",
 		"name":   "global-switch-off",
 		"source": source,
@@ -210,11 +206,7 @@ func TestDeleteDeploymentRequiresApproval(t *testing.T) {
 	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
 	cfg.Deployments.DefaultAccess = "public"
 	cfg.HTTP.BaseURL = "https://control.test"
-	cfg.Workspaces = []config.Workspace{{
-		ID:    "ws",
-		Roots: []string{workspaceRoot},
-		CWD:   workspaceRoot,
-	}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -224,7 +216,7 @@ func TestDeleteDeploymentRequiresApproval(t *testing.T) {
 		t.Fatalf("seed deployment: %v", err)
 	}
 
-	submission, err := a.SubmitToolTask("ws", "test", "delete_deployment", map[string]any{
+	submission, err := a.SubmitToolTask("test", "delete_deployment", map[string]any{
 		"type": "static",
 		"name": "delete-me",
 	})
@@ -256,14 +248,14 @@ func TestDynamicDeploymentRequiresCriticalApproval(t *testing.T) {
 	cfg.Deployments.PrivateBaseURL = "https://private.apps.example.test"
 	cfg.Deployments.DefaultAccess = "public"
 	cfg.Deployments.Dynamic.AllowedExecutables = []string{"node"}
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
 	}
 	defer a.Close()
 
-	submission, err := a.SubmitToolTask("ws", "test", "deploy_tool", map[string]any{
+	submission, err := a.SubmitToolTask("test", "deploy_tool", map[string]any{
 		"type": "dynamic", "name": "demo", "source": workspaceRoot,
 		"runtime": map[string]any{"argv": []any{"node", "server.js"}},
 	})
@@ -414,7 +406,7 @@ func newApprovalReasonTestApp(t *testing.T) *App {
 	cfg.Admin.Approval.Rules = []config.ApprovalRule{{
 		ID: "approve-write", Effect: "require_approval", Tools: []string{"write_file"}, Risk: "high",
 	}}
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -425,8 +417,8 @@ func newApprovalReasonTestApp(t *testing.T) *App {
 
 func submitApprovalReasonTask(t *testing.T, a *App) Submission {
 	t.Helper()
-	root := a.Workspaces["ws"].Roots[0]
-	submission, err := a.SubmitToolTask("ws", "requester", "write_file", map[string]any{
+	root := a.Root.Path
+	submission, err := a.SubmitToolTask("requester", "write_file", map[string]any{
 		"path":    filepath.Join(root, "approval-reason.txt"),
 		"content": "must not run",
 	})
@@ -481,7 +473,7 @@ func TestStartupPrunesExpiredTerminalTasks(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.LogStore = base
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	cfg.Root = config.Root{Path: t.TempDir()}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -510,7 +502,7 @@ func TestPruneLogStoreRemovesDiskAndMemoryHistory(t *testing.T) {
 	base := t.TempDir()
 	cfg := config.Default()
 	cfg.LogStore = base
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	cfg.Root = config.Root{Path: t.TempDir()}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -560,9 +552,7 @@ func TestLoadHistoryTasksOnStartup(t *testing.T) {
 	}
 	cfg := config.Config{
 		LogStore: base,
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root:     config.Root{},
 	}
 	a, err := New(cfg)
 	if err != nil {
@@ -585,11 +575,10 @@ func TestStartupCancelsRecoveredPendingApprovalTask(t *testing.T) {
 		approval.Options{BaseURL: "https://approve.example", TTL: time.Minute},
 	)
 	req, err := approvalService.Create(approval.Request{
-		Tool:        "run_command",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		Reason:      "approval.policy.command",
-		Args:        map[string]any{"command": "rm file"},
+		Tool:      "run_command",
+		Requester: "test",
+		Reason:    "approval.policy.command",
+		Args:      map[string]any{"command": "rm file"},
 	})
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
@@ -600,18 +589,17 @@ func TestStartupCancelsRecoveredPendingApprovalTask(t *testing.T) {
 	}
 	store := persist.NewStore(base)
 	if err := store.SaveTask(core.Task{
-		ID:          taskID,
-		Status:      core.StatusAwaitingApproval,
-		CreatedAt:   time.Now().UTC(),
-		WorkspaceID: "ws",
-		ApprovalID:  req.ID,
+		ID:         taskID,
+		Status:     core.StatusAwaitingApproval,
+		CreatedAt:  time.Now().UTC(),
+		ApprovalID: req.ID,
 	}); err != nil {
 		t.Fatalf("save recovered task: %v", err)
 	}
 
 	cfg := config.Default()
 	cfg.LogStore = base
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	cfg.Root = config.Root{Path: t.TempDir()}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("init app: %v", err)
@@ -649,9 +637,7 @@ func TestSessionJanitorSweepsIdleSessions(t *testing.T) {
 			MaxSessions:        100,
 			SweepIntervalMs:    100,
 		},
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	a, err := New(cfg)
 	if err != nil {
@@ -684,7 +670,7 @@ func TestSessionJanitorSweepsIdleSessions(t *testing.T) {
 
 func TestNewStartsRelayClients(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{{ID: "ws"}},
+		Root: config.Root{},
 		MCPServers: []config.MCPServer{{
 			Name:    "fake",
 			Command: "go",
@@ -707,7 +693,7 @@ func TestNewStartsRelayClients(t *testing.T) {
 
 func TestNewSkipsFailedRelayClients(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{{ID: "ws"}},
+		Root: config.Root{},
 		MCPServers: []config.MCPServer{
 			{
 				Name:    "fake",
@@ -739,7 +725,7 @@ func TestNewSkipsFailedRelayClients(t *testing.T) {
 
 func TestCloseStopsRelayClients(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{{ID: "ws"}},
+		Root: config.Root{},
 		MCPServers: []config.MCPServer{{
 			Name:    "fake",
 			Command: "go",
@@ -774,11 +760,7 @@ func TestNewToolHTTPModeDisablesRelayButKeepsRegistryTools(t *testing.T) {
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 		MCPServers: []config.MCPServer{{
 			Name:    "fake",
 			Command: "go",
@@ -794,7 +776,7 @@ func TestNewToolHTTPModeDisablesRelayButKeepsRegistryTools(t *testing.T) {
 	if len(a.Relays) != 0 {
 		t.Fatalf("tool http mode should not start relays: %#v", a.Relays)
 	}
-	reg := a.Registries["ws"]
+	reg := a.Registry
 	if reg == nil {
 		t.Fatalf("missing registry")
 	}
@@ -815,7 +797,7 @@ func TestNewInitializesSubagentManagerWhenEnabled(t *testing.T) {
 	cfg.Subagents.DefaultProvider = "fake"
 	cfg.Subagents.MaxAgents = 8
 	cfg.Subagents.MaxConcurrency = 3
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	a, err := New(cfg)
 	if err != nil {
@@ -869,7 +851,7 @@ esac
 	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
 	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
 	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	a, err := New(cfg)
 	if err != nil {
@@ -877,7 +859,6 @@ esac
 	}
 	defer a.Close()
 	result, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{
-		WorkspaceID: "ws",
 		Name:        "reviewer",
 		Instruction: "review code",
 	})
@@ -888,18 +869,18 @@ esac
 		t.Fatalf("unexpected subagent: %#v", result.Subagent)
 	}
 	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_archive", "subagent_close"} {
-		if !a.Registries["ws"].IsVisible(name) {
+		if !a.Registry.IsVisible(name) {
 			t.Fatalf("subagent tool %s is not visible", name)
 		}
 	}
-	polled, err := a.Subagents.Poll(context.Background(), "ws", result.Subagent.ID)
+	polled, err := a.Subagents.Poll(context.Background(), result.Subagent.ID)
 	if err != nil {
 		t.Fatalf("poll created subagent: %v", err)
 	}
 	if polled.Subagent.Status != subagent.StatusReady || polled.Reply.Text != "created" {
 		t.Fatalf("unexpected initial poll: %#v", polled)
 	}
-	submission, err := a.SubmitToolTask("ws", "tester", "subagent_send", map[string]any{
+	submission, err := a.SubmitToolTask("tester", "subagent_send", map[string]any{
 		"subagent_id": result.Subagent.ID,
 		"message":     "continue",
 	})
@@ -935,7 +916,7 @@ esac
 	cfg.Subagents.Enabled = true
 	cfg.Subagents.DefaultProvider = "opencli_gemini"
 	cfg.Subagents.Providers.OpenCLIGemini.Executable = executable
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	a, err := New(cfg)
 	if err != nil {
@@ -943,7 +924,6 @@ esac
 	}
 	defer a.Close()
 	result, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{
-		WorkspaceID: "ws",
 		Name:        "gemini-reviewer",
 		Instruction: "review code",
 	})
@@ -953,7 +933,7 @@ esac
 	if result.Subagent.Provider != "opencli_gemini" || result.Subagent.ProviderState.ConversationID != "abc123def4567890" {
 		t.Fatalf("unexpected Gemini subagent: %#v", result.Subagent)
 	}
-	polled, err := a.Subagents.Poll(context.Background(), "ws", result.Subagent.ID)
+	polled, err := a.Subagents.Poll(context.Background(), result.Subagent.ID)
 	if err != nil {
 		t.Fatalf("poll Gemini subagent: %v", err)
 	}
@@ -971,7 +951,7 @@ func TestNewMaterializesBundledGeminiAdapterWhenExecutableIsEmpty(t *testing.T) 
 	cfg.Subagents.Providers.OpenCLIGemini.Enabled = true
 	cfg.Subagents.Providers.OpenCLIGemini.Executable = ""
 	cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable = "/bin/true"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	a, err := New(cfg)
 	if err != nil {
@@ -1014,14 +994,14 @@ printf '%%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://
 	cfg.Admin.Approval.Rules = []config.ApprovalRule{{
 		ID: "approve-subagent", Effect: "require_approval", Tools: []string{"subagent_spawn"}, Risk: "high",
 	}}
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
 
-	submission, err := a.SubmitToolTask("ws", "tester", "subagent_spawn", map[string]any{
+	submission, err := a.SubmitToolTask("tester", "subagent_spawn", map[string]any{
 		"instruction": "review code",
 	})
 	if err != nil {
@@ -1072,21 +1052,21 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	cfg.Subagents.Enabled = true
 	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
 	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	created, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{WorkspaceID: "ws", Instruction: "start"})
+	created, err := a.Subagents.Create(context.Background(), subagent.CreateRequest{Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Subagents.Poll(context.Background(), "ws", created.Subagent.ID); err != nil {
+	if _, err := a.Subagents.Poll(context.Background(), created.Subagent.ID); err != nil {
 		t.Fatalf("poll created subagent: %v", err)
 	}
 
-	submission, err := a.SubmitToolTask("ws", "tester", "subagent_send", map[string]any{
+	submission, err := a.SubmitToolTask("tester", "subagent_send", map[string]any{
 		"subagent_id": created.Subagent.ID,
 		"message":     "continue",
 	})
@@ -1097,7 +1077,7 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	if final.Status != core.StatusFailed || final.ErrorCode != "subagent_outcome_unknown" {
 		t.Fatalf("unexpected outcome-unknown task: %#v", final)
 	}
-	agent, err := a.Subagents.Get("ws", created.Subagent.ID)
+	agent, err := a.Subagents.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

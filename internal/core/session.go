@@ -15,7 +15,6 @@ const (
 type Session struct {
 	ID              string        `json:"id"`
 	TaskID          string        `json:"task_id,omitempty"`
-	WorkspaceID     string        `json:"workspace_id,omitempty"`
 	Requester       string        `json:"requester,omitempty"`
 	Transport       string        `json:"transport,omitempty"`
 	MCPSessionID    string        `json:"mcp_session_id,omitempty"`

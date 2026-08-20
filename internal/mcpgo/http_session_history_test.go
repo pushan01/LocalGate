@@ -17,14 +17,14 @@ func TestStatelessHTTPRecordsClientSuppliedSessionID(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
-	s, err := New(application, "localgate", "test", "ws")
+	s, err := New(application, "localgate", "test")
 	if err != nil {
 		t.Fatalf("mcpgo.New: %v", err)
 	}

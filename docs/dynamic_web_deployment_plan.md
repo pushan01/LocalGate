@@ -1,5 +1,7 @@
 # LocalGate 动态 Web 部署实施计划
 
+> 历史设计文档：其中出现的 `workspace` / `workspace_id` 描述属于旧多 Workspace 模型。现行 Deployment 只属于当前 LocalGate 实例，source 必须位于该实例配置的单一 `root` 内。
+
 状态：P0/P1 核心正确性、统一架构和可靠性能力已实现，生产级专项验收仍在进行中
 适用分支：`dev/add_mcp_http`  
 最后更新：2026-07-01

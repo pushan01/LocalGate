@@ -19,7 +19,7 @@ import (
 	"localgate/internal/core"
 )
 
-func TestFileBrowserWorkspacesListAndContent(t *testing.T) {
+func TestFileBrowserListAndContent(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Hello\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestFileBrowserWorkspacesListAndContent(t *testing.T) {
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -39,31 +39,9 @@ func TestFileBrowserWorkspacesListAndContent(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 
-	workspaceReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/workspaces", nil)
-	workspaceW := httptest.NewRecorder()
-	mux.ServeHTTP(workspaceW, workspaceReq)
-	if workspaceW.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", workspaceW.Code, workspaceW.Body.String())
-	}
-	var workspaceBody struct {
-		Items []struct {
-			ID    string `json:"id"`
-			Roots []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"roots"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(workspaceW.Body.Bytes(), &workspaceBody); err != nil {
-		t.Fatalf("decode workspaces: %v", err)
-	}
-	if len(workspaceBody.Items) != 1 || workspaceBody.Items[0].ID != "ws" || workspaceBody.Items[0].Roots[0].ID != "0" {
-		t.Fatalf("unexpected workspaces: %#v", workspaceBody)
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/list?workspace_id=ws&root_id=0", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/list", nil)
 	listW := httptest.NewRecorder()
 	mux.ServeHTTP(listW, listReq)
 	if listW.Code != http.StatusOK {
@@ -82,7 +60,7 @@ func TestFileBrowserWorkspacesListAndContent(t *testing.T) {
 		t.Fatalf("unexpected entries: %#v", listBody.Entries)
 	}
 
-	contentReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?workspace_id=ws&root_id=0&path=README.md", nil)
+	contentReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?path=README.md", nil)
 	contentW := httptest.NewRecorder()
 	mux.ServeHTTP(contentW, contentReq)
 	if contentW.Code != http.StatusOK {
@@ -111,16 +89,16 @@ func TestFileBrowserSaveContent(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForWrite = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 
-	contentReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?workspace_id=ws&root_id=0&path=note.txt", nil)
+	contentReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?path=note.txt", nil)
 	contentW := httptest.NewRecorder()
 	mux.ServeHTTP(contentW, contentReq)
 	if contentW.Code != http.StatusOK {
@@ -132,7 +110,7 @@ func TestFileBrowserSaveContent(t *testing.T) {
 	if err := json.Unmarshal(contentW.Body.Bytes(), &contentBody); err != nil {
 		t.Fatalf("decode content: %v", err)
 	}
-	body, err := json.Marshal(saveFileContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "new", ETag: contentBody.ETag})
+	body, err := json.Marshal(saveFileContentRequest{Path: "note.txt", Content: "new", ETag: contentBody.ETag})
 	if err != nil {
 		t.Fatalf("marshal save request: %v", err)
 	}
@@ -165,15 +143,15 @@ func TestFileBrowserMkdir(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForWrite = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(mkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(mkdirRequest{Path: "docs"})
 	if err != nil {
 		t.Fatalf("marshal mkdir request: %v", err)
 	}
@@ -200,15 +178,15 @@ func TestFileBrowserRename(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForWrite = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(renameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "old.txt", ToPath: "new.txt"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(renameRequest{FromPath: "old.txt", ToPath: "new.txt"})
 	if err != nil {
 		t.Fatalf("marshal rename request: %v", err)
 	}
@@ -238,15 +216,15 @@ func TestFileBrowserDelete(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForDelete = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(deleteRequest{WorkspaceID: "ws", RootID: "0", Path: "old.txt"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(deleteRequest{Path: "old.txt"})
 	if err != nil {
 		t.Fatalf("marshal delete request: %v", err)
 	}
@@ -262,7 +240,7 @@ func TestFileBrowserDelete(t *testing.T) {
 		t.Fatalf("file should be deleted, got %v", err)
 	}
 
-	body, err = json.Marshal(deleteRequest{WorkspaceID: "ws", RootID: "0", Path: "docs", Recursive: true})
+	body, err = json.Marshal(deleteRequest{Path: "docs", Recursive: true})
 	if err != nil {
 		t.Fatalf("marshal delete request: %v", err)
 	}
@@ -274,7 +252,7 @@ func TestFileBrowserDelete(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected confirmation 400, got %d body=%s", w.Code, w.Body.String())
 	}
-	body, err = json.Marshal(deleteRequest{WorkspaceID: "ws", RootID: "0", Path: "docs", Recursive: true, Confirmation: "delete docs"})
+	body, err = json.Marshal(deleteRequest{Path: "docs", Recursive: true, Confirmation: "delete docs"})
 	if err != nil {
 		t.Fatalf("marshal delete request: %v", err)
 	}
@@ -300,15 +278,15 @@ func TestFileBrowserDownload(t *testing.T) {
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/download?workspace_id=ws&root_id=0&path=file.bin", nil)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/download?path=file.bin", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -321,7 +299,7 @@ func TestFileBrowserDownload(t *testing.T) {
 		t.Fatalf("unexpected content-disposition: %q", got)
 	}
 
-	escapeReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/download?workspace_id=ws&root_id=0&path=../escape", nil)
+	escapeReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/download?path=../escape", nil)
 	escapeW := httptest.NewRecorder()
 	mux.ServeHTTP(escapeW, escapeReq)
 	if escapeW.Code != http.StatusBadRequest {
@@ -342,16 +320,16 @@ func TestFileBrowserImagePreview(t *testing.T) {
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?workspace_id=ws&root_id=0&path=image.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?path=image.png", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -367,7 +345,7 @@ func TestFileBrowserImagePreview(t *testing.T) {
 		t.Fatalf("unexpected preview body %v", w.Body.Bytes())
 	}
 
-	unsupportedReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?workspace_id=ws&root_id=0&path=note.txt", nil)
+	unsupportedReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/preview?path=note.txt", nil)
 	unsupportedW := httptest.NewRecorder()
 	mux.ServeHTTP(unsupportedW, unsupportedReq)
 	if unsupportedW.Code != http.StatusUnsupportedMediaType {
@@ -382,16 +360,16 @@ func TestFileBrowserUpload(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForWrite = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 
-	body, contentType := multipartUploadBody(t, map[string]string{"workspace_id": "ws", "root_id": "0", "path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte{0, 1, 2})
+	body, contentType := multipartUploadBody(t, map[string]string{"path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte{0, 1, 2})
 	req := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/files/upload", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Origin", "https://admin.test")
@@ -404,7 +382,7 @@ func TestFileBrowserUpload(t *testing.T) {
 		t.Fatalf("unexpected uploaded content: %v err=%v", got, err)
 	}
 
-	body, contentType = multipartUploadBody(t, map[string]string{"workspace_id": "ws", "root_id": "0", "path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte("again"))
+	body, contentType = multipartUploadBody(t, map[string]string{"path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte("again"))
 	req = httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/files/upload", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Origin", "https://admin.test")
@@ -422,15 +400,15 @@ func TestFileBrowserSaveRequiresApprovalWhenConfigured(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.RequireApprovalForWrite = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(saveFileContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "new", Create: true})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(saveFileContentRequest{Path: "note.txt", Content: "new", Create: true})
 	if err != nil {
 		t.Fatalf("marshal save request: %v", err)
 	}
@@ -451,15 +429,15 @@ func TestFileBrowserSaveApprovalFlow(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = true
 	cfg.FileBrowser.RequireApprovalForWrite = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(saveFileContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "approved", Create: true})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(saveFileContentRequest{Path: "note.txt", Content: "approved", Create: true})
 	if err != nil {
 		t.Fatalf("marshal save request: %v", err)
 	}
@@ -510,7 +488,7 @@ func TestFileBrowserSaveApprovalFlow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("server changed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	overwriteBody, err := json.Marshal(saveFileContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "forced overwrite", Overwrite: true})
+	overwriteBody, err := json.Marshal(saveFileContentRequest{Path: "note.txt", Content: "forced overwrite", Overwrite: true})
 	if err != nil {
 		t.Fatalf("marshal overwrite request: %v", err)
 	}
@@ -557,15 +535,15 @@ func TestFileBrowserMkdirApprovalFlow(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = true
 	cfg.FileBrowser.RequireApprovalForWrite = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(mkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(mkdirRequest{Path: "docs"})
 	if err != nil {
 		t.Fatalf("marshal mkdir request: %v", err)
 	}
@@ -609,15 +587,15 @@ func TestFileBrowserRenameApprovalFlow(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = true
 	cfg.FileBrowser.RequireApprovalForWrite = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(renameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "old.txt", ToPath: "new.txt"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(renameRequest{FromPath: "old.txt", ToPath: "new.txt"})
 	if err != nil {
 		t.Fatalf("marshal rename request: %v", err)
 	}
@@ -661,15 +639,15 @@ func TestFileBrowserDeleteApprovalFlow(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = true
 	cfg.FileBrowser.RequireApprovalForDelete = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, err := json.Marshal(deleteRequest{WorkspaceID: "ws", RootID: "0", Path: "old.txt"})
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, err := json.Marshal(deleteRequest{Path: "old.txt"})
 	if err != nil {
 		t.Fatalf("marshal delete request: %v", err)
 	}
@@ -710,15 +688,15 @@ func TestFileBrowserUploadApprovalFlow(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = true
 	cfg.FileBrowser.RequireApprovalForWrite = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	body, contentType := multipartUploadBody(t, map[string]string{"workspace_id": "ws", "root_id": "0", "path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte("approved"))
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	body, contentType := multipartUploadBody(t, map[string]string{"path": "upload.bin", "create": "true"}, "file", "upload.bin", []byte("approved"))
 	req := httptest.NewRequest(http.MethodPost, "https://admin.test/api/admin/v1/file-browser/files/upload", body)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Origin", "https://admin.test")
@@ -814,7 +792,7 @@ func TestFileBrowserRejectsWrongHostAndEscapes(t *testing.T) {
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -822,16 +800,16 @@ func TestFileBrowserRejectsWrongHostAndEscapes(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 
-	wrongHostReq := httptest.NewRequest(http.MethodGet, "https://control.test/api/admin/v1/file-browser/workspaces", nil)
+	wrongHostReq := httptest.NewRequest(http.MethodGet, "https://control.test/api/admin/v1/file-browser/files/list", nil)
 	wrongHostW := httptest.NewRecorder()
 	mux.ServeHTTP(wrongHostW, wrongHostReq)
 	if wrongHostW.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for wrong host, got %d", wrongHostW.Code)
 	}
 
-	escapeReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?workspace_id=ws&root_id=0&path=../secret.txt", nil)
+	escapeReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/content?path=../secret.txt", nil)
 	escapeW := httptest.NewRecorder()
 	mux.ServeHTTP(escapeW, escapeReq)
 	if escapeW.Code != http.StatusBadRequest {
@@ -846,7 +824,7 @@ func TestFileBrowserDisabled(t *testing.T) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -854,8 +832,8 @@ func TestFileBrowserDisabled(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
-	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/workspaces", nil)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/files/list", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {

@@ -23,8 +23,6 @@ const (
 )
 
 type createFileTerminalRequest struct {
-	WorkspaceID    string `json:"workspace_id"`
-	RootID         string `json:"root_id"`
 	Path           string `json:"path"`
 	Command        string `json:"command"`
 	Shell          string `json:"shell"`
@@ -35,7 +33,6 @@ type createFileTerminalRequest struct {
 }
 
 type fileTerminalInputRequest struct {
-	WorkspaceID    string `json:"workspace_id"`
 	Chars          string `json:"chars"`
 	Cursor         int    `json:"cursor"`
 	WaitMS         int    `json:"wait_ms"`
@@ -43,7 +40,6 @@ type fileTerminalInputRequest struct {
 }
 
 type fileTerminalCloseRequest struct {
-	WorkspaceID string `json:"workspace_id"`
 }
 
 func (a *API) handleFileTerminalCreate(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +59,6 @@ func (a *API) handleFileTerminalCreate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if strings.TrimSpace(req.WorkspaceID) == "" {
-		req.WorkspaceID = a.DefaultWSID
-	}
 	command := strings.TrimSpace(req.Command)
 	if command == "" {
 		server.WriteError(w, http.StatusBadRequest, "command_required", "command is required", nil)
@@ -75,11 +68,7 @@ func (a *API) handleFileTerminalCreate(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, "command_too_large", "command is too large", nil)
 		return
 	}
-	directory, err := svc.ResolveDirectory(filebrowser.PathRequest{
-		WorkspaceID: req.WorkspaceID,
-		RootID:      req.RootID,
-		Path:        req.Path,
-	})
+	directory, err := svc.ResolveDirectory(filebrowser.PathRequest{Path: req.Path})
 	if err != nil {
 		a.writeFileBrowserError(w, err)
 		return
@@ -90,11 +79,7 @@ func (a *API) handleFileTerminalCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	yield := clampInt(req.YieldTimeMS, 0, maxTerminalWaitMS)
 	maxItems := terminalReadItems(req.MaxOutputItems)
-	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport:   invocation.TransportAdmin,
-		WorkspaceID: directory.WorkspaceID,
-		Requester:   "admin:file-browser",
-	}, "exec_command", map[string]any{
+	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{Transport: invocation.TransportAdmin, Requester: "admin:file-browser"}, "exec_command", map[string]any{
 		"cmd":               command,
 		"workdir":           directory.AbsPath,
 		"yield_time_ms":     yield,
@@ -123,16 +108,12 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
-		if workspaceID == "" {
-			workspaceID = a.DefaultWSID
-		}
 		cursor, ok := parseTerminalCursor(w, r.URL.Query().Get("cursor"))
 		if !ok {
 			return
 		}
 		maxItems := terminalReadItems(parsePositiveInt(r.URL.Query().Get("max_output_items")))
-		a.writeFileTerminalRead(w, sessionID, workspaceID, cursor, maxItems)
+		a.writeFileTerminalRead(w, sessionID, cursor, maxItems)
 		return
 	}
 	switch parts[1] {
@@ -142,16 +123,12 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		workspaceID := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
-		if workspaceID == "" {
-			workspaceID = a.DefaultWSID
-		}
 		cursor, ok := parseTerminalCursor(w, r.URL.Query().Get("cursor"))
 		if !ok {
 			return
 		}
 		maxItems := terminalReadItems(parsePositiveInt(r.URL.Query().Get("max_output_items")))
-		a.writeFileTerminalStream(w, r, sessionID, workspaceID, cursor, maxItems)
+		a.writeFileTerminalStream(w, r, sessionID, cursor, maxItems)
 	case "stdin":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -165,9 +142,6 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		if strings.TrimSpace(req.WorkspaceID) == "" {
-			req.WorkspaceID = a.DefaultWSID
-		}
 		if req.Cursor < 0 {
 			server.WriteError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be a non-negative integer", nil)
 			return
@@ -176,12 +150,12 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusBadRequest, "terminal_input_too_large", "terminal input exceeds 64 KiB", nil)
 			return
 		}
-		if err := a.App.Sessions.WriteStdinForWorkspaceContext(r.Context(), sessionID, req.WorkspaceID, req.Chars); err != nil {
+		if err := a.App.Sessions.WriteStdinContext(r.Context(), sessionID, req.Chars); err != nil {
 			writeFileTerminalError(w, err)
 			return
 		}
 		wait := time.Duration(clampInt(req.WaitMS, 0, maxTerminalWaitMS)) * time.Millisecond
-		session, read, err := a.App.Sessions.WaitReadForWorkspace(r.Context(), sessionID, req.WorkspaceID, req.Cursor, terminalReadItems(req.MaxOutputItems), wait)
+		session, read, err := a.App.Sessions.WaitRead(r.Context(), sessionID, req.Cursor, terminalReadItems(req.MaxOutputItems), wait)
 		if err != nil {
 			writeFileTerminalError(w, err)
 			return
@@ -200,10 +174,7 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		if strings.TrimSpace(req.WorkspaceID) == "" {
-			req.WorkspaceID = a.DefaultWSID
-		}
-		session, err := a.App.Sessions.CloseForWorkspace(sessionID, req.WorkspaceID)
+		session, err := a.App.Sessions.Close(sessionID)
 		if err != nil {
 			writeFileTerminalError(w, err)
 			return
@@ -214,8 +185,8 @@ func (a *API) handleFileTerminalRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *API) writeFileTerminalRead(w http.ResponseWriter, sessionID, workspaceID string, cursor, maxItems int) {
-	payload, err := a.readFileTerminal(sessionID, workspaceID, cursor, maxItems)
+func (a *API) writeFileTerminalRead(w http.ResponseWriter, sessionID string, cursor, maxItems int) {
+	payload, err := a.readFileTerminal(sessionID, cursor, maxItems)
 	if err != nil {
 		writeFileTerminalError(w, err)
 		return
@@ -236,8 +207,8 @@ type fileTerminalReadResponse struct {
 	OutputError     string               `json:"output_error,omitempty"`
 }
 
-func (a *API) readFileTerminal(sessionID, workspaceID string, cursor, maxItems int) (fileTerminalReadResponse, error) {
-	session, read, err := a.App.Sessions.ReadSnapshotForWorkspace(sessionID, workspaceID, cursor, maxItems)
+func (a *API) readFileTerminal(sessionID string, cursor, maxItems int) (fileTerminalReadResponse, error) {
+	session, read, err := a.App.Sessions.ReadSnapshot(sessionID, cursor, maxItems)
 	if err != nil {
 		return fileTerminalReadResponse{}, err
 	}
@@ -261,11 +232,7 @@ func fileTerminalReadPayload(session core.Session, read core.SessionReadResult) 
 }
 
 func writeFileTerminalSubmission(w http.ResponseWriter, submission app.Submission, directory filebrowser.DirectoryContext) {
-	payload := map[string]any{
-		"workspace_id": directory.WorkspaceID,
-		"root_id":      directory.RootID,
-		"path":         directory.Path,
-	}
+	payload := map[string]any{"path": directory.Path}
 	if submission.Approval != nil {
 		payload["task_id"] = submission.Approval.TaskID
 		payload["status"] = core.StatusAwaitingApproval

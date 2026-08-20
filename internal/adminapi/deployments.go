@@ -150,7 +150,7 @@ func (a *API) handleDeploymentRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	principal := server.PrincipalFromRequest(r)
 	submission, submitErr := a.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport: invocation.TransportAdmin, WorkspaceID: a.DefaultWSID, Requester: principal.ID,
+		Transport: invocation.TransportAdmin, Requester: principal.ID,
 	}, tool, args)
 	if submitErr != nil {
 		server.WriteError(w, http.StatusBadRequest, "deployment_submission_failed", submitErr.Error(), nil)

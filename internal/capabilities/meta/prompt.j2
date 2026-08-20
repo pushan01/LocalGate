@@ -3,7 +3,7 @@
 ## 作用与边界
 - LocalGate 提供受控工作区中的文件、Shell、部署及相关本地执行能力。
 - 本说明只补充 LocalGate 的能力边界、核心路由和不可省略的执行约束；具体工作流按需从 skill 加载，不替代宿主已有的 system / developer 指令。
-- `get_startup_instructions` 返回的 `tools` 只表示当前 LocalGate Registry 可见工具的摘要。宿主、transport 或下游 MCP 可能额外暴露 bootstrap、task lifecycle 或 relay 工具；实际可调用能力始终以宿主当前工具列表为准。
+- `get_startup_instructions` 只提供当前 transport 的直接工具摘要与能力路由；完整 Registry 能力通过 Builtin Skill 渐进披露，不要求全部成为顶层 MCP tool。
 
 ## 核心执行规则
 - 先读相关代码、配置或当前状态，再修改或执行有副作用的操作。
@@ -30,7 +30,7 @@
 
 ## 审批与异步任务不变量
 - 工具返回 `status=pending_approval`、`awaiting_approval` 或等价状态并包含 `approval_url` 时，把链接展示给用户；批准后继续跟踪原 `task_id`，不要重复提交原操作。
-- `task_status`、`task_result`、`task_logs`、`task_cancel`、`wait_task_finish` 等可能由宿主或 transport 额外提供，不保证出现在 Registry `tools` 摘要中；仅在宿主实际暴露时调用。
+- Task lifecycle、Session、Deployment、Subagent 等低频领域工具默认通过对应 Builtin Skill 披露；需要调用时先读取 skill，再取精确 schema，不要因为它们不在顶层工具列表就判断能力不存在。
 - 长任务、session cursor、部署、文件传输等详细流程不要依赖本 startup 记忆；匹配时先加载对应 skill。
 
 {% if tool_http_mode %}
@@ -44,9 +44,10 @@
 {% endif %}
 {% endif %}
 {% if legacy_mode %}
-## 当前模式：直接工具调用
-- 当前实例未启用 Tool HTTP 模式；通过宿主当前暴露的 LocalGate/MCP 工具直接执行。
-- 工具自己的 description 和 schema 是单工具参数与即时语义的权威来源；跨工具流程按 skill 指引执行。
+## 当前模式：MCP 渐进工具调用
+- 当前实例未启用 Tool HTTP 模式。`tools` 字段只摘要稳定的直接 MCP 工具；高频文件/Shell 与 Host 文件桥可直接调用。
+- 其他 Registry 能力先从 `available_skills` 选择对应 Builtin Skill，使用 `get_skill` 加载工作流，再用 `get_tool_schema` 读取目标工具的精确参数，最后通过 `invoke_tool` 调用。
+- `invoke_tool` 只是 transport dispatch；审批、Task、审计和 workspace 安全语义仍按目标工具本身执行。
 {% endif %}
 
 {% if mcp_servers %}

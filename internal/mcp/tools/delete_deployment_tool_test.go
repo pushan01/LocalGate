@@ -55,7 +55,7 @@ func TestCoreDeleteDeploymentToolRequiresApproval(t *testing.T) {
 	tool := NewCoreDeleteDeploymentTool(service, approvalService, true)
 	args := map[string]any{"type": "static", "name": "demo"}
 
-	if _, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, args); err == nil {
+	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, args); err == nil {
 		t.Fatal("expected approval requirement")
 	}
 	if _, exists := service.GetSite("demo"); !exists {
@@ -63,11 +63,10 @@ func TestCoreDeleteDeploymentToolRequiresApproval(t *testing.T) {
 	}
 
 	result, err := tool.Execute(context.Background(), core.InvokeContext{
-		TaskID:      "task-delete",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		ApprovalID:  "approval-delete",
-		Authorized:  true,
+		TaskID:     "task-delete",
+		Requester:  "test",
+		ApprovalID: "approval-delete",
+		Authorized: true,
 	}, args)
 	if err != nil {
 		t.Fatalf("approved delete: %v", err)

@@ -32,7 +32,7 @@ func TestFileBrowserGitStatusAndDiff(t *testing.T) {
 	mux, application := gitAdminTestAPI(t, root)
 	t.Cleanup(func() { _ = application.Close() })
 
-	statusReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/status?workspace_id=ws&root_id=0", nil)
+	statusReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/status", nil)
 	statusW := httptest.NewRecorder()
 	mux.ServeHTTP(statusW, statusReq)
 	if statusW.Code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestFileBrowserGitStatusAndDiff(t *testing.T) {
 		t.Fatalf("unexpected status: %#v", status)
 	}
 
-	diffReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/diff?workspace_id=ws&root_id=0&path=note.txt", nil)
+	diffReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/diff?path=note.txt", nil)
 	diffW := httptest.NewRecorder()
 	mux.ServeHTTP(diffW, diffReq)
 	if diffW.Code != http.StatusOK {
@@ -67,7 +67,7 @@ func TestFileBrowserGitNonRepositoryAndInvalidStaged(t *testing.T) {
 	mux, application := gitAdminTestAPI(t, root)
 	t.Cleanup(func() { _ = application.Close() })
 
-	statusReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/status?workspace_id=ws&root_id=0", nil)
+	statusReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/status", nil)
 	statusW := httptest.NewRecorder()
 	mux.ServeHTTP(statusW, statusReq)
 	if statusW.Code != http.StatusOK {
@@ -78,7 +78,7 @@ func TestFileBrowserGitNonRepositoryAndInvalidStaged(t *testing.T) {
 		t.Fatalf("unexpected non-repository status: %#v err=%v", status, err)
 	}
 
-	diffReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/diff?workspace_id=ws&root_id=0&staged=maybe", nil)
+	diffReq := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/file-browser/git/diff?staged=maybe", nil)
 	diffW := httptest.NewRecorder()
 	mux.ServeHTTP(diffW, diffReq)
 	if diffW.Code != http.StatusBadRequest {
@@ -93,13 +93,13 @@ func gitAdminTestAPI(t *testing.T, root string) (*http.ServeMux, *app.App) {
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Enabled = false
 	cfg.FileBrowser.Enabled = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 	return mux, application
 }
 

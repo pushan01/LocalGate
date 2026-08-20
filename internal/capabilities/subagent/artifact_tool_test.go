@@ -49,7 +49,7 @@ func TestSubagentArtifactGetIssuesValidatedResourceLink(t *testing.T) {
 		Alt:      "generated image",
 	}
 	m := newToolTestManagerWithProvider(t, artifactFileProvider{artifact: artifact})
-	ic := core.InvokeContext{WorkspaceID: "ws"}
+	ic := core.InvokeContext{}
 	spawned, err := SpawnTool{manager: m}.Execute(context.Background(), ic, map[string]any{"instruction": "draw"})
 	if err != nil {
 		t.Fatal(err)
@@ -90,13 +90,6 @@ func TestSubagentArtifactGetIssuesValidatedResourceLink(t *testing.T) {
 	}
 	if !strings.HasPrefix(links[0].URI, "https://gate.example/system/exports/") {
 		t.Fatalf("unexpected resource URI: %q", links[0].URI)
-	}
-
-	if _, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "other"}, map[string]any{
-		"subagent_id": id,
-		"artifact_id": artifact.ID,
-	}); err == nil {
-		t.Fatal("expected cross-workspace artifact lookup to fail")
 	}
 
 	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {

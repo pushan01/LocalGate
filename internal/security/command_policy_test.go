@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidateCommand(t *testing.T) {
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"echo", "git", "go"}}
+	ws := config.Root{CommandAllowlist: []string{"echo", "git", "go"}}
 	if d := ValidateCommand("echo hi", ws); !d.Allowed {
 		t.Fatalf("expected allowed")
 	}
@@ -17,24 +17,24 @@ func TestValidateCommand(t *testing.T) {
 	if d := ValidateCommand("rm -rf /", ws); d.Allowed {
 		t.Fatalf("expected denied")
 	}
-	ws2 := config.Workspace{ID: "ws2"}
+	ws2 := config.Root{}
 	if d := ValidateCommand("echo hi", ws2); d.Allowed {
 		t.Fatalf("expected denied when no allowlist")
 	}
 
-	wsAll := config.Workspace{ID: "ws3", CommandAllowlist: []string{"*"}}
+	wsAll := config.Root{CommandAllowlist: []string{"*"}}
 	if d := ValidateCommand("rm -rf /", wsAll); !d.Allowed {
 		t.Fatalf("expected allowed with allowlist=*")
 	}
 
-	wsAllDeny := config.Workspace{ID: "ws4", CommandAllowlist: []string{"*"}, CommandDenylist: []string{"rm"}}
+	wsAllDeny := config.Root{CommandAllowlist: []string{"*"}, CommandDenylist: []string{"rm"}}
 	if d := ValidateCommand("rm -rf /", wsAllDeny); d.Allowed || d.Reason != "in_denylist" {
 		t.Fatalf("expected denied by denylist, got allowed=%v reason=%q", d.Allowed, d.Reason)
 	}
 }
 
 func TestValidateCommandShellMetaFlags(t *testing.T) {
-	base := config.Workspace{ID: "ws", CommandAllowlist: []string{"*"}}
+	base := config.Root{CommandAllowlist: []string{"*"}}
 
 	if d := ValidateCommand("echo hi | cat", base); d.Allowed || d.Reason != "shell_pipe" {
 		t.Fatalf("expected shell_pipe denial, got allowed=%v reason=%q", d.Allowed, d.Reason)

@@ -37,7 +37,6 @@ type Subagent struct {
 	SubagentType   string        `json:"subagent_type,omitempty"`
 	Provider       string        `json:"provider"`
 	Status         Status        `json:"status"`
-	WorkspaceID    string        `json:"workspace_id"`
 	Instruction    string        `json:"instruction,omitempty"`
 	ProviderState  ProviderState `json:"provider_state"`
 	Artifacts      []Artifact    `json:"artifacts,omitempty"`
@@ -59,7 +58,6 @@ type Observation struct {
 }
 
 type CreateRequest struct {
-	WorkspaceID  string
 	Name         string
 	SubagentType string
 	Provider     string

@@ -27,6 +27,20 @@ func withEnv(t *testing.T, key, value string) {
 	})
 }
 
+func loadWithTestRoot(t *testing.T, opts LoadOptions) (Config, error) {
+	t.Helper()
+	if opts.Path == "" {
+		root := t.TempDir()
+		path := filepath.Join(t.TempDir(), "localgate.yaml")
+		if err := os.WriteFile(path, []byte("root: "+root+"\n"), 0o600); err != nil {
+			t.Fatalf("write root config: %v", err)
+		}
+		opts.Path = path
+		opts.PathProvided = true
+	}
+	return Load(opts)
+}
+
 func TestLoadSessionCleanupConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
@@ -36,8 +50,7 @@ session_cleanup:
   idle_ttl_seconds: 22
   max_sessions: 33
   sweep_interval_ms: 44
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -72,8 +85,7 @@ http_auth:
   allow_paths:
     - /healthz
     - /public
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -109,9 +121,7 @@ admin:
   approval:
     enabled: true
     default_ttl_seconds: 120
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -131,9 +141,7 @@ func TestLoadAdminConfigRejectsInvalidBaseURL(t *testing.T) {
 admin:
   enabled: true
   base_url: not-a-url
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -150,8 +158,7 @@ func TestLoadHTTPAuthRequiresBearerToken(t *testing.T) {
 	err := os.WriteFile(cfgPath, []byte(`
 http_auth:
   enabled: true
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -174,7 +181,7 @@ func TestLoadUpgradeTokenFromEnvOnly(t *testing.T) {
 	withEnv(t, "LOCALGATE_RUNTIME_PUBLIC_DEPLOYMENT_BIND", "127.0.0.1:8001")
 	withEnv(t, "LOCALGATE_RUNTIME_PRIVATE_DEPLOYMENT_BIND", "127.0.0.1:8003")
 
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -213,8 +220,7 @@ func TestLoadHTTPBaseURLConfig(t *testing.T) {
 	err := os.WriteFile(cfgPath, []byte(`
 http:
   base_url: "http://127.0.0.1:8000///"
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -237,7 +243,7 @@ workspaces:
 func TestLoadHTTPBaseURLFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_HTTP_BASE_URL", "https://example.com/localgate/")
 
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -255,8 +261,7 @@ http:
   allowed_origins:
     - http://localhost:3000/
     - https://example.com
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -276,7 +281,7 @@ workspaces:
 func TestLoadHTTPAllowCORSFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_HTTP_ALLOW_CORS", "true")
 	withEnv(t, "LOCALGATE_HTTP_ALLOWED_ORIGINS", "http://localhost:3000, https://example.com")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -288,7 +293,7 @@ func TestLoadHTTPAllowCORSFromEnv(t *testing.T) {
 func TestLoadHTTPAllowCORSRequiresOrigins(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	if err := os.WriteFile(cfgPath, []byte("http:\n  allow_cors: true\nworkspaces:\n  - id: ws\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("http:\n  allow_cors: true\nroot: /tmp\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	_, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
@@ -300,7 +305,7 @@ func TestLoadHTTPAllowCORSRequiresOrigins(t *testing.T) {
 func TestLoadHTTPRejectsWildcardOrigin(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	if err := os.WriteFile(cfgPath, []byte("http:\n  allowed_origins: [\"*\"]\nworkspaces:\n  - id: ws\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("http:\n  allowed_origins: [\"*\"]\nroot: /tmp\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	_, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
@@ -315,8 +320,7 @@ func TestLoadMCPHTTPConfig(t *testing.T) {
 	err := os.WriteFile(cfgPath, []byte(`
 mcp_http:
   stateless: true
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -338,7 +342,7 @@ workspaces:
 
 func TestLoadMCPHTTPFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_MCP_HTTP_STATELESS", "true")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -353,8 +357,7 @@ func TestLoadToolArgumentsConfig(t *testing.T) {
 	err := os.WriteFile(cfgPath, []byte(`
 tool_arguments:
   enable_base64: true
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -376,7 +379,7 @@ workspaces:
 
 func TestLoadToolArgumentsFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_TOOL_ARGUMENTS_ENABLE_BASE64", "true")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -398,8 +401,7 @@ file_browser:
   exclude: [".git", "tmp"]
   require_approval_for_write: false
   require_approval_for_delete: false
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -433,7 +435,7 @@ func TestLoadFileBrowserFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_FILE_BROWSER_EXCLUDE", ".git,tmp")
 	withEnv(t, "LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_WRITE", "false")
 	withEnv(t, "LOCALGATE_FILE_BROWSER_REQUIRE_APPROVAL_FOR_DELETE", "false")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -451,7 +453,7 @@ func TestLoadFileBrowserFromEnv(t *testing.T) {
 func TestLoadFileBrowserRejectsInvalidLimits(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	if err := os.WriteFile(cfgPath, []byte("file_browser:\n  enabled: true\n  max_file_bytes: 0\nworkspaces:\n  - id: ws\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("file_browser:\n  enabled: true\n  max_file_bytes: 0\nroot: /tmp\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	_, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
@@ -460,23 +462,23 @@ func TestLoadFileBrowserRejectsInvalidLimits(t *testing.T) {
 	}
 }
 
-func TestRejectWorkspaceHiddenTools(t *testing.T) {
+func TestRejectLegacyWorkspacesConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
 	err := os.WriteFile(cfgPath, []byte(`
 workspaces:
   - id: ws
-    hidden_tools:
-      - run_command
+    roots: ["/tmp"]
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	_, err = Load(LoadOptions{Path: cfgPath, PathProvided: true})
-	if err == nil || !strings.Contains(err.Error(), "hidden_tools was removed") {
-		t.Fatalf("expected removed hidden_tools error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "workspaces was removed") {
+		t.Fatalf("expected removed workspaces error, got %v", err)
 	}
 }
+
 func TestLoadMCPServersConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
@@ -490,8 +492,7 @@ mcp_servers:
     env:
       GITHUB_TOKEN: secret-token
     cwd: /tmp
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -526,8 +527,7 @@ mcp_servers:
     command: npx
   - name: github
     command: uvx
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -548,8 +548,7 @@ http:
 tool_http_mode:
   enabled: true
   access_token_ttl_seconds: 321
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -578,8 +577,7 @@ func TestLoadToolHTTPModeRequiresBaseURL(t *testing.T) {
 	err := os.WriteFile(cfgPath, []byte(`
 tool_http_mode:
   enabled: true
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -600,8 +598,7 @@ http:
 tool_http_mode:
   enabled: true
   access_token_ttl_seconds: 0
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -620,8 +617,7 @@ mcp_servers:
   - name: github
     command: npx
     cwd: ./relative
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644)
 	if err != nil {
 		t.Fatalf("write config: %v", err)
@@ -685,7 +681,7 @@ func TestDefaultApprovalConfig(t *testing.T) {
 func TestLoadApprovalConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "admin:\n  base_url: https://admin.example.com/root///\n  approval:\n    enabled: false\n    default_ttl_seconds: 120\n    pending_wait_seconds: 3\n    max_sync_wait_seconds: 7\nworkspaces:\n  - id: ws\n"
+	content := "admin:\n  base_url: https://admin.example.com/root///\n  approval:\n    enabled: false\n    default_ttl_seconds: 120\n    pending_wait_seconds: 3\n    max_sync_wait_seconds: 7\nroot: /tmp\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -709,7 +705,7 @@ func TestLoadApprovalConfigFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_APPROVAL_DEFAULT_TTL_SECONDS", "90")
 	withEnv(t, "LOCALGATE_APPROVAL_PENDING_WAIT_SECONDS", "4")
 	withEnv(t, "LOCALGATE_APPROVAL_MAX_SYNC_WAIT_SECONDS", "5")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -726,17 +722,17 @@ func TestLoadApprovalConfigRejectsInvalidValues(t *testing.T) {
 	}{
 		{
 			name:    "non-positive ttl",
-			content: "admin:\n  approval:\n    default_ttl_seconds: 0\nworkspaces:\n  - id: ws\n",
+			content: "admin:\n  approval:\n    default_ttl_seconds: 0\nroot: /tmp\n",
 			want:    "admin.approval.default_ttl_seconds",
 		},
 		{
 			name:    "negative pending wait",
-			content: "admin:\n  approval:\n    pending_wait_seconds: -1\nworkspaces:\n  - id: ws\n",
+			content: "admin:\n  approval:\n    pending_wait_seconds: -1\nroot: /tmp\n",
 			want:    "admin.approval.pending_wait_seconds",
 		},
 		{
 			name:    "negative sync wait",
-			content: "admin:\n  approval:\n    max_sync_wait_seconds: -1\nworkspaces:\n  - id: ws\n",
+			content: "admin:\n  approval:\n    max_sync_wait_seconds: -1\nroot: /tmp\n",
 			want:    "admin.approval.max_sync_wait_seconds",
 		},
 	}
@@ -758,7 +754,7 @@ func TestLoadApprovalConfigRejectsInvalidValues(t *testing.T) {
 func TestLoadApprovalRules(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "admin:\n  base_url: https://admin.example.com\n  approval:\n    rules:\n      - id: delete-static\n        effect: require_approval\n        tools: [delete_deployment]\n        risk: critical\nworkspaces:\n  - id: ws\n"
+	content := "admin:\n  base_url: https://admin.example.com\n  approval:\n    rules:\n      - id: delete-static\n        effect: require_approval\n        tools: [delete_deployment]\n        risk: critical\nroot: /tmp\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -778,7 +774,7 @@ func TestLoadApprovalRules(t *testing.T) {
 func TestLoadApprovalRulesRejectInvalidEffect(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "admin:\n  base_url: https://admin.example.com\n  approval:\n    rules:\n      - id: bad\n        effect: maybe\n        tools: [run_command]\nworkspaces:\n  - id: ws\n"
+	content := "admin:\n  base_url: https://admin.example.com\n  approval:\n    rules:\n      - id: bad\n        effect: maybe\n        tools: [run_command]\nroot: /tmp\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -791,7 +787,7 @@ func TestLoadApprovalRulesRejectInvalidEffect(t *testing.T) {
 func TestLoadStaticHostingConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "deployments:\n  static:\n    domain_suffix: SITE\n    max_files: 123\n    max_total_bytes: 4096\n    max_file_bytes: 2048\n    require_approval: false\nworkspaces:\n  - id: ws\n"
+	content := "deployments:\n  static:\n    domain_suffix: SITE\n    max_files: 123\n    max_total_bytes: 4096\n    max_file_bytes: 2048\n    require_approval: false\nroot: /tmp\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -810,7 +806,7 @@ func TestLoadStaticHostingFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_TOTAL_BYTES", "1000")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_MAX_FILE_BYTES", "500")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_STATIC_REQUIRE_APPROVAL", "false")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -822,7 +818,7 @@ func TestLoadStaticHostingFromEnv(t *testing.T) {
 func TestLoadStaticHostingRejectsInvalidLimits(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "localgate.yaml")
-	content := "deployments:\n  static:\n    max_files: 10\n    max_total_bytes: 100\n    max_file_bytes: 200\nworkspaces:\n  - id: ws\n"
+	content := "deployments:\n  static:\n    max_files: 10\n    max_total_bytes: 100\n    max_file_bytes: 200\nroot: /tmp\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -848,8 +844,7 @@ deployments:
     allowed_executables: [node]
     env_allowlist: [NODE_ENV]
     max_apps: 3
-workspaces:
-  - id: ws
+root: /tmp
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -871,7 +866,7 @@ workspaces:
 
 func TestLoadDeploymentDomainSuffixFromEnv(t *testing.T) {
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_DYNAMIC_DOMAIN_SUFFIX", "APP")
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -886,8 +881,8 @@ func TestLoadDeploymentDomainSuffixRejectsInvalidValues(t *testing.T) {
 		content string
 		want    string
 	}{
-		{"static dot", "deployments:\n  static:\n    domain_suffix: .site\nworkspaces:\n  - id: ws\n", "deployments.static.domain_suffix"},
-		{"dynamic trailing hyphen", "deployments:\n  dynamic:\n    domain_suffix: app-\nworkspaces:\n  - id: ws\n", "deployments.dynamic.domain_suffix"},
+		{"static dot", "deployments:\n  static:\n    domain_suffix: .site\nroot: /tmp\n", "deployments.static.domain_suffix"},
+		{"dynamic trailing hyphen", "deployments:\n  dynamic:\n    domain_suffix: app-\nroot: /tmp\n", "deployments.dynamic.domain_suffix"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -912,8 +907,7 @@ deployments:
   private_base_url: https://private.apps.example.test
   dynamic:
     enabled: false
-workspaces:
-  - id: ws
+root: /tmp
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -937,8 +931,7 @@ deployments:
   default_access: private
   dynamic:
     enabled: false
-workspaces:
-  - id: ws
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -959,11 +952,11 @@ func TestLoadDynamicHostingRequiresRoutingAndExecutableConfig(t *testing.T) {
 		content string
 		want    string
 	}{
-		{"missing base URLs", "deployments:\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "base_url"},
-		{"missing private base URL", "deployments:\n  public_base_url: https://apps.test\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nworkspaces:\n  - id: ws\n", "must both be configured"},
-		{"missing executables", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\n  dynamic:\n    enabled: true\nworkspaces:\n  - id: ws\n", "allowed_executables"},
-		{"base URL with path", "deployments:\n  public_base_url: https://apps.test/root\n  private_base_url: https://private.apps.test\nworkspaces:\n  - id: ws\n", "must not contain"},
-		{"base URLs share hostname", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: http://apps.test\nworkspaces:\n  - id: ws\n", "different hostnames"},
+		{"missing base URLs", "deployments:\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nroot: /tmp\n", "base_url"},
+		{"missing private base URL", "deployments:\n  public_base_url: https://apps.test\n  dynamic:\n    enabled: true\n    allowed_executables: [node]\nroot: /tmp\n", "must both be configured"},
+		{"missing executables", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\n  dynamic:\n    enabled: true\nroot: /tmp\n", "allowed_executables"},
+		{"base URL with path", "deployments:\n  public_base_url: https://apps.test/root\n  private_base_url: https://private.apps.test\nroot: /tmp\n", "must not contain"},
+		{"base URLs share hostname", "deployments:\n  public_base_url: https://apps.test\n  private_base_url: http://apps.test\nroot: /tmp\n", "different hostnames"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1011,7 +1004,7 @@ func TestLoadDynamicHostingProductionLimitsFromEnv(t *testing.T) {
 	for key, value := range values {
 		withEnv(t, key, value)
 	}
-	cfg, err := Load(LoadOptions{})
+	cfg, err := loadWithTestRoot(t, LoadOptions{})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -1064,7 +1057,7 @@ func TestExampleConfigLoadsWithDynamicPlaceholders(t *testing.T) {
 func TestDeploymentBindOverridesAndUsesSeparatePorts(t *testing.T) {
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_PUBLIC_BIND", "127.0.0.1:4888")
 	withEnv(t, "LOCALGATE_DEPLOYMENTS_PRIVATE_BIND", "127.0.0.1:4889")
-	cfg, err := Load(LoadOptions{PublicDeploymentsBind: "127.0.0.1:4998", PrivateDeploymentsBind: "127.0.0.1:4999"})
+	cfg, err := loadWithTestRoot(t, LoadOptions{PublicDeploymentsBind: "127.0.0.1:4998", PrivateDeploymentsBind: "127.0.0.1:4999"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1080,7 +1073,7 @@ func TestDeploymentBindOverridesAndUsesSeparatePorts(t *testing.T) {
 
 func TestAdminBindOverridesAndUsesSeparatePort(t *testing.T) {
 	withEnv(t, "LOCALGATE_ADMIN_BIND", "127.0.0.1:4887")
-	cfg, err := Load(LoadOptions{AdminBind: "127.0.0.1:4998"})
+	cfg, err := loadWithTestRoot(t, LoadOptions{AdminBind: "127.0.0.1:4998"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1096,7 +1089,7 @@ func TestAdminBindOverridesAndUsesSeparatePort(t *testing.T) {
 func TestAdminBindMustUseDifferentPortFromControl(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "localgate.yaml")
-	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 0.0.0.0:4800\n  base_url: https://admin.test\nworkspaces:\n  - id: ws\n"
+	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 0.0.0.0:4800\n  base_url: https://admin.test\nroot: /tmp\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1109,7 +1102,7 @@ func TestAdminBindMustUseDifferentPortFromControl(t *testing.T) {
 func TestDeploymentBindsMustUseDifferentPortsFromAdmin(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "localgate.yaml")
-	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 127.0.0.1:4801\n  base_url: https://admin.test\ndeployments:\n  public_bind: 0.0.0.0:4801\n  private_bind: 0.0.0.0:4802\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\nworkspaces:\n  - id: ws\n"
+	content := "bind: 127.0.0.1:4800\nadmin:\n  enabled: true\n  bind: 127.0.0.1:4801\n  base_url: https://admin.test\ndeployments:\n  public_bind: 0.0.0.0:4801\n  private_bind: 0.0.0.0:4802\n  public_base_url: https://apps.test\n  private_base_url: https://private.apps.test\nroot: /tmp\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,8 +1124,7 @@ deployments:
   private_base_url: https://private.apps.test
   dynamic:
     enabled: false
-workspaces:
-  - id: ws
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1149,8 +1141,7 @@ func TestDeploymentBindsRejectInvalidAddress(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`deployments:
   public_bind: not-an-address
   private_bind: 127.0.0.1:4803
-workspaces:
-  - id: ws
+root: /tmp
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1212,9 +1203,7 @@ notifications:
     device_key: device-secret
     encryption_key: "1234567890123456"
     encryption_iv: "1111111111111111"
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1245,9 +1234,7 @@ notifications:
     device_key: device-secret
     encryption_key: short
     encryption_iv: "1111111111111111"
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1282,9 +1269,7 @@ subagents:
       browser_executable: /opt/local/bin/opencli-browser
       timeout_seconds: 55
       submit_interval_seconds: 7
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1340,9 +1325,7 @@ subagents:
     opencli_gemini:
       enabled: true
       browser_executable: opencli
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1361,9 +1344,7 @@ func TestLoadSubagentsRequiresDefaultProviderWhenEnabled(t *testing.T) {
 	content := `
 subagents:
   enabled: true
-workspaces:
-  - id: ws
-    roots: ["."]
+root: /tmp
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)

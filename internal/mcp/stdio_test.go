@@ -20,15 +20,13 @@ import (
 func TestStdioToolsCallAndLogs(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -134,15 +132,13 @@ func TestStdioApplyPatchTool(t *testing.T) {
 	}
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -207,15 +203,13 @@ func TestStdioApplyPatchTool(t *testing.T) {
 func TestStdioGetStartupInstructionsTool(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -277,15 +271,13 @@ func TestStdioGetStartupInstructionsTool(t *testing.T) {
 func TestStdioUploadFileMetadata(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{t.TempDir()}, CWD: t.TempDir(), CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{Path: t.TempDir(), CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -350,15 +342,13 @@ func TestStdioToolsCallAcceptsBase64ArgumentsWhenEnabled(t *testing.T) {
 	cfg := config.Config{
 		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:          config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -406,15 +396,13 @@ func TestStdioUploadFileKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	cfg := config.Config{
 		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:          config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -481,15 +469,13 @@ func TestStdioStartupInstructionsKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 	cfg := config.Config{
 		LogStore:      t.TempDir(),
 		ToolArguments: config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:          config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -555,15 +541,13 @@ func TestStdioGetToolSchemaKeepsOriginalSchemaInBase64Mode(t *testing.T) {
 		HTTP:          config.HTTP{BaseURL: "http://127.0.0.1:8000"},
 		ToolHTTPMode:  config.ToolHTTPMode{Enabled: true, AccessTokenTTLSeconds: 600},
 		ToolArguments: config.ToolArguments{EnableBase64: true},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:          config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -641,15 +625,13 @@ func TestStdioToolsCallRejectsBase64ArgumentsWhenDisabled(t *testing.T) {
 	}
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -701,17 +683,13 @@ func TestStdioToolHTTPModeOnlyListsThreeTools(t *testing.T) {
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
 		},
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -760,15 +738,13 @@ func TestStdioToolHTTPModeOnlyListsThreeTools(t *testing.T) {
 func TestStdioDefaultHiddenToolsNotListed(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -812,16 +788,14 @@ func TestStdioDefaultHiddenToolsNotListed(t *testing.T) {
 func TestStdioSessionTools(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "cat", "sh"}},
-		},
+		Root:     config.Root{CommandAllowlist: []string{"echo", "cat", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -922,15 +896,13 @@ func TestStdioSessionTools(t *testing.T) {
 func TestStdioWaitTaskFinish(t *testing.T) {
 	cfg := config.Config{
 		LogStore: t.TempDir(),
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root:     config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	s := &Server{App: application, Name: "localgate", Version: "dev", WSID: "ws"}
+	s := &Server{App: application, Name: "localgate", Version: "dev"}
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()

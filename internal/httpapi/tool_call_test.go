@@ -40,7 +40,7 @@ func TestToolCallSucceedsWithAccess(t *testing.T) {
 	application, handler, _ := newToolHTTPModeTestServer(t, &toolHTTPModeTestOptions{
 		root: root,
 	})
-	res, err := application.InvokeTool(context.Background(), "ws", "get_temporary_access_token", nil)
+	res, err := application.InvokeTool(context.Background(), "get_temporary_access_token", nil)
 	if err != nil {
 		t.Fatalf("get_temporary_access_token: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestToolCallSucceedsWithAccess(t *testing.T) {
 
 func TestToolCallRejectsDefaultHiddenTool(t *testing.T) {
 	application, handler, _ := newToolHTTPModeTestServer(t, nil)
-	res, err := application.InvokeTool(context.Background(), "ws", "get_temporary_access_token", nil)
+	res, err := application.InvokeTool(context.Background(), "get_temporary_access_token", nil)
 	if err != nil {
 		t.Fatalf("get_temporary_access_token: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestToolCallRejectsDefaultHiddenTool(t *testing.T) {
 
 func TestToolCallRejectsExpiredCredential(t *testing.T) {
 	application, handler, _ := newToolHTTPModeTestServer(t, nil)
-	grant, err := application.ToolAccess.Issue("ws", time.Millisecond)
+	grant, err := application.ToolAccess.Issue(time.Millisecond)
 	if err != nil {
 		t.Fatalf("issue tool access: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestToolCallAcceptsBase64BodyWhenEnabled(t *testing.T) {
 		root:         root,
 		enableBase64: true,
 	})
-	res, err := application.InvokeTool(context.Background(), "ws", "get_temporary_access_token", nil)
+	res, err := application.InvokeTool(context.Background(), "get_temporary_access_token", nil)
 	if err != nil {
 		t.Fatalf("get_temporary_access_token: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestTaskSubmitAcceptsBase64ArgsWhenEnabled(t *testing.T) {
 
 	raw, _ := json.Marshal(map[string]any{"path": target})
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewBufferString(`{"tool":"read_file","workspace_id":"ws","args":"`+encoded+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewBufferString(`{"tool":"read_file","args":"`+encoded+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -168,7 +168,7 @@ func TestToolCallRejectsBase64BodyWhenDisabled(t *testing.T) {
 	application, handler, _ := newToolHTTPModeTestServer(t, &toolHTTPModeTestOptions{
 		root: root,
 	})
-	res, err := application.InvokeTool(context.Background(), "ws", "get_temporary_access_token", nil)
+	res, err := application.InvokeTool(context.Background(), "get_temporary_access_token", nil)
 	if err != nil {
 		t.Fatalf("get_temporary_access_token: %v", err)
 	}
@@ -207,13 +207,8 @@ func newToolHTTPModeTestServer(t *testing.T, opts *toolHTTPModeTestOptions) (*ap
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
 		},
-		Workspaces: []config.Workspace{
-			{
-				ID:               "ws",
-				Roots:            []string{root},
-				CWD:              root,
-				CommandAllowlist: []string{"echo", "sh"},
-			},
+		Root: config.Root{Path: root,
+			CommandAllowlist: []string{"echo", "sh"},
 		},
 	}
 	application, err := app.New(cfg)
@@ -221,7 +216,7 @@ func newToolHTTPModeTestServer(t *testing.T, opts *toolHTTPModeTestOptions) (*ap
 		t.Fatalf("app: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	return application, mux, root

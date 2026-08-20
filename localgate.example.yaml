@@ -4,7 +4,7 @@
 #   cp localgate.example.yaml localgate.yaml
 #
 # 该模板默认只监听本机、关闭动态托管，并且不包含任何真实凭证。
-# 对外暴露前，请至少检查 http_auth、admin、workspaces 和命令白名单。
+# 对外暴露前，请至少检查 http_auth、admin、root 和命令白名单。
 
 # LocalGate 控制面 listener。
 bind: "127.0.0.1:3737"
@@ -110,52 +110,47 @@ subagents:
       # 同一 Gemini provider 的所有 spawn/send 至少间隔这么多秒；0 表示关闭。
       submit_interval_seconds: 0
 
-workspaces:
-  - id: "default"
+# 一个 LocalGate 实例只允许访问一个 root。建议替换为明确的绝对路径。
+root: "."
 
-    # 建议替换为明确的绝对路径。
-    roots:
-      - "."
-    cwd: "."
+# 仅允许实际需要的命令。生产环境不要使用 "*"。
+command_allowlist:
+  - echo
+  - pwd
+  - ls
+  - cat
+  - rg
+  - git
+  - go
+command_denylist: []
 
-    # 仅允许实际需要的命令。生产环境不要使用 "*"。
-    command_allowlist:
-      - echo
-      - pwd
-      - ls
-      - cat
-      - rg
-      - git
-      - go
-    command_denylist: []
+# 可用于屏蔽 root 内不应访问的绝对路径。
+path_denylist: []
 
-    # 可用于屏蔽 workspace 内不应访问的绝对路径。
-    path_denylist: []
+# 仅允许传入明确需要的环境变量。LocalGate 会始终继承服务进程 PATH；
+# 只有需要允许请求覆盖 PATH 时，才应把 PATH 放进 env_allowlist。
+env_allowlist:
+  - HOME
+  - TMPDIR
 
-    # 仅允许传入明确需要的环境变量。LocalGate 会始终继承服务进程 PATH；
-    # 只有需要允许请求覆盖 PATH 时，才应把 PATH 放进 env_allowlist。
-    env_allowlist:
-      - HOME
-      - TMPDIR
+# Shell 高风险语法默认关闭。
+allow_shell_pipe: false
+allow_shell_redirect: false
+allow_shell_control: false
+allow_shell_background: false
+allow_shell_substitution: false
 
-    # Shell 高风险语法默认关闭。
-    allow_shell_pipe: false
-    allow_shell_redirect: false
-    allow_shell_control: false
-    allow_shell_background: false
-    allow_shell_substitution: false
-
-    # 命中这些命令或写入路径时触发 workspace 级审批策略。
-    approval_policy:
-      commands: []
-      write_paths: []
+# 命中这些命令或写入路径时触发实例级审批策略。
+approval_policy:
+  commands: []
+  write_paths: []
 
 http:
   base_url: "http://127.0.0.1:3737"
   allow_cors: false
   allowed_origins: []
 
-# 将 workspace 文件以短期 MCP resource_link 返回给 ChatGPT / Agent。
+# 将 root 内文件以短期 MCP resource_link 返回给 ChatGPT / Agent。
 # 首版要求 base_url 与 http.base_url 使用相同的 scheme 和 authority。
 file_exports:
   enabled: false

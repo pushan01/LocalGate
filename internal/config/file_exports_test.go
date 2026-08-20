@@ -19,10 +19,7 @@ file_exports:
   max_ttl_seconds: 300
   max_file_bytes: 4096
   require_approval: true
-workspaces:
-  - id: ws
-    roots: ["`+dir+`"]
-    cwd: "`+dir+`"
+root: "`+dir+`"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -63,10 +60,7 @@ file_exports:
   default_ttl_seconds: 30
   max_ttl_seconds: 20
   max_file_bytes: 1
-workspaces:
-  - id: ws
-    roots: ["`+dir+`"]
-    cwd: "`+dir+`"
+root: "`+dir+`"
 `), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

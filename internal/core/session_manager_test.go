@@ -11,13 +11,13 @@ import (
 
 func TestSessionManagerUsesAbsoluteCursorAfterTrim(t *testing.T) {
 	m := NewSessionManagerWithLimit(3)
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	for _, value := range []string{"zero", "one", "two", "three", "four"} {
 		if err := m.AppendOutput(s.ID, "stdout", value); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
-	read, err := m.ReadForWorkspace(s.ID, "ws", 0, 10)
+	read, err := m.Read(s.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -31,15 +31,15 @@ func TestSessionManagerUsesAbsoluteCursorAfterTrim(t *testing.T) {
 
 func TestSessionManagerClientCursorDoesNotRepeatPages(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	for _, value := range []string{"a", "b", "c"} {
 		_ = m.AppendOutput(s.ID, "stdout", value)
 	}
-	first, err := m.ReadForWorkspace(s.ID, "ws", 0, 2)
+	first, err := m.Read(s.ID, 0, 2)
 	if err != nil {
 		t.Fatalf("first read: %v", err)
 	}
-	second, err := m.ReadForWorkspace(s.ID, "ws", first.NextOffset, 2)
+	second, err := m.Read(s.ID, first.NextOffset, 2)
 	if err != nil {
 		t.Fatalf("second read: %v", err)
 	}
@@ -50,18 +50,18 @@ func TestSessionManagerClientCursorDoesNotRepeatPages(t *testing.T) {
 
 func TestSessionManagerReportsHasMoreForPagedRead(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	for _, value := range []string{"a", "b", "c"} {
 		_ = m.AppendOutput(s.ID, "stdout", value)
 	}
-	_, first, err := m.ReadSnapshotForWorkspace(s.ID, "ws", 0, 2)
+	_, first, err := m.ReadSnapshot(s.ID, 0, 2)
 	if err != nil {
 		t.Fatalf("first read: %v", err)
 	}
 	if !first.HasMore || first.Truncated || first.BufferTruncated || first.NextOffset != 2 {
 		t.Fatalf("unexpected first page metadata: %+v", first)
 	}
-	_, second, err := m.ReadSnapshotForWorkspace(s.ID, "ws", first.NextOffset, 2)
+	_, second, err := m.ReadSnapshot(s.ID, first.NextOffset, 2)
 	if err != nil {
 		t.Fatalf("second read: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSessionManagerReportsHasMoreForPagedRead(t *testing.T) {
 
 func TestSessionManagerWaitReadWakesOnOutput(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestSessionManagerWaitReadWakesOnOutput(t *testing.T) {
 		_ = m.AppendOutput(s.ID, "stdout", "ready")
 	}()
 	start := time.Now()
-	_, read, err := m.WaitReadForWorkspace(context.Background(), s.ID, "ws", 0, 10, time.Second)
+	_, read, err := m.WaitRead(context.Background(), s.ID, 0, 10, time.Second)
 	if err != nil {
 		t.Fatalf("wait read: %v", err)
 	}
@@ -95,17 +95,17 @@ func TestSessionManagerWaitReadWakesOnOutput(t *testing.T) {
 
 func TestSessionManagerEmptyWriteAllowedAfterExit(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if err := m.Finish(s.ID, 0, nil); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if err := m.WriteStdinForWorkspaceContext(context.Background(), s.ID, "ws", ""); err != nil {
+	if err := m.WriteStdinContext(context.Background(), s.ID, ""); err != nil {
 		t.Fatalf("empty write on exited session: %v", err)
 	}
-	if err := m.WriteStdinForWorkspaceContext(context.Background(), s.ID, "ws", "x"); !errors.Is(err, ErrSessionClosed) {
+	if err := m.WriteStdinContext(context.Background(), s.ID, "x"); !errors.Is(err, ErrSessionClosed) {
 		t.Fatalf("non-empty write should fail on exited session: %v", err)
 	}
 }
@@ -135,7 +135,7 @@ func (w *serializedWriteProbe) Close() error { return nil }
 func TestSessionManagerSerializesConcurrentStdinWrites(t *testing.T) {
 	m := NewSessionManager()
 	probe := &serializedWriteProbe{}
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: probe})
+	s := m.Create(Session{}, SessionController{Stdin: probe})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestSessionManagerSerializesConcurrentStdinWrites(t *testing.T) {
 		wg.Add(1)
 		go func(value string) {
 			defer wg.Done()
-			if err := m.WriteStdinForWorkspace(s.ID, "ws", value); err != nil {
+			if err := m.WriteStdin(s.ID, value); err != nil {
 				t.Errorf("write %q: %v", value, err)
 			}
 		}(chars)
@@ -183,13 +183,13 @@ func (w *blockingSessionWriter) Close() error {
 func TestSessionManagerPreCanceledWriteDoesNotReachStdin(t *testing.T) {
 	m := NewSessionManager()
 	probe := &serializedWriteProbe{}
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: probe})
+	s := m.Create(Session{}, SessionController{Stdin: probe})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := m.WriteStdinForWorkspaceContext(ctx, s.ID, "ws", "must-not-write"); !errors.Is(err, context.Canceled) {
+	if err := m.WriteStdinContext(ctx, s.ID, "must-not-write"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
 	probe.mu.Lock()
@@ -204,14 +204,14 @@ func TestSessionManagerPreCanceledWriteDoesNotReachStdin(t *testing.T) {
 func TestSessionManagerCanceledBlockingWriteClosesSession(t *testing.T) {
 	m := NewSessionManager()
 	writer := newBlockingSessionWriter()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Stdin: writer, Close: writer.Close})
+	s := m.Create(Session{}, SessionController{Stdin: writer, Close: writer.Close})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- m.WriteStdinForWorkspaceContext(ctx, s.ID, "ws", "blocked")
+		done <- m.WriteStdinContext(ctx, s.ID, "blocked")
 	}()
 	select {
 	case <-writer.started:
@@ -227,7 +227,7 @@ func TestSessionManagerCanceledBlockingWriteClosesSession(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled write did not return")
 	}
-	got, err := m.GetForWorkspace(s.ID, "ws")
+	got, err := m.Get(s.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -236,30 +236,29 @@ func TestSessionManagerCanceledBlockingWriteClosesSession(t *testing.T) {
 	}
 }
 
-func TestSessionManagerRejectsCrossWorkspaceAccess(t *testing.T) {
+func TestSessionManagerRejectsMissingSession(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws-a"}, SessionController{})
-	if _, err := m.GetForWorkspace(s.ID, "ws-b"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
-		t.Fatalf("get mismatch: %v", err)
+	if _, err := m.Get("missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("get missing: %v", err)
 	}
-	if _, err := m.ReadForWorkspace(s.ID, "ws-b", 0, 1); !errors.Is(err, ErrSessionWorkspaceMismatch) {
-		t.Fatalf("read mismatch: %v", err)
+	if _, err := m.Read("missing", 0, 1); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("read missing: %v", err)
 	}
-	if err := m.WriteStdinForWorkspace(s.ID, "ws-b", "x"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
-		t.Fatalf("stdin mismatch: %v", err)
+	if err := m.WriteStdin("missing", "x"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("stdin missing: %v", err)
 	}
-	if _, err := m.CloseForWorkspace(s.ID, "ws-b"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
-		t.Fatalf("close mismatch: %v", err)
+	if _, err := m.Close("missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("close missing: %v", err)
 	}
-	if _, _, err := m.SubscribeForWorkspace(s.ID, "ws-b"); !errors.Is(err, ErrSessionWorkspaceMismatch) {
-		t.Fatalf("subscribe mismatch: %v", err)
+	if _, _, err := m.Subscribe("missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("subscribe missing: %v", err)
 	}
 }
 
 func TestSessionManagerSubscriptionSignalsOutputAndFinish(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
-	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	s := m.Create(Session{}, SessionController{})
+	updates, cancel, err := m.Subscribe(s.ID)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -286,8 +285,8 @@ func TestSessionManagerSubscriptionSignalsOutputAndFinish(t *testing.T) {
 
 func TestSessionManagerSubscriptionCancelRemovesWatcher(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
-	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	s := m.Create(Session{}, SessionController{})
+	updates, cancel, err := m.Subscribe(s.ID)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -312,8 +311,8 @@ func TestSessionManagerSubscriptionCancelRemovesWatcher(t *testing.T) {
 func TestSessionManagerSubscriptionClosesWhenSessionSwept(t *testing.T) {
 	m := NewSessionManager()
 	m.SetCleanupOptions(SessionCleanupOptions{FinishedTTL: time.Minute, MaxSessions: 100})
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
-	updates, cancel, err := m.SubscribeForWorkspace(s.ID, "ws")
+	s := m.Create(Session{}, SessionController{})
+	updates, cancel, err := m.Subscribe(s.ID)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -430,17 +429,17 @@ func TestSessionManagerSweepKeepsNewestEndedWhenOverLimit(t *testing.T) {
 
 func TestSessionManagerFinishDoesNotOverwriteExplicitClose(t *testing.T) {
 	m := NewSessionManager()
-	s := m.Create(Session{WorkspaceID: "ws"}, SessionController{})
+	s := m.Create(Session{}, SessionController{})
 	if err := m.Start(s.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := m.CloseForWorkspace(s.ID, "ws"); err != nil {
+	if _, err := m.Close(s.ID); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if err := m.Finish(s.ID, -1, errors.New("signal: terminated")); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	got, err := m.GetForWorkspace(s.ID, "ws")
+	got, err := m.Get(s.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -453,7 +452,7 @@ func TestSessionManagerCloseAllClosesActiveControllers(t *testing.T) {
 	m := NewSessionManager()
 	closed := 0
 	for i := 0; i < 2; i++ {
-		s := m.Create(Session{WorkspaceID: "ws"}, SessionController{Close: func() error {
+		s := m.Create(Session{}, SessionController{Close: func() error {
 			closed++
 			return nil
 		}})

@@ -19,7 +19,6 @@ type Server struct {
 	App     *app.App
 	Name    string
 	Version string
-	WSID    string
 }
 
 type request struct {
@@ -116,12 +115,8 @@ func (s *Server) handleInitialize(req request) response {
 }
 
 func (s *Server) handleToolsList(req request) response {
-	wsid := s.WSID
-	if wsid == "" {
-		wsid = s.App.DefaultWSID
-	}
-	reg, ok := s.App.Registries[wsid]
-	if !ok {
+	reg := s.App.Registry
+	if reg == nil {
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"tools": []any{}}}
 	}
 	tools := []map[string]any{}
@@ -171,10 +166,6 @@ func (s *Server) handleToolsCall(req request) response {
 	if err != nil {
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32602, Message: err.Error()}}
 	}
-	wsid := s.WSID
-	if wsid == "" {
-		wsid = s.App.DefaultWSID
-	}
 	if s.App.ToolHTTPMode.Enabled && !isBootstrapTool(params.Name) {
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32601, Message: "tool not found"}}
 	}
@@ -191,18 +182,18 @@ func (s *Server) handleToolsCall(req request) response {
 		case "wait_task_finish":
 			return s.callWaitTaskFinish(req.ID, args)
 		case "exec_command", "write_stdin", "read_thread_terminal", "close_session":
-			if !s.App.IsToolVisible(wsid, params.Name) {
+			if !s.App.IsToolVisible(params.Name) {
 				return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32601, Message: "tool not found"}}
 			}
 			return s.callSessionTool(req.ID, params.Name, args)
 		}
 	}
 
-	if !s.App.IsToolVisible(wsid, params.Name) {
+	if !s.App.IsToolVisible(params.Name) {
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32601, Message: "tool not found"}}
 	}
 	submission, err := s.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport: invocation.TransportMCPStdio, Requester: "mcp", WorkspaceID: wsid,
+		Transport: invocation.TransportMCPStdio, Requester: "mcp",
 	}, params.Name, args)
 	if err != nil {
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: -32602, Message: err.Error()}}
@@ -245,7 +236,7 @@ func (s *Server) handleToolsCall(req request) response {
 	b, _ := json.Marshal(payload)
 	content := []map[string]any{{"type": "text", "text": string(b)}}
 	if !isErr && completedTask != nil {
-		content = append(content, s.resourceLinkContent(wsid, params.Name, completedTask.Result)...)
+		content = append(content, s.resourceLinkContent(params.Name, completedTask.Result)...)
 	}
 	return response{
 		JSONRPC: "2.0",
@@ -258,12 +249,12 @@ func (s *Server) handleToolsCall(req request) response {
 	}
 }
 
-func (s *Server) resourceLinkContent(wsid, toolName string, result map[string]any) []map[string]any {
+func (s *Server) resourceLinkContent(toolName string, result map[string]any) []map[string]any {
 	if s == nil || s.App == nil || result == nil {
 		return nil
 	}
-	reg, ok := s.App.Registries[wsid]
-	if !ok {
+	reg := s.App.Registry
+	if reg == nil {
 		return nil
 	}
 	tool, ok := reg.Get(toolName)
@@ -298,13 +289,9 @@ func isBootstrapTool(name string) bool {
 }
 
 func (s *Server) callSessionTool(id json.RawMessage, name string, args map[string]any) response {
-	wsid := s.WSID
-	if wsid == "" {
-		wsid = s.App.DefaultWSID
-	}
 	if name == "exec_command" {
 		submission, err := s.App.SubmitToolTaskWithMeta(invocation.Meta{
-			Transport: invocation.TransportMCPStdio, Requester: "mcp", WorkspaceID: wsid,
+			Transport: invocation.TransportMCPStdio, Requester: "mcp",
 		}, name, args)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32602, Message: err.Error()}}
@@ -345,7 +332,7 @@ func (s *Server) callSessionTool(id json.RawMessage, name string, args map[strin
 		}
 		return response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32603, Message: "session creation timed out"}}
 	}
-	res, err := s.App.InvokeTool(context.Background(), wsid, name, args)
+	res, err := s.App.InvokeTool(context.Background(), name, args)
 	if err != nil {
 		return response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32602, Message: err.Error()}}
 	}
@@ -493,11 +480,7 @@ func (s *Server) callTaskResult(id json.RawMessage, args map[string]any) respons
 	b, _ := json.Marshal(payload)
 	content := []map[string]any{{"type": "text", "text": string(b)}}
 	if t.Status == core.StatusSucceeded && t.Result != nil {
-		wsid := t.WorkspaceID
-		if wsid == "" {
-			wsid = s.App.DefaultWSID
-		}
-		content = append(content, s.resourceLinkContent(wsid, t.Tool, t.Result)...)
+		content = append(content, s.resourceLinkContent(t.Tool, t.Result)...)
 	}
 	return response{JSONRPC: "2.0", ID: id, Result: map[string]any{
 		"content":           content,

@@ -5,7 +5,9 @@ description: Use for delegating work to persistent LocalGate subagents, continui
 
 # LocalGate Subagents
 
-Use this skill when the current tool list contains `subagent_spawn` and the task benefits from a separate persistent reasoning thread.
+Use this skill when startup capability routing exposes LocalGate subagents and the task benefits from a separate persistent reasoning thread. Subagent tools are normally progressive Registry capabilities rather than top-level MCP tools.
+
+In normal MCP mode, use `get_tool_schema` for the selected `subagent_*` tool and execute it through `invoke_tool`. In Tool HTTP mode, follow `localgate-tool-http`.
 
 ## Identity and reuse
 
@@ -25,7 +27,7 @@ Use this skill when the current tool list contains `subagent_spawn` and the task
 - Use `subagent_wait` only when the parent agent needs the current turn's completed reply before continuing. Wait respects the same polling pace and sleeps until the next allowed remote check instead of hammering the provider. Keep `reply` as text; use the returned `artifacts` array for generated images/files.
 - Use `subagent_send` for follow-up questions, refinements, or additional work in that same conversation after poll/wait reports `ready`. Send submits the message and returns without waiting for the new reply.
 - Use `subagent_get` for one subagent's status and provider mapping diagnostics. By default, get performs one remote refresh when the local state is `busy` or `degraded` and the configured polling interval allows it; otherwise it returns the cached state with `refreshed=false`. Pass `refresh=false` only when a strictly local snapshot is required.
-- Use `subagent_list` when the caller has lost track of available subagent IDs in the current workspace.
+- Use `subagent_list` when the caller has lost track of available subagent IDs in the current LocalGate instance.
 - Use `subagent_archive` when the logical subagent should be removed from LocalGate while retaining its backing conversation. ChatGPT archive first verifies the remote turn is no longer generating and optionally moves it to `archive_project`; the project-move DOM/network verifier is bundled with LocalGate and only needs the generic OpenCLI Browser Bridge. Gemini currently has no remote archive/move implementation, so `opencli_gemini` returns archive unsupported; use `subagent_close` when a Gemini subagent should no longer receive messages.
 - Use `subagent_close` when the logical subagent should no longer receive messages. Closing is idempotent and does not delete the backing ChatGPT conversation or Project history.
 
@@ -40,7 +42,7 @@ Use this skill when the current tool list contains `subagent_spawn` and the task
 - Do not infer that a subagent is stuck merely because `busy` has been visible for a long wall-clock interval or because `updated_at` has not moved. `updated_at` is LocalGate's local state-change time, not a remote heartbeat. Check `last_observed_at`, `phase`, and `next_action`, then refresh/poll before making any recovery decision.
 - Never close and respawn a subagent solely to clear a long-lived `busy` state. Close is a deliberate logical lifecycle action; stale state should be reconciled with get/poll/wait first so the existing conversation is not duplicated.
 - A single subagent also has a bounded local operation queue. If it is full, wait for existing work to finish instead of creating duplicate operations against the same conversation.
-- Do not send secrets or unrelated workspace content to a subagent merely because the provider is available. Delegate only the information needed for the requested task.
+- Do not send secrets or unrelated root content to a subagent merely because the provider is available. Delegate only the information needed for the requested task.
 - A configured ChatGPT Project affects where a new provider conversation is created. Follow-up turns continue through the saved conversation mapping automatically; callers should not manually manage browser tabs.
 - ChatGPT `ask/send` use upstream OpenCLI, while LocalGate bundles the ChatGPT DOM `inspect` path used by poll/wait and the `project-move` DOM/network verifier used by archive. These only require the generic OpenCLI Browser Bridge, so callers do not need a LocalGate-specific OpenCLI fork.
 - Gemini conversations are identified by their `/app/<conversation_id>` mapping. The Gemini DOM adapter is bundled with LocalGate and uses only the generic OpenCLI Browser Bridge (`browser open/eval/keys`); callers do not need an OpenCLI build containing LocalGate-specific `gemini submit/inspect` commands. Submit remains asynchronous and inspect remains non-blocking, so the same LocalGate busy/ready lifecycle and polling throttle apply. When a completed Gemini turn contains generated images, the adapter materializes them as PNG files under LocalGate's subagent artifact directory and returns provider-independent metadata in `artifacts`; image-only turns can therefore become `ready` without inventing reply text.

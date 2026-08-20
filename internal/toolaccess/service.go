@@ -18,10 +18,9 @@ var (
 const HeaderName = "X-LocalGate-Tool-Access"
 
 type Grant struct {
-	WorkspaceID string    `json:"workspace_id"`
-	AuthValue   string    `json:"auth_value"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	IssuedAt    time.Time `json:"issued_at"`
+	AuthValue string    `json:"auth_value"`
+	ExpiresAt time.Time `json:"expires_at"`
+	IssuedAt  time.Time `json:"issued_at"`
 }
 
 type Service struct {
@@ -37,13 +36,9 @@ func NewService() *Service {
 	}
 }
 
-func (s *Service) Issue(workspaceID string, ttl time.Duration) (Grant, error) {
+func (s *Service) Issue(ttl time.Duration) (Grant, error) {
 	if s == nil {
 		return Grant{}, errors.New("tool access service is nil")
-	}
-	workspaceID = strings.TrimSpace(workspaceID)
-	if workspaceID == "" {
-		return Grant{}, errors.New("workspace_id is required")
 	}
 	if ttl <= 0 {
 		return Grant{}, errors.New("ttl must be positive")
@@ -54,10 +49,9 @@ func (s *Service) Issue(workspaceID string, ttl time.Duration) (Grant, error) {
 	}
 	now := s.now()
 	grant := Grant{
-		WorkspaceID: workspaceID,
-		AuthValue:   authValue,
-		IssuedAt:    now,
-		ExpiresAt:   now.Add(ttl),
+		AuthValue: authValue,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(ttl),
 	}
 
 	s.mu.Lock()

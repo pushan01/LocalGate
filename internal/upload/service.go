@@ -16,10 +16,9 @@ var (
 )
 
 type Grant struct {
-	Token       string    `json:"token"`
-	WorkspaceID string    `json:"workspace_id"`
-	Path        string    `json:"path"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	Token     string    `json:"token"`
+	Path      string    `json:"path"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type Service struct {
@@ -35,15 +34,11 @@ func NewService() *Service {
 	}
 }
 
-func (s *Service) Issue(workspaceID, path string, ttl time.Duration) (Grant, error) {
+func (s *Service) Issue(path string, ttl time.Duration) (Grant, error) {
 	if s == nil {
 		return Grant{}, errors.New("upload service is nil")
 	}
-	workspaceID = strings.TrimSpace(workspaceID)
 	path = strings.TrimSpace(path)
-	if workspaceID == "" {
-		return Grant{}, errors.New("workspace id required")
-	}
 	if path == "" {
 		return Grant{}, errors.New("path required")
 	}
@@ -55,10 +50,9 @@ func (s *Service) Issue(workspaceID, path string, ttl time.Duration) (Grant, err
 		return Grant{}, err
 	}
 	grant := Grant{
-		Token:       token,
-		WorkspaceID: workspaceID,
-		Path:        path,
-		ExpiresAt:   s.now().Add(ttl),
+		Token:     token,
+		Path:      path,
+		ExpiresAt: s.now().Add(ttl),
 	}
 
 	s.mu.Lock()

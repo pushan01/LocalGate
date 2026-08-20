@@ -5,13 +5,17 @@ description: Use for LocalGate static or dynamic deployment, deployment status a
 
 # LocalGate Deployment
 
-Use this skill for deployment workflows. Treat the currently exposed tool list and each tool schema as authoritative; do not assume every management tool is available.
+Use this skill for deployment workflows. Deployment tools are normally Registry capabilities rather than top-level MCP tools. Treat the current capability routing and each tool schema as authoritative; do not assume every management tool is enabled.
+
+## Progressive invocation
+
+In normal MCP mode, call `get_tool_schema` for the selected deployment tool and then execute it through `invoke_tool`. The target tool still owns approval, Task, audit, root policy and deployment semantics. In Tool HTTP mode, follow `localgate-tool-http` instead.
 
 ## Deploy
 
-- Use `deploy_tool` for workspace-hosted static sites or long-running dynamic web applications.
+- Use `deploy_tool` for static sites or long-running dynamic web applications sourced from the configured root.
 - Read the tool schema before constructing a deployment call. Core fields are `type`, `name`, and `source`.
-- `source` must stay inside an allowed workspace root and should be an absolute path.
+- `source` must stay inside the configured root and should be an absolute path.
 - `type=static` publishes a static directory and does not need `runtime`.
 - `type=dynamic` starts a long-running application and requires runtime configuration such as `runtime.argv`; set `runtime.cwd` and `runtime.env` only when the application needs them.
 - Dynamic `runtime.argv` is executed directly, not through a shell. `runtime.argv[0]` must match the current instance's configured executable allowlist; use the exact entries in the `Current instance: dynamic runtime` section appended by `get_skill` instead of guessing a package-manager or framework command.
@@ -36,7 +40,7 @@ A rejected, canceled, or expired approval should be reported as such rather than
 
 ## Manage existing deployments
 
-Use only tools that are currently exposed. Depending on the instance these can include:
+Use only tools that are available in the current Registry capability set. Depending on the instance these can include:
 
 - `list_deployments` for the managed deployment inventory;
 - `get_deployment` and `get_deployment_logs` for dynamic runtime state and logs;

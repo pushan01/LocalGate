@@ -45,15 +45,15 @@ func TestFileAndSubagentArtifactExportsDoNotRequireApprovalByDefault(t *testing.
 			MaxTTLSeconds:     600,
 			MaxFileBytes:      1 << 20,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}},
+		Root: config.Root{Path: root},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	application.Registries["ws"].Register(artifactApprovalTestTool{})
+	application.Registry.Register(artifactApprovalTestTool{})
 
-	fileSubmission, err := application.SubmitToolTask("ws", "test", "export_file", map[string]any{
+	fileSubmission, err := application.SubmitToolTask("test", "export_file", map[string]any{
 		"path": target,
 	})
 	if err != nil {
@@ -63,7 +63,7 @@ func TestFileAndSubagentArtifactExportsDoNotRequireApprovalByDefault(t *testing.
 		t.Fatalf("export_file unexpectedly required approval: %#v", fileSubmission.Approval)
 	}
 
-	artifactSubmission, err := application.SubmitToolTask("ws", "test", "subagent_artifact_get", map[string]any{
+	artifactSubmission, err := application.SubmitToolTask("test", "subagent_artifact_get", map[string]any{
 		"subagent_id": "sg_example",
 		"artifact_id": "art_example",
 	})
@@ -101,14 +101,14 @@ func TestExportFileRequiresApprovalWhenConfigured(t *testing.T) {
 			MaxFileBytes:      1 << 20,
 			RequireApproval:   true,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}},
+		Root: config.Root{Path: root},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer application.Close()
 
-	submission, err := application.SubmitToolTask("ws", "test", "export_file", map[string]any{
+	submission, err := application.SubmitToolTask("test", "export_file", map[string]any{
 		"path":      target,
 		"file_name": "shared-report.txt",
 	})
@@ -145,15 +145,15 @@ func TestSubagentArtifactGetRequiresApprovalWhenConfigured(t *testing.T) {
 			MaxFileBytes:      1 << 20,
 			RequireApproval:   true,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}},
+		Root: config.Root{Path: root},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	application.Registries["ws"].Register(artifactApprovalTestTool{})
+	application.Registry.Register(artifactApprovalTestTool{})
 
-	submission, err := application.SubmitToolTask("ws", "test", "subagent_artifact_get", map[string]any{
+	submission, err := application.SubmitToolTask("test", "subagent_artifact_get", map[string]any{
 		"subagent_id": "sg_example",
 		"artifact_id": "art_example",
 	})

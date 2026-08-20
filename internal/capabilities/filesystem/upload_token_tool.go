@@ -19,12 +19,12 @@ const (
 )
 
 type createUploadTokenTool struct {
-	ws      config.Workspace
+	ws      config.Root
 	baseURL string
 	uploads *upload.Service
 }
 
-func NewCreateUploadTokenTool(ws config.Workspace, baseURL string, uploads *upload.Service) core.Tool {
+func NewCreateUploadTokenTool(ws config.Root, baseURL string, uploads *upload.Service) core.Tool {
 	return createUploadTokenTool{
 		ws:      ws,
 		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -68,7 +68,7 @@ func (t createUploadTokenTool) Execute(ctx context.Context, ic core.InvokeContex
 		return nil, errors.New("path not allowed: " + dec.Reason)
 	}
 
-	grant, err := t.uploads.Issue(t.ws.ID, dec.Path, uploadTokenTTL)
+	grant, err := t.uploads.Issue(dec.Path, uploadTokenTTL)
 	if err != nil {
 		return nil, err
 	}

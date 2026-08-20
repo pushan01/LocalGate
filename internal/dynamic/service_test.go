@@ -135,9 +135,7 @@ func newDynamicTestService(t *testing.T, managedRoot string) (*Service, string, 
 		RestartPolicy: "never", RestartMaxAttempts: 1, RestartBackoffSeconds: 0,
 		MaxLogBytes: 1 << 20,
 	}
-	service, err := NewService(managedRoot, cfg, map[string]config.Workspace{
-		"ws": {ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot},
-	}, true)
+	service, err := NewService(managedRoot, cfg, config.Root{Path: workspaceRoot}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +145,7 @@ func newDynamicTestService(t *testing.T, managedRoot string) (*Service, string, 
 func deployTestApplication(t *testing.T, service *Service, source, executable string) DeployResult {
 	t.Helper()
 	result, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "demo", Source: source,
+		Name: "demo", Source: source,
 		Runtime: RuntimeSpec{
 			Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"},
 			Env:  map[string]string{"LOCALGATE_DYNAMIC_HELPER": "1"},
@@ -253,7 +251,7 @@ func TestDynamicRoutingMetadataIsDerivedFromCurrentConfig(t *testing.T) {
 	}
 	service, err := NewService(managedRoot, config.DynamicHosting{
 		Enabled: true, PublicBaseURL: "http://apps.new.test", PrivateBaseURL: "http://private.apps.new.test", DefaultAccess: "public",
-	}, nil, false)
+	}, config.Root{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,9 +326,7 @@ func newDynamicTestServiceAtExistingWorkspace(t *testing.T, managedRoot, workspa
 		StartupTimeoutSeconds: 5, ShutdownTimeoutSeconds: 2,
 		RestartPolicy: "never", RestartMaxAttempts: 1, MaxLogBytes: 1 << 20,
 	}
-	service, err := NewService(managedRoot, cfg, map[string]config.Workspace{
-		"ws": {ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot},
-	}, true)
+	service, err := NewService(managedRoot, cfg, config.Root{Path: workspaceRoot}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +337,7 @@ func TestDynamicDeploymentRejectsExecutableAndSecretEnv(t *testing.T) {
 	service, source, executable := newDynamicTestService(t, filepath.Join(t.TempDir(), "managed"))
 	defer service.Close()
 	_, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "denied", Source: source,
+		Name: "denied", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{"not-allowed"}},
 		Options: DeployOptions{PreserveSource: true},
 	})
@@ -350,7 +346,7 @@ func TestDynamicDeploymentRejectsExecutableAndSecretEnv(t *testing.T) {
 	}
 	service.config.EnvAllowlist = append(service.config.EnvAllowlist, "API_TOKEN")
 	_, err = service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "secret", Source: source,
+		Name: "secret", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{executable}, Env: map[string]string{"API_TOKEN": strconv.Itoa(1)}},
 		Options: DeployOptions{PreserveSource: true},
 	})
@@ -365,7 +361,7 @@ func TestOnFailureDoesNotRestartCleanExit(t *testing.T) {
 	service.config.EnvAllowlist = append(service.config.EnvAllowlist, "LOCALGATE_DYNAMIC_EXIT_AFTER_MS")
 	service.config.RestartMaxAttempts = 3
 	_, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "clean-exit", Source: source,
+		Name: "clean-exit", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"}, Env: map[string]string{
 			"LOCALGATE_DYNAMIC_HELPER": "1", "LOCALGATE_DYNAMIC_EXIT_AFTER_MS": "500",
 		}},
@@ -404,7 +400,7 @@ func TestHealthCheckDoesNotFollowRedirect(t *testing.T) {
 	t.Cleanup(func() { _ = service.Close() })
 	service.config.EnvAllowlist = append(service.config.EnvAllowlist, "LOCALGATE_DYNAMIC_HEALTH_REDIRECT")
 	_, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "redirect", Source: source,
+		Name: "redirect", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"}, Env: map[string]string{
 			"LOCALGATE_DYNAMIC_HELPER": "1", "LOCALGATE_DYNAMIC_HEALTH_REDIRECT": external.URL,
 		}},
@@ -484,7 +480,7 @@ func TestLogRotationAndReleaseRetention(t *testing.T) {
 	}
 	for index := 0; index < 3; index++ {
 		_, err := service.Deploy(context.Background(), DeployRequest{
-			WorkspaceID: "ws", Name: "demo", Source: source,
+			Name: "demo", Source: source,
 			Runtime: RuntimeSpec{Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"}, Env: map[string]string{"LOCALGATE_DYNAMIC_HELPER": "1"}},
 			Options: DeployOptions{Overwrite: true, PreserveSource: true, HealthPath: "/healthz", RestartPolicy: "never"},
 		})
@@ -535,7 +531,7 @@ func TestReleaseHistoryAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "demo", Source: source,
+		Name: "demo", Source: source,
 		Runtime: RuntimeSpec{
 			Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"},
 			Env:  map[string]string{"LOCALGATE_DYNAMIC_HELPER": "1"},
@@ -588,7 +584,7 @@ func TestOnFailureStopsAfterRestartExhaustion(t *testing.T) {
 	service.config.RestartMaxAttempts = 1
 	service.config.RestartBackoffSeconds = 0
 	_, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "crash-loop", Source: source,
+		Name: "crash-loop", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"}, Env: map[string]string{
 			"LOCALGATE_DYNAMIC_HELPER": "1", "LOCALGATE_DYNAMIC_EXIT_AFTER_MS": "250", "LOCALGATE_DYNAMIC_EXIT_CODE": "3",
 		}},

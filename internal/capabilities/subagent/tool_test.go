@@ -140,7 +140,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 			t.Fatalf("tool %s has nil schema", name)
 		}
 	}
-	ic := core.InvokeContext{WorkspaceID: "ws-a", Requester: "tester"}
+	ic := core.InvokeContext{Requester: "tester"}
 	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{
 		"name":          "reviewer",
 		"subagent_type": "reviewer",
@@ -228,7 +228,7 @@ func TestSubagentToolsExposePersistedArtifacts(t *testing.T) {
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
-	ic := core.InvokeContext{WorkspaceID: "ws"}
+	ic := core.InvokeContext{}
 	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{"instruction": "draw"})
 	if err != nil {
 		t.Fatal(err)
@@ -256,17 +256,17 @@ func TestSubagentToolsExposePersistedArtifacts(t *testing.T) {
 	}
 }
 
-func TestSubagentToolsUseInvokeWorkspace(t *testing.T) {
+func TestSubagentToolsUseInstanceManager(t *testing.T) {
 	m := newToolTestManager(t)
 	spawn := SpawnTool{manager: m}
 	get := GetTool{manager: m}
-	res, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws-a"}, map[string]any{"instruction": "hello"})
+	res, err := spawn.Execute(context.Background(), core.InvokeContext{}, map[string]any{"instruction": "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := res["subagent_id"].(string)
-	if _, err := get.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws-b"}, map[string]any{"subagent_id": id}); !errors.Is(err, runtime.ErrNotFound) {
-		t.Fatalf("cross-workspace get error = %v", err)
+	if _, err := get.Execute(context.Background(), core.InvokeContext{}, map[string]any{"subagent_id": id, "refresh": false}); err != nil {
+		t.Fatalf("get spawned subagent: %v", err)
 	}
 }
 
@@ -274,7 +274,7 @@ func TestSubagentGetRefreshesBusyByDefaultAndCanStayLocal(t *testing.T) {
 	m := newToolTestManager(t)
 	spawn := SpawnTool{manager: m}
 	get := GetTool{manager: m}
-	ic := core.InvokeContext{WorkspaceID: "ws"}
+	ic := core.InvokeContext{}
 
 	first, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "first"})
 	if err != nil {
@@ -318,7 +318,7 @@ func TestSubagentGetReturnsDiagnosticStateWhenRefreshFails(t *testing.T) {
 	m := newToolTestManagerWithProvider(t, pollErrorProvider{})
 	spawn := SpawnTool{manager: m}
 	get := GetTool{manager: m}
-	ic := core.InvokeContext{WorkspaceID: "ws"}
+	ic := core.InvokeContext{}
 	spawned, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "hello"})
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +342,7 @@ func TestSubagentGetSurfacesConnectorAuthorizeAction(t *testing.T) {
 	m := newToolTestManagerWithProvider(t, connectorAuthProvider{})
 	spawn := SpawnTool{manager: m}
 	get := GetTool{manager: m}
-	ic := core.InvokeContext{WorkspaceID: "ws"}
+	ic := core.InvokeContext{}
 	spawned, err := spawn.Execute(context.Background(), ic, map[string]any{"instruction": "hello"})
 	if err != nil {
 		t.Fatal(err)
@@ -361,10 +361,10 @@ func TestSubagentGetSurfacesConnectorAuthorizeAction(t *testing.T) {
 func TestSubagentToolInputLimits(t *testing.T) {
 	m := newToolTestManager(t)
 	spawn := SpawnTool{manager: m}
-	if _, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"instruction": ""}); err == nil {
+	if _, err := spawn.Execute(context.Background(), core.InvokeContext{}, map[string]any{"instruction": ""}); err == nil {
 		t.Fatal("expected empty instruction error")
 	}
-	if _, err := spawn.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"instruction": "ok", "name": string(make([]byte, maxNameBytes+1))}); err == nil {
+	if _, err := spawn.Execute(context.Background(), core.InvokeContext{}, map[string]any{"instruction": "ok", "name": string(make([]byte, maxNameBytes+1))}); err == nil {
 		t.Fatal("expected oversized name error")
 	}
 }

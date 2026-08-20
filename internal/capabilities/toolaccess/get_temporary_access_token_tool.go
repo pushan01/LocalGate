@@ -28,7 +28,7 @@ func NewGetTemporaryAccessTokenTool(baseURL string, ttl time.Duration, svc *serv
 func (t getTemporaryAccessTokenTool) Name() string { return "get_temporary_access_token" }
 
 func (t getTemporaryAccessTokenTool) Description() string {
-	return "Create a short-lived HTTP access credential for the current workspace. Use it together with Authorization: Bearer to call LocalGate tool HTTP endpoints."
+	return "Create a short-lived HTTP access credential for this LocalGate instance. Use it together with Authorization: Bearer to call LocalGate tool HTTP endpoints."
 }
 
 func (t getTemporaryAccessTokenTool) Schema() any {
@@ -50,16 +50,12 @@ func (t getTemporaryAccessTokenTool) Execute(ctx context.Context, ic core.Invoke
 	if t.ttl <= 0 {
 		return nil, errors.New("tool access ttl must be positive")
 	}
-	workspaceID := strings.TrimSpace(ic.WorkspaceID)
-	if workspaceID == "" {
-		return nil, errors.New("workspace_id is required")
-	}
-	grant, err := t.svc.Issue(workspaceID, t.ttl)
+	_ = ic
+	grant, err := t.svc.Issue(t.ttl)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"workspace_id":      workspaceID,
 		"auth_value":        grant.AuthValue,
 		"auth_header_name":  service.HeaderName,
 		"base_url":          t.baseURL,

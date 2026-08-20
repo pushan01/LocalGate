@@ -13,7 +13,7 @@ import (
 )
 
 func TestShellToolDescriptionsExplainSelectionBoundary(t *testing.T) {
-	ws := config.Workspace{ID: "ws"}
+	ws := config.Root{}
 	run := NewTool(ws, 0)
 	exec := NewExecCommandTool(ws, core.NewSessionManager())
 	if !strings.Contains(run.Description(), "one-shot, non-interactive") || !strings.Contains(run.Description(), "Use exec_command instead") {
@@ -25,10 +25,7 @@ func TestShellToolDescriptionsExplainSelectionBoundary(t *testing.T) {
 }
 
 func TestRunEcho(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"echo", "sh", "/bin/sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"echo", "sh", "/bin/sh"}}
 	tool := NewTool(ws, 0)
 	sink := core.NewEventSink()
 	res, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "t1", Sink: sink}, map[string]any{
@@ -58,10 +55,8 @@ func TestRunCommandPreservesAllowlistedProcessPath(t *testing.T) {
 		filepath.Join(t.TempDir(), "second")
 	t.Setenv("PATH", pathValue)
 
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"printf"},
-		EnvAllowlist:     []string{"PATH"},
+	ws := config.Root{CommandAllowlist: []string{"printf"},
+		EnvAllowlist: []string{"PATH"},
 	}
 	sink := core.NewEventSink()
 	tool := NewTool(ws, 0)
@@ -94,10 +89,7 @@ func TestRunCommandInheritsProcessPathWithoutAllowlist(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{commandName},
-	}
+	ws := config.Root{CommandAllowlist: []string{commandName}}
 	sink := core.NewEventSink()
 	tool := NewTool(ws, 0)
 
@@ -153,7 +145,7 @@ func envValue(env []string, name string) string {
 
 func TestRunCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	t.Setenv("LOCALGATE_SECRET_TEST", "should-not-leak")
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}
+	ws := config.Root{CommandAllowlist: []string{"printf"}}
 	sink := core.NewEventSink()
 	tool := NewTool(ws, 0)
 	_, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "t-env", Sink: sink}, map[string]any{
@@ -175,10 +167,7 @@ func TestRunCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 }
 
 func TestRunTimeout(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"sleep", "sh", "/bin/sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"sleep", "sh", "/bin/sh"}}
 	tool := NewTool(ws, 0)
 	sink := core.NewEventSink()
 	start := time.Now()
@@ -195,7 +184,7 @@ func TestRunTimeout(t *testing.T) {
 }
 
 func TestRunCommandRejectsNegativeTimeout(t *testing.T) {
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"sleep"}}
+	ws := config.Root{CommandAllowlist: []string{"sleep"}}
 	tool := NewTool(ws, 12_000)
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"command":    "sleep 1",
@@ -224,10 +213,7 @@ func TestStreamPreservesLongOutputWithoutScannerLimit(t *testing.T) {
 }
 
 func TestCancelKillsProcessGroup(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"sleep"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"sleep"}}
 	tool := NewTool(ws, 0)
 	sink := core.NewEventSink()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -253,10 +239,7 @@ func TestCancelKillsProcessGroup(t *testing.T) {
 
 func TestRunCommandRejectsRelativeCWD(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	ws := config.Root{Path: root,
 		CommandAllowlist: []string{"echo", "sh", "/bin/sh"},
 	}
 	tool := NewTool(ws, 0)
@@ -271,10 +254,7 @@ func TestRunCommandRejectsRelativeCWD(t *testing.T) {
 
 func TestRunArgvRejectsRelativeCWD(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	ws := config.Root{Path: root,
 		CommandAllowlist: []string{"echo"},
 	}
 	tool := NewArgvTool(ws, 0)
@@ -293,10 +273,7 @@ func TestRunCommandAllowsAbsoluteCWD(t *testing.T) {
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	ws := config.Workspace{
-		ID:               "ws",
-		Roots:            []string{root},
-		CWD:              root,
+	ws := config.Root{Path: root,
 		CommandAllowlist: []string{"pwd", "sh", "/bin/sh"},
 	}
 	tool := NewTool(ws, 0)

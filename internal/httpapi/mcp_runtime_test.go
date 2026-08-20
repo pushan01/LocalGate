@@ -31,13 +31,8 @@ func newMCPRuntimeTestAPI(t *testing.T) (*API, *http.ServeMux, string, string) {
 			},
 		},
 		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.test", PrivateBaseURL: "https://private.apps.test", DefaultAccess: "public"},
-		Workspaces: []config.Workspace{
-			{
-				ID:               "ws",
-				Roots:            []string{workspaceRoot},
-				CWD:              workspaceRoot,
-				CommandAllowlist: []string{"echo"},
-			},
+		Root: config.Root{Path: workspaceRoot,
+			CommandAllowlist: []string{"echo"},
 		},
 	}
 	application, err := app.New(cfg)
@@ -45,7 +40,7 @@ func newMCPRuntimeTestAPI(t *testing.T) (*API, *http.ServeMux, string, string) {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	return api, mux, workspaceRoot, storeRoot
@@ -235,19 +230,16 @@ func TestMCPRuntimeDeploymentApprovalAndAuditFlow(t *testing.T) {
 				RequireApproval: true,
 			},
 		},
-		Workspaces: []config.Workspace{{
-			ID:               "ws",
-			Roots:            []string{workspaceRoot},
-			CWD:              workspaceRoot,
+		Root: config.Root{Path: workspaceRoot,
 			CommandAllowlist: []string{"echo"},
-		}},
+		},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -372,17 +364,13 @@ func TestMCPRuntimeGlobalApprovalSwitchBypassesStaticApproval(t *testing.T) {
 	cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
 	cfg.Deployments.DefaultAccess = "public"
 	cfg.HTTP.BaseURL = "https://control.test"
-	cfg.Workspaces = []config.Workspace{{
-		ID:    "ws",
-		Roots: []string{workspaceRoot},
-		CWD:   workspaceRoot,
-	}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -530,17 +518,13 @@ func TestMCPRuntimeUsesUnifiedApprovalRules(t *testing.T) {
 		cfg.Deployments.PrivateBaseURL = "https://private.apps.test"
 		cfg.Deployments.DefaultAccess = "public"
 		cfg.HTTP.BaseURL = "https://control.test"
-		cfg.Workspaces = []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{workspaceRoot},
-			CWD:   workspaceRoot,
-		}}
+		cfg.Root = config.Root{Path: workspaceRoot}
 		application, err := app.New(cfg)
 		if err != nil {
 			t.Fatalf("app.New: %v", err)
 		}
 		t.Cleanup(func() { _ = application.Close() })
-		api := &API{App: application, DefaultWSID: application.DefaultWSID}
+		api := &API{App: application}
 		mux := http.NewServeMux()
 		api.Register(mux)
 		return api, mux, workspaceRoot, storeRoot

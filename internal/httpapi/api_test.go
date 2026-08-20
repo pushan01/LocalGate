@@ -22,19 +22,17 @@ import (
 
 func TestListTools(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -42,8 +40,8 @@ func TestListTools(t *testing.T) {
 	}
 	var body map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	if body["workspace_id"] != "ws" {
-		t.Fatalf("unexpected workspace_id: %v", body["workspace_id"])
+	if _, ok := body["workspace_id"]; ok {
+		t.Fatalf("tool list must not expose workspace metadata: %v", body)
 	}
 	items, _ := body["items"].([]any)
 	if len(items) == 0 {
@@ -77,18 +75,14 @@ func TestListTools(t *testing.T) {
 	}
 }
 
-func TestSessionRoutesRejectCrossWorkspaceAccess(t *testing.T) {
-	cfg := config.Config{Workspaces: []config.Workspace{
-		{ID: "ws-a", CommandAllowlist: []string{"echo"}},
-		{ID: "ws-b", CommandAllowlist: []string{"echo"}},
-	}}
+func TestSessionRoutesRejectMissingSession(t *testing.T) {
+	cfg := config.Config{Root: config.Root{Path: t.TempDir(), CommandAllowlist: []string{"echo"}}}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
-	session := application.Sessions.Create(core.Session{WorkspaceID: "ws-a"}, core.SessionController{})
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.RegisterControl(mux)
 
@@ -97,17 +91,17 @@ func TestSessionRoutesRejectCrossWorkspaceAccess(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{method: http.MethodGet, path: "/sessions/" + session.ID + "?workspace_id=ws-b"},
-		{method: http.MethodPost, path: "/sessions/" + session.ID + "/stdin?workspace_id=ws-b", body: `{}`},
-		{method: http.MethodGet, path: "/sessions/" + session.ID + "/terminal?workspace_id=ws-b"},
-		{method: http.MethodPost, path: "/sessions/" + session.ID + "/close?workspace_id=ws-b"},
+		{method: http.MethodGet, path: "/sessions/missing"},
+		{method: http.MethodPost, path: "/sessions/missing/stdin", body: `{}`},
+		{method: http.MethodGet, path: "/sessions/missing/terminal"},
+		{method: http.MethodPost, path: "/sessions/missing/close"},
 	}
 	for _, tc := range tests {
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("%s %s: expected 403, got %d body=%s", tc.method, tc.path, w.Code, w.Body.String())
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s %s: expected 404, got %d body=%s", tc.method, tc.path, w.Code, w.Body.String())
 		}
 	}
 }
@@ -119,19 +113,17 @@ func TestListToolsInToolHTTPModeStillShowsVisibleRegistryTools(t *testing.T) {
 			Enabled:               true,
 			AccessTokenTTLSeconds: 600,
 		},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{t.TempDir()}, CWD: t.TempDir(), CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{Path: t.TempDir(), CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -160,19 +152,17 @@ func TestListToolsInToolHTTPModeStillShowsVisibleRegistryTools(t *testing.T) {
 
 func TestListToolsSummary(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools?workspace_id=ws&summary=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools?summary=1", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -185,19 +175,17 @@ func TestListToolsSummary(t *testing.T) {
 
 func TestGetToolDetail(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools/run_command?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools/run_command", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -219,19 +207,17 @@ func TestGetToolDetail(t *testing.T) {
 func TestUploadFileDetailIncludesOpenAIFileParamMetadata(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools/upload_file?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools/upload_file", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -248,19 +234,17 @@ func TestUploadFileDetailIncludesOpenAIFileParamMetadata(t *testing.T) {
 
 func TestDefaultHiddenToolNotListedOrAccessible(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -270,7 +254,7 @@ func TestDefaultHiddenToolNotListedOrAccessible(t *testing.T) {
 		t.Fatalf("hidden tool should not be listed: %s", w.Body.String())
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/tools/run_argv?workspace_id=ws", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/tools/run_argv", nil)
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusNotFound {
@@ -280,19 +264,17 @@ func TestDefaultHiddenToolNotListedOrAccessible(t *testing.T) {
 
 func TestDefaultHiddenToolNotAccessible(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools/create_download_token?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools/create_download_token", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -300,46 +282,19 @@ func TestDefaultHiddenToolNotAccessible(t *testing.T) {
 	}
 }
 
-func TestListToolsWorkspaceNotFound(t *testing.T) {
-	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
-	}
-	application, err := app.New(cfg)
-	if err != nil {
-		t.Fatalf("app: %v", err)
-	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
-	mux := http.NewServeMux()
-	api.Register(mux)
-
-	req := httptest.NewRequest(http.MethodGet, "/tools?workspace_id=missing", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
-	}
-	if !bytes.Contains(w.Body.Bytes(), []byte(`"code":"workspace_not_found"`)) {
-		t.Fatalf("unexpected body: %s", w.Body.String())
-	}
-}
-
 func TestGetToolNotFound(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/tools/missing?workspace_id=ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tools/missing", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -352,15 +307,13 @@ func TestGetToolNotFound(t *testing.T) {
 
 func TestToolsMethodNotAllowed(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -374,22 +327,19 @@ func TestToolsMethodNotAllowed(t *testing.T) {
 
 func TestCreateTaskRunCommandAndFetchLogs(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}, CWD: ""},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "echo hello"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "echo hello"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -433,22 +383,19 @@ func TestCreateTaskRunCommandAndFetchLogs(t *testing.T) {
 
 func TestCreateTaskRejectsDefaultHiddenTool(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_argv",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "echo hello"},
+		"tool": "run_argv",
+		"args": map[string]any{"command": "echo hello"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -465,15 +412,13 @@ func TestCreateTaskApplyPatch(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{Path: root, CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -486,9 +431,8 @@ func TestCreateTaskApplyPatch(t *testing.T) {
 		"*** End Patch",
 	}, "\n")
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "apply_patch",
-		"workspace_id": "ws",
-		"args":         map[string]any{"patch": patch},
+		"tool": "apply_patch",
+		"args": map[string]any{"patch": patch},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -530,22 +474,19 @@ func TestCreateTaskApplyPatch(t *testing.T) {
 
 func TestGetTaskResult(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}, CWD: ""},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "echo hello"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "echo hello"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -602,20 +543,19 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	cfg.Subagents.DefaultProvider = "opencli_chatgpt"
 	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
 	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "subagent_spawn",
-		"workspace_id": "ws",
-		"args":         map[string]any{"name": "reviewer", "instruction": "review code"},
+		"tool": "subagent_spawn",
+		"args": map[string]any{"name": "reviewer", "instruction": "review code"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -648,22 +588,19 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 
 func TestGetTaskResultReadyFalse(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"sleep", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"sleep", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "sleep 1"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "sleep 1"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -690,15 +627,13 @@ func TestGetTaskResultReadyFalse(t *testing.T) {
 
 func TestGetTaskResultNotFound(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -712,22 +647,19 @@ func TestGetTaskResultNotFound(t *testing.T) {
 
 func TestCancelTask(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"sleep", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"sleep", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "sleep 10"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "sleep 10"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -763,24 +695,21 @@ func TestCancelTask(t *testing.T) {
 
 func TestSSEStream(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "echo hello"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "echo hello"},
 	})
 	resp, err := http.Post(srv.URL+"/tasks", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -834,24 +763,21 @@ func TestSSECursorResume(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "sh " + script},
+		"tool": "run_command",
+		"args": map[string]any{"command": "sh " + script},
 	})
 	resp, err := http.Post(srv.URL+"/tasks", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -914,24 +840,21 @@ func TestSSECursorResume(t *testing.T) {
 
 func TestStreamOnCreate(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "echo hello"},
+		"tool": "run_command",
+		"args": map[string]any{"command": "echo hello"},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -967,22 +890,19 @@ func TestApprovalFlow(t *testing.T) {
 	cfg := config.Config{
 		LogStore: dir,
 		Admin:    config.AdminConfig{Enabled: true, BaseURL: "http://admin.test", Approval: config.ApprovalConfig{Enabled: true}},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{dir}, CWD: dir, CommandAllowlist: []string{"rm"}, ApprovalPolicy: config.ApprovalPolicy{Commands: []string{"rm"}}},
-		},
+		Root:     config.Root{Path: dir, CommandAllowlist: []string{"rm"}, ApprovalPolicy: config.ApprovalPolicy{Commands: []string{"rm"}}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"tool":         "run_command",
-		"workspace_id": "ws",
-		"args":         map[string]any{"command": "rm " + target},
+		"tool": "run_command",
+		"args": map[string]any{"command": "rm " + target},
 	})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
@@ -1044,17 +964,16 @@ func TestApprovalEndpointsRedactSensitiveArgsAndEnforceBrowserOrigin(t *testing.
 		DefaultTTLSeconds:  600,
 		MaxSyncWaitSeconds: 30,
 	}
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	cfg.Root = config.Root{Path: t.TempDir()}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
 	req, err := application.Approvals.Create(approval.Request{
-		Tool:        "run_command",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		Reason:      "test",
+		Tool:      "run_command",
+		Requester: "test",
+		Reason:    "test",
 		Args: map[string]any{
 			"command": "echo ok",
 			"token":   "api-secret-token",
@@ -1067,7 +986,7 @@ func TestApprovalEndpointsRedactSensitiveArgsAndEnforceBrowserOrigin(t *testing.
 		t.Fatalf("create approval: %v", err)
 	}
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1171,7 +1090,7 @@ func TestWriteSubmissionResultReturnsApprovalCancellationCode(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.MaxSyncWaitSeconds = 1
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{t.TempDir()}}}
+	cfg.Root = config.Root{Path: t.TempDir()}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
@@ -1195,7 +1114,7 @@ func TestWriteSubmissionResultReturnsApprovalCancellationCode(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	w := httptest.NewRecorder()
 	api.writeSubmissionResult(context.Background(), w, app.Submission{Task: task}, http.StatusOK)
 	if w.Code != http.StatusConflict {
@@ -1215,22 +1134,19 @@ func TestWriteSubmissionResultReturnsApprovalCancellationCode(t *testing.T) {
 
 func TestSessionExecShortCommand(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "cat", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "cat", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
 		"cmd":               "echo hello",
-		"workspace_id":      "ws",
 		"yield_time_ms":     100,
 		"max_output_tokens": 20,
 	})
@@ -1247,22 +1163,19 @@ func TestSessionExecShortCommand(t *testing.T) {
 
 func TestSessionStdinTerminalAndClose(t *testing.T) {
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{ID: "ws", CommandAllowlist: []string{"echo", "cat", "sh"}},
-		},
+		Root: config.Root{CommandAllowlist: []string{"echo", "cat", "sh"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app: %v", err)
 	}
 	defer application.Close()
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	startBody, _ := json.Marshal(map[string]any{
 		"cmd":               "cat",
-		"workspace_id":      "ws",
 		"yield_time_ms":     50,
 		"max_output_tokens": 20,
 	})
@@ -1316,9 +1229,7 @@ func TestUpgradeRequiresUpgradeToken(t *testing.T) {
 	cfg := config.Config{
 		Upgrade: config.Upgrade{Token: "upgrade-secret"},
 		Runtime: config.Runtime{Mode: "http_daemon", Bin: "/tmp/localgate", Bind: "127.0.0.1:18000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root:    config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1326,7 +1237,7 @@ func TestUpgradeRequiresUpgradeToken(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1352,9 +1263,7 @@ func TestUploadRequiresToken(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1362,7 +1271,7 @@ func TestUploadRequiresToken(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1388,9 +1297,7 @@ func TestUploadCreateAndOverwrite(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000/"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1398,12 +1305,12 @@ func TestUploadCreateAndOverwrite(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	target := filepath.Join(root, "inbox", "payload.txt")
-	credentialRes, err := application.InvokeTool(context.Background(), "ws", "create_upload_token", map[string]any{"path": target})
+	credentialRes, err := application.InvokeTool(context.Background(), "create_upload_token", map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("create_upload_token: %v", err)
 	}
@@ -1468,9 +1375,7 @@ func TestUploadRejectsMissingFile(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1478,12 +1383,12 @@ func TestUploadRejectsMissingFile(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
 	target := filepath.Join(root, "inbox", "payload.txt")
-	credentialRes, err := application.InvokeTool(context.Background(), "ws", "create_upload_token", map[string]any{"path": target})
+	credentialRes, err := application.InvokeTool(context.Background(), "create_upload_token", map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("create_upload_token: %v", err)
 	}
@@ -1507,9 +1412,7 @@ func TestUploadRejectsExpiredToken(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1517,11 +1420,11 @@ func TestUploadRejectsExpiredToken(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
-	grant, err := application.Uploads.Issue("ws", filepath.Join(root, "expired.txt"), time.Millisecond)
+	grant, err := application.Uploads.Issue(filepath.Join(root, "expired.txt"), time.Millisecond)
 	if err != nil {
 		t.Fatalf("issue upload token: %v", err)
 	}
@@ -1550,9 +1453,7 @@ func TestDownloadRequiresToken(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1560,7 +1461,7 @@ func TestDownloadRequiresToken(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1576,9 +1477,7 @@ func TestDownloadFileSuccessAndRepeatable(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000/"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1586,7 +1485,7 @@ func TestDownloadFileSuccessAndRepeatable(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1598,7 +1497,7 @@ func TestDownloadFileSuccessAndRepeatable(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 
-	credentialRes, err := application.InvokeTool(context.Background(), "ws", "create_download_token", map[string]any{"path": target})
+	credentialRes, err := application.InvokeTool(context.Background(), "create_download_token", map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("create_download_token: %v", err)
 	}
@@ -1641,9 +1540,7 @@ func TestDownloadRejectsExpiredToken(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1651,7 +1548,7 @@ func TestDownloadRejectsExpiredToken(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1660,7 +1557,7 @@ func TestDownloadRejectsExpiredToken(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 
-	grant, err := application.Downloads.Issue("ws", target, time.Millisecond)
+	grant, err := application.Downloads.Issue(target, time.Millisecond)
 	if err != nil {
 		t.Fatalf("issue download token: %v", err)
 	}
@@ -1678,9 +1575,7 @@ func TestDownloadRejectsMissingFileAfterGrant(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{
 		HTTP: config.HTTP{BaseURL: "http://127.0.0.1:8000"},
-		Workspaces: []config.Workspace{
-			{ID: "ws", Roots: []string{root}, CWD: root},
-		},
+		Root: config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1688,7 +1583,7 @@ func TestDownloadRejectsMissingFileAfterGrant(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1696,7 +1591,7 @@ func TestDownloadRejectsMissingFileAfterGrant(t *testing.T) {
 	if err := os.WriteFile(target, []byte("payload"), 0o644); err != nil {
 		t.Fatalf("write target: %v", err)
 	}
-	grant, err := application.Downloads.Issue("ws", target, time.Minute)
+	grant, err := application.Downloads.Issue(target, time.Minute)
 	if err != nil {
 		t.Fatalf("issue download token: %v", err)
 	}
@@ -1729,9 +1624,7 @@ func TestUpgradeCreateAndGetStatus(t *testing.T) {
 			Bin:  target,
 			Bind: "127.0.0.1:18000",
 		},
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1739,7 +1632,7 @@ func TestUpgradeCreateAndGetStatus(t *testing.T) {
 	}
 	defer application.Close()
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -1810,9 +1703,7 @@ func TestUpgradeConflictWhenActiveUpgradeExists(t *testing.T) {
 			Bin:  target,
 			Bind: "127.0.0.1:18000",
 		},
-		Workspaces: []config.Workspace{
-			{ID: "ws"},
-		},
+		Root: config.Root{},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -1823,7 +1714,7 @@ func TestUpgradeConflictWhenActiveUpgradeExists(t *testing.T) {
 		t.Fatalf("seed active upgrade: %v", err)
 	}
 
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 

@@ -26,10 +26,9 @@ const (
 )
 
 type mcpRuntime struct {
-	api         *API
-	workspaceID string
-	registry    *mcpruntime.Registry
-	dispatcher  *mcpruntime.Dispatcher
+	api        *API
+	registry   *mcpruntime.Registry
+	dispatcher *mcpruntime.Dispatcher
 }
 
 type mcpRuntimeResponse struct {
@@ -50,15 +49,11 @@ func newMCPRuntime(api *API) (*mcpRuntime, error) {
 	if api == nil || api.App == nil {
 		return nil, errors.New("application is not initialized")
 	}
-	workspace, ok := api.App.Workspaces[api.DefaultWSID]
-	if !ok {
-		return nil, errors.New("default workspace is not configured")
-	}
 	if api.App.StaticService == nil || api.App.DeploymentManager == nil {
 		return nil, errors.New("deployment service is not configured")
 	}
 	registry := mcpruntime.NewRegistry()
-	if err := registry.Register(mcptools.NewDeployToolWithManager(api.App.DeploymentManager, workspace)); err != nil {
+	if err := registry.Register(mcptools.NewDeployToolWithManager(api.App.DeploymentManager, api.App.Root)); err != nil {
 		return nil, err
 	}
 	if err := registry.Register(mcptools.NewDeleteDeploymentToolWithManager(api.App.DeploymentManager)); err != nil {
@@ -78,10 +73,9 @@ func newMCPRuntime(api *API) (*mcpRuntime, error) {
 		}
 	}
 	return &mcpRuntime{
-		api:         api,
-		workspaceID: api.DefaultWSID,
-		registry:    registry,
-		dispatcher:  mcpruntime.NewDispatcher(registry),
+		api:        api,
+		registry:   registry,
+		dispatcher: mcpruntime.NewDispatcher(registry),
 	}, nil
 }
 
@@ -155,7 +149,6 @@ func (rt *mcpRuntime) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 	submission, err := rt.api.App.SubmitToolTaskWithMeta(invocation.Meta{
 		Transport:       invocation.TransportMCPRuntime,
-		WorkspaceID:     rt.workspaceID,
 		Requester:       request.Requester,
 		MCPSessionID:    request.SessionID,
 		SessionMode:     request.SessionMode,

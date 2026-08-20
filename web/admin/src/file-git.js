@@ -1,13 +1,11 @@
-export function fileGitContextKey(workspaceID, rootID, path) {
-  return `${workspaceID || ""}\u0000${rootID || ""}\u0000${path || ""}`;
+export function fileGitContextKey(path) {
+  return String(path || "");
 }
 
 export class FileGitState {
   constructor() {
     this.open = false;
     this.contextKey = "";
-    this.workspaceID = "";
-    this.rootID = "";
     this.path = "";
     this.loading = false;
     this.loadingDiff = false;
@@ -16,8 +14,8 @@ export class FileGitState {
     this.error = "";
   }
 
-  setContext(workspaceID, rootID, path) {
-    const key = fileGitContextKey(workspaceID, rootID, path);
+  setContext(path) {
+    const key = fileGitContextKey(path);
     if (key !== this.contextKey) {
       this.contextKey = key;
       this.status = null;
@@ -26,8 +24,6 @@ export class FileGitState {
       this.loading = false;
       this.loadingDiff = false;
     }
-    this.workspaceID = workspaceID || "";
-    this.rootID = rootID || "";
     this.path = path || "";
     return this;
   }

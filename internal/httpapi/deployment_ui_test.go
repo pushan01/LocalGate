@@ -20,14 +20,14 @@ func newDeploymentOverviewTestServer(t *testing.T) (*app.App, *http.ServeMux, st
 		HTTP:        config.HTTP{BaseURL: "https://control.example.test/localgate"},
 		Admin:       config.AdminConfig{Enabled: true, BaseURL: "https://admin.example.test/review", Approval: config.DefaultApprovalConfig()},
 		Deployments: config.DeploymentsConfig{PublicBaseURL: "https://apps.example.test", PrivateBaseURL: "https://private.apps.example.test", DefaultAccess: "public"},
-		Workspaces:  []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot, CommandAllowlist: []string{"echo"}}},
+		Root:        config.Root{Path: workspaceRoot, CommandAllowlist: []string{"echo"}},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	return application, mux, workspaceRoot

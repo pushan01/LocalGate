@@ -20,7 +20,6 @@ func TestServiceIssueLinkAuthorizeExpireAndRevoke(t *testing.T) {
 	}
 
 	grant, err := svc.Issue(Grant{
-		WorkspaceID:     "ws",
 		Path:            "/workspace/report.pdf",
 		FileName:        "report.pdf",
 		MIMEType:        "application/pdf",
@@ -64,12 +63,11 @@ func TestServiceIssueLinkAuthorizeExpireAndRevoke(t *testing.T) {
 
 	now = now.Add(time.Minute)
 	grant2, err := svc.Issue(Grant{
-		WorkspaceID: "ws",
-		Path:        "/workspace/other.txt",
-		FileName:    "other.txt",
-		MIMEType:    "text/plain",
-		Size:        1,
-		SHA256:      strings.Repeat("b", 64),
+		Path:     "/workspace/other.txt",
+		FileName: "other.txt",
+		MIMEType: "text/plain",
+		Size:     1,
+		SHA256:   strings.Repeat("b", 64),
 	}, time.Minute)
 	if err != nil {
 		t.Fatalf("Issue second grant: %v", err)
@@ -95,12 +93,11 @@ func TestServiceRejectsInvalidTTLAndMetadata(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	base := Grant{
-		WorkspaceID: "ws",
-		Path:        "/workspace/file.txt",
-		FileName:    "file.txt",
-		MIMEType:    "text/plain",
-		Size:        1,
-		SHA256:      strings.Repeat("c", 64),
+		Path:     "/workspace/file.txt",
+		FileName: "file.txt",
+		MIMEType: "text/plain",
+		Size:     1,
+		SHA256:   strings.Repeat("c", 64),
 	}
 	if _, err := svc.Issue(base, 3*time.Minute); err == nil {
 		t.Fatal("expected oversized TTL to fail")

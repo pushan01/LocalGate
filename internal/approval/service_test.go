@@ -16,11 +16,10 @@ func TestApprovalApproveFlow(t *testing.T) {
 	store := NewStore(t.TempDir())
 	svc := NewService(store)
 	req, err := svc.Create(Request{
-		Tool:        "run_command",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		Reason:      "command matched approval policy",
-		Args:        map[string]any{"command": "rm file.txt"},
+		Tool:      "run_command",
+		Requester: "test",
+		Reason:    "command matched approval policy",
+		Args:      map[string]any{"command": "rm file.txt"},
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -29,13 +28,12 @@ func TestApprovalApproveFlow(t *testing.T) {
 		t.Fatalf("bind task: %v", err)
 	}
 	got, err := svc.ApproveBound(req.ID, Actor{ID: "alice", AuthMethod: "bearer"}, Binding{
-		ApprovalID:  req.ID,
-		TaskID:      "task-1",
-		WorkspaceID: req.WorkspaceID,
-		Requester:   req.Requester,
-		Tool:        req.Tool,
-		ArgsDigest:  req.ArgsDigest,
-		TaskStatus:  "awaiting_approval",
+		ApprovalID: req.ID,
+		TaskID:     "task-1",
+		Requester:  req.Requester,
+		Tool:       req.Tool,
+		ArgsDigest: req.ArgsDigest,
+		TaskStatus: "awaiting_approval",
 	})
 	if err != nil {
 		t.Fatalf("approve: %v", err)
@@ -55,7 +53,6 @@ func TestApproveBoundRejectsBindingMismatches(t *testing.T) {
 	}{
 		{name: "approval id", mutate: func(binding *Binding) { binding.ApprovalID = "other" }},
 		{name: "task id", mutate: func(binding *Binding) { binding.TaskID = "other" }},
-		{name: "workspace", mutate: func(binding *Binding) { binding.WorkspaceID = "other" }},
 		{name: "requester", mutate: func(binding *Binding) { binding.Requester = "other" }},
 		{name: "tool", mutate: func(binding *Binding) { binding.Tool = "write_file" }},
 		{name: "args digest", mutate: func(binding *Binding) { binding.ArgsDigest = "other" }},
@@ -66,11 +63,10 @@ func TestApproveBoundRejectsBindingMismatches(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			svc := NewService(NewStore(t.TempDir()))
 			req, err := svc.Create(Request{
-				Tool:        "run_command",
-				WorkspaceID: "ws",
-				Requester:   "requester",
-				Reason:      "test",
-				Args:        map[string]any{"command": "echo ok"},
+				Tool:      "run_command",
+				Requester: "requester",
+				Reason:    "test",
+				Args:      map[string]any{"command": "echo ok"},
 			})
 			if err != nil {
 				t.Fatalf("create approval: %v", err)
@@ -79,13 +75,12 @@ func TestApproveBoundRejectsBindingMismatches(t *testing.T) {
 				t.Fatalf("bind task: %v", err)
 			}
 			binding := Binding{
-				ApprovalID:  req.ID,
-				TaskID:      "task-1",
-				WorkspaceID: req.WorkspaceID,
-				Requester:   req.Requester,
-				Tool:        req.Tool,
-				ArgsDigest:  req.ArgsDigest,
-				TaskStatus:  "awaiting_approval",
+				ApprovalID: req.ID,
+				TaskID:     "task-1",
+				Requester:  req.Requester,
+				Tool:       req.Tool,
+				ArgsDigest: req.ArgsDigest,
+				TaskStatus: "awaiting_approval",
 			}
 			test.mutate(&binding)
 			if _, err := svc.ApproveBound(req.ID, Actor{ID: "reviewer", AuthMethod: "bearer"}, binding); !errors.Is(err, ErrApprovalBindingMismatch) {
@@ -113,10 +108,9 @@ func TestApprovalRejectFlow(t *testing.T) {
 	store := NewStore(t.TempDir())
 	svc := NewService(store)
 	req, err := svc.Create(Request{
-		Tool:        "run_command",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		Reason:      "command matched approval policy",
+		Tool:      "run_command",
+		Requester: "test",
+		Reason:    "command matched approval policy",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -133,12 +127,10 @@ func TestApprovalRejectFlow(t *testing.T) {
 func TestRequiresApprovalPolicyFromConfig(t *testing.T) {
 	store := NewStore(t.TempDir())
 	svc := NewService(store)
-	ws := config.Workspace{
-		ID: "ws",
-		ApprovalPolicy: config.ApprovalPolicy{
-			Commands:   []string{"rm", "curl"},
-			WritePaths: []string{"/secret"},
-		},
+	ws := config.Root{ApprovalPolicy: config.ApprovalPolicy{
+		Commands:   []string{"rm", "curl"},
+		WritePaths: []string{"/secret"},
+	},
 	}
 	need, reason := svc.RequiresApproval("run_command", ws, map[string]any{"command": "rm -rf /"})
 	if !need || reason == "" {
@@ -154,10 +146,9 @@ func TestApprovalRedactsSensitiveArgsAndAuditDetails(t *testing.T) {
 	store := NewStore(t.TempDir())
 	svc := NewService(store)
 	req, err := svc.Create(Request{
-		Tool:        "run_command",
-		WorkspaceID: "ws",
-		Requester:   "test",
-		Reason:      "test",
+		Tool:      "run_command",
+		Requester: "test",
+		Reason:    "test",
 		Args: map[string]any{
 			"command": "echo ok",
 			"token":   "top-secret-token",
@@ -192,9 +183,8 @@ func TestApprovalRedactsSensitiveArgsAndAuditDetails(t *testing.T) {
 	}
 
 	if _, err := svc.RecordAudit(AuditRecord{
-		Action:      "execution_started",
-		Tool:        "run_command",
-		WorkspaceID: "ws",
+		Action: "execution_started",
+		Tool:   "run_command",
 		Details: map[string]any{
 			"cookie": "top-secret-cookie",
 			"safe":   "visible",
@@ -228,7 +218,7 @@ func TestCancelExpireAndStartupReconcileWriteAudit(t *testing.T) {
 	store := NewStore(t.TempDir())
 	svc := NewServiceWithOptions(store, Options{TTL: time.Minute})
 
-	cancelReq, err := svc.Create(Request{Tool: "write_file", WorkspaceID: "ws", Reason: "cancel"})
+	cancelReq, err := svc.Create(Request{Tool: "write_file", Reason: "cancel"})
 	if err != nil {
 		t.Fatalf("create cancel approval: %v", err)
 	}
@@ -236,7 +226,7 @@ func TestCancelExpireAndStartupReconcileWriteAudit(t *testing.T) {
 		t.Fatalf("cancel approval: %v", err)
 	}
 
-	expireReq, err := svc.Create(Request{Tool: "write_file", WorkspaceID: "ws", Reason: "expire"})
+	expireReq, err := svc.Create(Request{Tool: "write_file", Reason: "expire"})
 	if err != nil {
 		t.Fatalf("create expire approval: %v", err)
 	}
@@ -244,7 +234,7 @@ func TestCancelExpireAndStartupReconcileWriteAudit(t *testing.T) {
 		t.Fatalf("expire approval: %v", err)
 	}
 
-	restartReq, err := svc.Create(Request{Tool: "run_command", WorkspaceID: "ws", Reason: "restart"})
+	restartReq, err := svc.Create(Request{Tool: "run_command", Reason: "restart"})
 	if err != nil {
 		t.Fatalf("create restart approval: %v", err)
 	}
@@ -275,7 +265,7 @@ func TestApprovalObserverReceivesBoundAndResolvedRequests(t *testing.T) {
 	svc.SetObserver(func(req Request) {
 		observed = append(observed, req.Status)
 	})
-	req, err := svc.Create(Request{Tool: "run_command", WorkspaceID: "ws", Requester: "tester"})
+	req, err := svc.Create(Request{Tool: "run_command", Requester: "tester"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

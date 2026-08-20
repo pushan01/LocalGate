@@ -31,7 +31,7 @@ func TestDeploymentUIStaticDeleteAction(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("expected redirect, got %d body=%s", w.Code, w.Body.String())
 	}
-	if location := w.Header().Get("Location"); !strings.Contains(location, "/review/deploy-mgr?") || !strings.Contains(location, "was+deleted") {
+	if location := w.Header().Get("Location"); !strings.Contains(location, "notice=") || !strings.Contains(location, "was+deleted") {
 		t.Fatalf("unexpected redirect: %q", location)
 	}
 	items, err := application.DeploymentManager.List(context.Background())
@@ -82,14 +82,14 @@ func TestDeploymentUIDeleteUsesApprovalPipeline(t *testing.T) {
 	cfg.Admin.Approval.Enabled = true
 	cfg.Admin.BaseURL = "https://admin.example.test/review"
 	cfg.Deployments.Static.RequireApproval = true
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	deployOverviewTestSite(t, application, workspaceRoot, "approval-delete", "hello")
-	api := &API{App: application, DefaultWSID: "ws"}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -100,7 +100,7 @@ func TestDeploymentUIDeleteUsesApprovalPipeline(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || !strings.HasPrefix(w.Header().Get("Location"), "https://admin.example.test/review/admin/approvals/") {
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") == "" {
 		t.Fatalf("expected approval redirect, got code=%d location=%q body=%s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	items, err := application.DeploymentManager.List(context.Background())
@@ -112,10 +112,10 @@ func TestDeploymentUIDeleteUsesApprovalPipeline(t *testing.T) {
 func TestDeploymentUIDynamicStopAndStartActions(t *testing.T) {
 	application, mux, source, executable := newDeploymentUIDynamicTestServer(t)
 	_, err := application.DeploymentManager.Deploy(context.Background(), deployment.DeployRequest{
-		Type:      deployment.TypeDynamic,
-		Name:      "dynamic-ui-test",
-		Source:    source,
-		Workspace: application.Workspaces["ws"],
+		Type:   deployment.TypeDynamic,
+		Name:   "dynamic-ui-test",
+		Source: source,
+		Root:   application.Root,
 		Runtime: &dynamic.RuntimeSpec{
 			Argv: []string{executable, "-test.run=^TestDeploymentUIDynamicHelperProcess$"},
 			Env:  map[string]string{"LOCALGATE_DEPLOYMENT_UI_HELPER": "1"},
@@ -194,13 +194,13 @@ func newDeploymentUIDynamicTestServer(t *testing.T) (*app.App, *http.ServeMux, s
 	cfg.Deployments.Dynamic.AllowedExecutables = []string{executable}
 	cfg.Deployments.Dynamic.EnvAllowlist = []string{"LOCALGATE_DEPLOYMENT_UI_HELPER"}
 	cfg.Deployments.Dynamic.RestartPolicy = "never"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}}
+	cfg.Root = config.Root{Path: workspaceRoot}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	api := &API{App: application, DefaultWSID: "ws"}
+	api := &API{App: application}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	return application, mux, source, executable

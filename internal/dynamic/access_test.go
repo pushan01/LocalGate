@@ -22,7 +22,7 @@ func TestDynamicDeploymentAccessControlsDomainRouting(t *testing.T) {
 	}
 	service, err := NewService(managedRoot, config.DynamicHosting{
 		Enabled: true, DomainSuffix: "app", PublicBaseURL: "https://public.test", PrivateBaseURL: "https://private.test", DefaultAccess: "private",
-	}, nil, false)
+	}, config.Root{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

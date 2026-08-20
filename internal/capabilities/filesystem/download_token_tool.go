@@ -18,12 +18,12 @@ import (
 const downloadTokenTTL = 10 * time.Minute
 
 type createDownloadTokenTool struct {
-	ws        config.Workspace
+	ws        config.Root
 	baseURL   string
 	downloads *download.Service
 }
 
-func NewCreateDownloadTokenTool(ws config.Workspace, baseURL string, downloads *download.Service) core.Tool {
+func NewCreateDownloadTokenTool(ws config.Root, baseURL string, downloads *download.Service) core.Tool {
 	return createDownloadTokenTool{
 		ws:        ws,
 		baseURL:   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -74,7 +74,7 @@ func (t createDownloadTokenTool) Execute(ctx context.Context, ic core.InvokeCont
 		return nil, errors.New("path must be a file")
 	}
 
-	grant, err := t.downloads.Issue(t.ws.ID, dec.Path, downloadTokenTTL)
+	grant, err := t.downloads.Issue(dec.Path, downloadTokenTTL)
 	if err != nil {
 		return nil, err
 	}

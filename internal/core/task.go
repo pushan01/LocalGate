@@ -35,7 +35,6 @@ type Task struct {
 	RequestID       string `json:"request_id,omitempty"`
 
 	Requester   string    `json:"requester,omitempty"`
-	WorkspaceID string    `json:"workspace_id,omitempty"`
 	Tool        string    `json:"tool,omitempty"`
 	ArgsDigest  string    `json:"args_digest,omitempty"`
 	ApprovalID  string    `json:"approval_id,omitempty"`

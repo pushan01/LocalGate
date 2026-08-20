@@ -1,5 +1,7 @@
 # LocalGate 执行计划（Execution Plan）
 
+> 历史设计文档：早期步骤中的 `workspace`、`workspaces[]` 和 `workspace_id` 已被废弃。现行 LocalGate 采用单 Root 模型：一个实例只配置一个 `root`，需要多个安全域时运行多个实例。
+
 目标：把 LocalGate 按“可交付的小步快跑”拆成多个可实现步骤，每一步尽量控制在 **500–1000 行代码**的变更量级，并且每步都能跑通、可验证、可回滚。
 
 说明：

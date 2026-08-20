@@ -114,17 +114,13 @@ func (m *SessionManager) Start(id string) error {
 	return nil
 }
 
-func (m *SessionManager) SubscribeForWorkspace(id, workspaceID string) (<-chan struct{}, func(), error) {
+func (m *SessionManager) Subscribe(id string) (<-chan struct{}, func(), error) {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
 	st, ok := m.sessions[id]
 	if !ok {
 		m.mu.Unlock()
 		return nil, nil, ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		m.mu.Unlock()
-		return nil, nil, err
 	}
 	watcher := make(chan struct{}, 1)
 	if st.watchers == nil {
@@ -160,27 +156,8 @@ func (m *SessionManager) Get(id string) (Session, error) {
 	return st.session, nil
 }
 
-func (m *SessionManager) GetForWorkspace(id, workspaceID string) (Session, error) {
-	_ = m.Sweep(time.Now().UTC())
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st, ok := m.sessions[id]
-	if !ok {
-		return Session{}, ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		return Session{}, err
-	}
-	return st.session, nil
-}
-
 func (m *SessionManager) Read(id string, from int, maxItems int) (SessionReadResult, error) {
 	_, read, err := m.ReadSnapshot(id, from, maxItems)
-	return read, err
-}
-
-func (m *SessionManager) ReadForWorkspace(id, workspaceID string, from int, maxItems int) (SessionReadResult, error) {
-	_, read, err := m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
 	return read, err
 }
 
@@ -194,23 +171,6 @@ func (m *SessionManager) ReadSnapshot(id string, from int, maxItems int) (Sessio
 	st, ok := m.sessions[id]
 	if !ok {
 		return Session{}, SessionReadResult{}, ErrSessionNotFound
-	}
-	return st.session, readSessionState(st, from, maxItems), nil
-}
-
-func (m *SessionManager) ReadSnapshotForWorkspace(id, workspaceID string, from int, maxItems int) (Session, SessionReadResult, error) {
-	_ = m.Sweep(time.Now().UTC())
-	if from < 0 {
-		return Session{}, SessionReadResult{}, ErrSessionCursorInvalid
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	st, ok := m.sessions[id]
-	if !ok {
-		return Session{}, SessionReadResult{}, ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		return Session{}, SessionReadResult{}, err
 	}
 	return st.session, readSessionState(st, from, maxItems), nil
 }
@@ -266,14 +226,14 @@ func (m *SessionManager) ReadLatest(id string, maxItems int) (SessionReadResult,
 	return readSessionState(st, st.session.LastOffset, maxItems), nil
 }
 
-func (m *SessionManager) WaitReadForWorkspace(ctx context.Context, id, workspaceID string, from, maxItems int, wait time.Duration) (Session, SessionReadResult, error) {
+func (m *SessionManager) WaitRead(ctx context.Context, id string, from, maxItems int, wait time.Duration) (Session, SessionReadResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if wait <= 0 {
-		return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+		return m.ReadSnapshot(id, from, maxItems)
 	}
-	updates, cancel, err := m.SubscribeForWorkspace(id, workspaceID)
+	updates, cancel, err := m.Subscribe(id)
 	if err != nil {
 		return Session{}, SessionReadResult{}, err
 	}
@@ -281,7 +241,7 @@ func (m *SessionManager) WaitReadForWorkspace(ctx context.Context, id, workspace
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
-		session, read, readErr := m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+		session, read, readErr := m.ReadSnapshot(id, from, maxItems)
 		if readErr != nil {
 			return Session{}, SessionReadResult{}, readErr
 		}
@@ -292,10 +252,10 @@ func (m *SessionManager) WaitReadForWorkspace(ctx context.Context, id, workspace
 		case <-ctx.Done():
 			return Session{}, SessionReadResult{}, ctx.Err()
 		case <-timer.C:
-			return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+			return m.ReadSnapshot(id, from, maxItems)
 		case _, open := <-updates:
 			if !open {
-				return m.ReadSnapshotForWorkspace(id, workspaceID, from, maxItems)
+				return m.ReadSnapshot(id, from, maxItems)
 			}
 		}
 	}
@@ -358,14 +318,10 @@ func (m *SessionManager) SetOutputError(id, stream string, err error) error {
 }
 
 func (m *SessionManager) WriteStdin(id string, chars string) error {
-	return m.writeStdin(id, "", chars)
+	return m.writeStdin(id, chars)
 }
 
-func (m *SessionManager) WriteStdinForWorkspace(id, workspaceID, chars string) error {
-	return m.writeStdin(id, workspaceID, chars)
-}
-
-func (m *SessionManager) WriteStdinForWorkspaceContext(ctx context.Context, id, workspaceID, chars string) error {
+func (m *SessionManager) WriteStdinContext(ctx context.Context, id, chars string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -373,11 +329,11 @@ func (m *SessionManager) WriteStdinForWorkspaceContext(ctx context.Context, id, 
 		return err
 	}
 	if chars == "" {
-		return m.writeStdin(id, workspaceID, chars)
+		return m.writeStdin(id, chars)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- m.writeStdin(id, workspaceID, chars)
+		done <- m.writeStdin(id, chars)
 	}()
 	select {
 	case err := <-done:
@@ -394,7 +350,7 @@ func (m *SessionManager) WriteStdinForWorkspaceContext(ctx context.Context, id, 
 		// possible. Closing the session is safer than leaving a blocked or
 		// protocol-corrupted interactive process behind, and it unblocks
 		// pipe/PTY writes.
-		_, _ = m.CloseForWorkspace(id, workspaceID)
+		_, _ = m.Close(id)
 		select {
 		case <-done:
 		case <-time.After(time.Second):
@@ -403,17 +359,13 @@ func (m *SessionManager) WriteStdinForWorkspaceContext(ctx context.Context, id, 
 	}
 }
 
-func (m *SessionManager) writeStdin(id, workspaceID, chars string) error {
+func (m *SessionManager) writeStdin(id, chars string) error {
 	_ = m.Sweep(time.Now().UTC())
 	m.mu.Lock()
 	st, ok := m.sessions[id]
 	if !ok {
 		m.mu.Unlock()
 		return ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		m.mu.Unlock()
-		return err
 	}
 	if chars == "" {
 		m.mu.Unlock()
@@ -433,10 +385,6 @@ func (m *SessionManager) writeStdin(id, workspaceID, chars string) error {
 	if !ok || current != st {
 		m.mu.Unlock()
 		return ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		m.mu.Unlock()
-		return err
 	}
 	if isEnded(st.session.Status) {
 		m.mu.Unlock()
@@ -510,32 +458,6 @@ func (m *SessionManager) Close(id string) (Session, error) {
 	return out, nil
 }
 
-func (m *SessionManager) CloseForWorkspace(id, workspaceID string) (Session, error) {
-	_ = m.Sweep(time.Now().UTC())
-	m.mu.Lock()
-	st, ok := m.sessions[id]
-	if !ok {
-		m.mu.Unlock()
-		return Session{}, ErrSessionNotFound
-	}
-	if err := authorizeSessionWorkspace(st.session, workspaceID); err != nil {
-		m.mu.Unlock()
-		return Session{}, err
-	}
-	closeFn := st.ctrl.Close
-	st.session.Status = SessionClosed
-	now := time.Now().UTC()
-	st.session.EndedAt = now
-	st.session.LastActiveAt = now
-	out := st.session
-	notifySessionWatchersLocked(st)
-	m.mu.Unlock()
-	if closeFn != nil {
-		return out, closeFn()
-	}
-	return out, nil
-}
-
 func (m *SessionManager) CloseAll() error {
 	if m == nil {
 		return nil
@@ -563,13 +485,6 @@ func (m *SessionManager) CloseAll() error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func authorizeSessionWorkspace(session Session, workspaceID string) error {
-	if workspaceID != "" && session.WorkspaceID != workspaceID {
-		return ErrSessionWorkspaceMismatch
-	}
-	return nil
 }
 
 func (m *SessionManager) Sweep(now time.Time) SessionSweepResult {

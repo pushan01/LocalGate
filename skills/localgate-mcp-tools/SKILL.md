@@ -29,72 +29,60 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 
 另外，LocalGate 还有一种单独的**工具 HTTP 化模式**。在该模式下，MCP 只保留 `get_startup_instructions`、`get_skill`、`get_temporary_access_token`、`get_tool_schema` 四个 bootstrap 工具，其余业务工具改为通过 HTTP 直调。`get_skill` 用于按 startup 的 built-in skill 索引加载复杂跨工具工作流。
 
-## 默认可见工具
+## 普通 MCP 模式：稳定 9 工具核心面
 
-这些工具在 LocalGate 中默认可见：
+普通 MCP 不再把完整 Registry 平铺到 `tools/list`。顶层只保留：
 
-### 文件工具
-
+- `get_startup_instructions`
+- `get_skill`
+- `get_tool_schema`
+- `invoke_tool`
 - `read_file`
-- `write_file`
-- `upload_file`
 - `apply_patch`
-
-其中 `upload_file` 用于宿主直接传文件对象而不是本地路径的场景。它读取 `file.download_url`，把文件保存到 `path` 指定的 workspace 绝对路径。
-
-如果 MCP 宿主兼容 ChatGPT Apps 文件协议，`upload_file` 会通过 `_meta.openai/fileParams=["file"]` 声明 `file` 是文件参数。
-
-### 一次性命令工具
-
 - `run_command`
+- `upload_file`
+- `export_file`
 
-### Session 工具
+其中：
 
-- `exec_command`
-- `write_stdin`
-- `read_thread_terminal`
-- `close_session`
+- `read_file`、`apply_patch`、`run_command` 是高频基础操作，直接调用。
+- `upload_file` 依赖 MCP Host 的文件参数注入元数据；不要藏到通用调用后再猜文件对象。
+- `export_file` 需要返回 MCP `resource_link` 等原生资源语义，因此也保持直接暴露。
+- `get_startup_instructions` / `get_skill` / `get_tool_schema` / `invoke_tool` 共同构成渐进能力协议。
 
-### Subagent 工具（启用 `subagents` 时）
+普通领域工具的标准流程是：
 
-- `subagent_spawn`
-- `subagent_send`
-- `subagent_poll`
-- `subagent_wait`
-- `subagent_get`
-- `subagent_list`
-- `subagent_archive`
-- `subagent_close`
+1. 调用 `get_startup_instructions`，从 built-in skill 索引判断能力域。
+2. 用 `get_skill` 加载匹配的工作流说明。
+3. 对目标工具调用 `get_tool_schema`，获取运行实例中的精确参数契约。
+4. 调用 `invoke_tool`：
 
-`subagent_spawn` 返回稳定的 `sg_*` ID，并在首轮消息成功提交后立即返回 `busy`，不会等待 assistant 完整回复。之后用 `subagent_poll` 非阻塞检查，或在确实需要结果时用 `subagent_wait`；状态到 `ready` 后再使用 `subagent_send` 提交下一轮。`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，旧客户端只会 get 也能收敛 stale busy；需要纯本地快照时显式传 `refresh=false`。对同一个 delegated role 或对话持续复用这个 ID，不要每轮重新 spawn。Provider conversation ID / URL 只是诊断信息；`subagent_close` 只关闭 LocalGate 逻辑身份，不删除 Provider 历史。需要彻底移除本地 `sg_*`、同时保留远端 conversation 时使用 `subagent_archive`：它会先确认当前 turn 已完成；配置了 `archive_project` 时先移动并验证 conversation，未配置时不移动远端 conversation，直接删除本地映射。
+```json
+{
+  "tool": "rollback_deployment",
+  "arguments": {
+    "type": "dynamic",
+    "name": "demo",
+    "release_id": "release_xxx"
+  }
+}
+```
 
-### 任务管理工具
+`invoke_tool` 只是 transport dispatch。审批规则、Task 的 `tool` 字段、审计、root 限制和真实执行语义都按 `rollback_deployment` 这样的目标工具处理，而不是按 `invoke_tool` 处理。
 
-- `task_status`
-- `task_logs`
-- `task_cancel`
-- `wait_task_finish`
-- `task_result`
+### 渐进能力域
 
-### 部署工具
+- `localgate-filesystem`：`write_file`、`list_directory`、`search_files`、`run_argv`。
+- `localgate-task-session`：`exec_command`、`write_stdin`、`read_thread_terminal`、`close_session`，以及 `task_status`、`task_logs`、`task_cancel`、`wait_task_finish`、`task_result`。
+- `localgate-file-transfer`：临时 upload/download token 流程；`upload_file` / `export_file` 本身仍是直接 MCP 工具。
+- `localgate-deployment`：`deploy_tool`、list/get/logs/start/stop/restart/access/releases/rollback/delete 等部署能力。
+- `localgate-subagents`：启用后提供 `subagent_spawn` / send / poll / wait / get / list / archive / close / artifact_get。
+- `localgate-notification`：显式用户请求时使用 `send_notification`。
+- `localgate-mcp-relay`：以 `server__tool` 命名的下游 MCP capability，通过 `invoke_tool` 调用，不再铺平到顶层 MCP。
 
-- `deploy_tool`
-- `list_deployments`
-- `delete_deployment`
+`subagent_spawn` 返回稳定的 `sg_*` ID，并在首轮消息成功提交后立即返回 `busy`，不会等待 assistant 完整回复。之后用 `subagent_poll` 非阻塞检查，或在确实需要结果时用 `subagent_wait`；状态到 `ready` 后再使用 `subagent_send`。这些调用在普通 MCP 模式下都先按 `localgate-subagents` 的说明取 schema，再经 `invoke_tool` 执行。
 
-`deploy_tool` 支持 `type=static` 和 `type=dynamic`。动态部署必须提供 `runtime.argv`，不经过 shell；应用应监听 LocalGate 注入的 `HOST` 和 `PORT`。
-
-动态托管启用时还会出现：
-
-- `get_deployment`
-- `restart_deployment`
-- `get_deployment_logs`
-- `stop_deployment`
-- `start_deployment`
-- `list_deployment_releases`
-- `rollback_deployment`
-
-动态应用由 HTTP LocalGate 进程监督。MCP stdio 进程不会重复接管 supervisor，应通过 HTTP daemon 的 MCP 或 REST 入口执行动态生命周期操作。`list_deployment_releases` 用于查看保留版本；`rollback_deployment` 会先启动并健康检查目标 release，再原子切换 active target。rollback 属于高风险写操作。
+`deploy_tool` 支持 `type=static` 和 `type=dynamic`。动态部署必须提供 `runtime.argv`，不经过 shell；应用应监听 LocalGate 注入的 `HOST` 和 `PORT`。具体生命周期顺序以 `localgate-deployment` Builtin Skill 为准。
 
 ## 工具 HTTP 模式下的最小工具面
 
@@ -135,7 +123,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 
 ## 默认隐藏工具
 
-这些工具在内部存在，但默认不会出现在工具发现接口里：
+这些工具在 Registry 中存在，但默认不会作为顶层 MCP 工具出现：
 
 - `list_directory`
 - `search_files`
@@ -149,11 +137,11 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 - `run_argv` 在常见模型驱动流程里与 `run_command` 高度重叠
 - `create_upload_token` 和 `create_download_token` 属于跨 sandbox / 跨机器传输的专用能力，不应默认干扰常规工具选择
 
-除非 workspace 显式重新暴露它们，否则不要把它们当作默认可用工具来推荐。
+普通 MCP 模式下，不要因为它们没有出现在 `tools/list` 就判断能力不存在：先加载 `localgate-filesystem` 或 `localgate-file-transfer`，再通过 `get_tool_schema` + `invoke_tool` 使用。Tool HTTP 模式仍以 `get_startup_instructions.tools` 返回的 HTTP 可调用清单为准。
 
 ## 工具选型规则
 
-选工具时按下面的规则：
+选工具时按下面的规则。凡是不属于稳定 9 工具顶层面的目标工具，在真正调用前先加载对应 Builtin Skill、读取 schema，再通过 `invoke_tool` 执行：
 
 1. 直接读文件内容时用 `read_file`。
 2. 整个文件替换时用 `write_file`。
@@ -246,14 +234,14 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 
 ## 文件跨 sandbox / 跨机器传输
 
-当文件不在同一个 sandbox、同一台机器，或者调用方无法直接读写 LocalGate 所在 workspace 路径时，优先考虑下面两个工具，而不是强行使用 `read_file` / `write_file`。
+当文件不在同一个 sandbox、同一台机器，或者调用方无法直接读写 LocalGate 配置 root 路径时，优先考虑下面两个工具，而不是强行使用 `read_file` / `write_file`。
 
 ### `create_upload_token`
 
 适用场景：
 
 - 当前 Agent 所在 sandbox 或机器能读到源文件
-- 但不能直接写入 LocalGate 所在 workspace 路径
+- 但不能直接写入 LocalGate 配置 root 路径
 - 需要把文件推送到 LocalGate 服务所在机器
 
 调用顺序：
@@ -341,7 +329,7 @@ LocalGate 里的大多数普通工具调用都会包装成 task。拿到 `task_i
 
 ## 审批任务闭环
 
-任意工具都可能因为全局 `approval.rules`、workspace 旧版审批策略或静态部署兜底策略进入审批流程。
+任意工具都可能因为全局 `approval.rules` 或静态部署兜底策略进入审批流程。
 
 当工具返回 `status=pending_approval` 时：
 
@@ -368,7 +356,7 @@ LocalGate 里的大多数普通工具调用都会包装成 task。拿到 `task_i
 
 不要对 session 工具使用 `task_status` 或 `task_result`。
 
-Session 访问必须使用创建它的 workspace。若输出缓冲已裁剪，检查 `base_offset`、`truncated` 和 `cursor_expired`，并从服务端返回的新 cursor 继续读取。
+Session 属于当前 LocalGate 实例。若输出缓冲已裁剪，检查 `base_offset`、`truncated` 和 `cursor_expired`，并从服务端返回的新 cursor 继续读取。
 
 ## 常见错误
 

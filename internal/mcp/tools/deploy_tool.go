@@ -28,20 +28,20 @@ type DeployRequest struct {
 }
 
 type DeployTool struct {
-	Manager   *deployment.Manager
-	Workspace config.Workspace
+	Manager *deployment.Manager
+	Root    config.Root
 }
 
-func NewDeployTool(service *static.Service, workspace config.Workspace, appBaseURL string) *DeployTool {
-	return NewDeployToolWithDynamic(service, nil, workspace, appBaseURL)
+func NewDeployTool(service *static.Service, root config.Root, appBaseURL string) *DeployTool {
+	return NewDeployToolWithDynamic(service, nil, root, appBaseURL)
 }
 
-func NewDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, appBaseURL string) *DeployTool {
-	return NewDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), workspace)
+func NewDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, root config.Root, appBaseURL string) *DeployTool {
+	return NewDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), root)
 }
 
-func NewDeployToolWithManager(manager *deployment.Manager, workspace config.Workspace) *DeployTool {
-	return &DeployTool{Manager: manager, Workspace: workspace}
+func NewDeployToolWithManager(manager *deployment.Manager, root config.Root) *DeployTool {
+	return &DeployTool{Manager: manager, Root: root}
 }
 
 func (t *DeployTool) Name() string {
@@ -49,7 +49,7 @@ func (t *DeployTool) Name() string {
 }
 
 func (t *DeployTool) Description() string {
-	return "Deploy a managed static site or long-running dynamic web application from an allowed workspace directory."
+	return "Deploy a managed static site or long-running dynamic web application from the configured LocalGate root."
 }
 
 func (t *DeployTool) InputSchema() any {
@@ -146,7 +146,7 @@ func (t *DeployTool) Execute(ctx context.Context, input json.RawMessage) (any, e
 	}
 	result, err := t.Manager.Deploy(ctx, deployment.DeployRequest{
 		Type: request.Type, Name: request.Name, Source: request.Source,
-		Workspace: t.Workspace, Runtime: request.Runtime, Options: options,
+		Root: t.Root, Runtime: request.Runtime, Options: options,
 	})
 	if err != nil {
 		return nil, err
@@ -206,16 +206,16 @@ type CoreDeployTool struct {
 	requireApproval bool
 }
 
-func NewCoreDeployTool(service *static.Service, workspace config.Workspace, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
-	return NewCoreDeployToolWithDynamic(service, nil, workspace, appBaseURL, approvals, requireApproval)
+func NewCoreDeployTool(service *static.Service, root config.Root, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
+	return NewCoreDeployToolWithDynamic(service, nil, root, appBaseURL, approvals, requireApproval)
 }
 
-func NewCoreDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, workspace config.Workspace, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
-	return NewCoreDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), workspace, approvals, requireApproval)
+func NewCoreDeployToolWithDynamic(staticService *static.Service, dynamicService *dynamic.Service, root config.Root, appBaseURL string, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
+	return NewCoreDeployToolWithManager(deployment.NewManager(staticService, dynamicService, appBaseURL), root, approvals, requireApproval)
 }
 
-func NewCoreDeployToolWithManager(manager *deployment.Manager, workspace config.Workspace, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
-	return &CoreDeployTool{inner: NewDeployToolWithManager(manager, workspace), approvals: approvals, requireApproval: requireApproval}
+func NewCoreDeployToolWithManager(manager *deployment.Manager, root config.Root, approvals *approval.Service, requireApproval bool) *CoreDeployTool {
+	return &CoreDeployTool{inner: NewDeployToolWithManager(manager, root), approvals: approvals, requireApproval: requireApproval}
 }
 
 func (t *CoreDeployTool) Name() string {
@@ -254,7 +254,6 @@ func (t *CoreDeployTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 		TaskID:          ic.TaskID,
 		Action:          "execution_started",
 		Tool:            t.Name(),
-		WorkspaceID:     ic.WorkspaceID,
 		Requester:       requester,
 		Transport:       ic.Transport,
 		MCPSessionID:    ic.MCPSessionID,
@@ -287,7 +286,6 @@ func (t *CoreDeployTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 		TaskID:          ic.TaskID,
 		Action:          action,
 		Tool:            t.Name(),
-		WorkspaceID:     ic.WorkspaceID,
 		Requester:       requester,
 		Transport:       ic.Transport,
 		MCPSessionID:    ic.MCPSessionID,

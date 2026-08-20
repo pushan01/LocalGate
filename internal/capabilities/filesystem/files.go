@@ -22,10 +22,10 @@ import (
 )
 
 type fsToolBase struct {
-	ws config.Workspace
+	ws config.Root
 }
 
-func NewTools(ws config.Workspace) []core.Tool {
+func NewTools(ws config.Root) []core.Tool {
 	b := fsToolBase{ws: ws}
 	return []core.Tool{
 		readFileTool{fsToolBase: b},
@@ -54,7 +54,7 @@ type readFileTool struct{ fsToolBase }
 
 func (t readFileTool) Name() string { return "read_file" }
 func (t readFileTool) Description() string {
-	return "Read a regular text file by absolute path from the workspace or shared ~/.agents/skills directory. Binary files and files over the read limit are rejected."
+	return "Read a regular text file by absolute path from the configured root or shared ~/.agents/skills directory. Binary files and files over the read limit are rejected."
 }
 func (t readFileTool) Schema() any {
 	return map[string]any{
@@ -114,7 +114,7 @@ type writeFileTool struct{ fsToolBase }
 
 func (t writeFileTool) Name() string { return "write_file" }
 func (t writeFileTool) Description() string {
-	return "Create or completely replace a text file by absolute path inside the workspace. Creates parent directories when needed; prefer apply_patch for partial edits to an existing file."
+	return "Create or completely replace a text file by absolute path inside the configured root. Creates parent directories when needed; prefer apply_patch for partial edits to an existing file."
 }
 func (t writeFileTool) Schema() any {
 	return map[string]any{
@@ -161,7 +161,7 @@ type uploadFileTool struct {
 
 func (t uploadFileTool) Name() string { return "upload_file" }
 func (t uploadFileTool) Description() string {
-	return "Copy a host-provided file into an absolute workspace path. The destination must include the filename; parent directories are created as needed and the source is not modified."
+	return "Copy a host-provided file into an absolute path inside the configured root. The destination must include the filename; parent directories are created as needed and the source is not modified."
 }
 func (t uploadFileTool) ToolMetadata() map[string]any {
 	return map[string]any{
@@ -175,7 +175,7 @@ func (t uploadFileTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute destination path inside the workspace, including the filename. Parent directories are created automatically.",
+				"description": "Absolute destination path inside the configured root, including the filename. Parent directories are created automatically.",
 			},
 			"file": map[string]any{
 				"type":                 "object",
@@ -269,7 +269,7 @@ type listDirTool struct{ fsToolBase }
 
 func (t listDirTool) Name() string { return "list_directory" }
 func (t listDirTool) Description() string {
-	return "List files and directories under an absolute path inside the workspace, optionally recursively"
+	return "List files and directories under an absolute path inside the configured root, optionally recursively"
 }
 func (t listDirTool) Schema() any {
 	return map[string]any{
@@ -369,7 +369,7 @@ type searchFilesTool struct{ fsToolBase }
 
 func (t searchFilesTool) Name() string { return "search_files" }
 func (t searchFilesTool) Description() string {
-	return "Find files under an absolute workspace root using a glob pattern and return relative matches"
+	return "Find files under the configured root using a glob pattern and return relative matches"
 }
 func (t searchFilesTool) Schema() any {
 	return map[string]any{
@@ -496,18 +496,18 @@ func minInt(a, b int) int {
 	return b
 }
 
-func validateReadPath(p string, ws config.Workspace) security.Decision {
-	dec := security.ValidatePath(p, ws, security.Options{FollowSymlink: true})
+func validateReadPath(p string, root config.Root) security.Decision {
+	dec := security.ValidatePath(p, root, security.Options{FollowSymlink: true})
 	if dec.Allowed {
 		return dec
 	}
-	sharedRoots := sharedSkillRoots()
-	if len(sharedRoots) == 0 {
-		return dec
+	for _, sharedRoot := range sharedSkillRoots() {
+		shared := config.Root{Path: sharedRoot}
+		if sharedDecision := security.ValidatePath(p, shared, security.Options{FollowSymlink: true}); sharedDecision.Allowed {
+			return sharedDecision
+		}
 	}
-	wsWithSharedRead := ws
-	wsWithSharedRead.Roots = append(append([]string(nil), ws.Roots...), sharedRoots...)
-	return security.ValidatePath(p, wsWithSharedRead, security.Options{FollowSymlink: true})
+	return dec
 }
 
 func sharedSkillRoots() []string {

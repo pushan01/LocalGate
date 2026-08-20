@@ -18,9 +18,7 @@ func testService(t *testing.T) (*Service, string) {
 	cfg.MaxFileBytes = 64
 	cfg.RequireApprovalForWrite = false
 	cfg.RequireApprovalForDelete = false
-	svc := NewService(cfg, map[string]config.Workspace{
-		"ws": {ID: "ws", Roots: []string{root}},
-	})
+	svc := NewService(cfg, config.Root{Path: root})
 	return svc, root
 }
 
@@ -28,20 +26,22 @@ func testServiceWithConfig(t *testing.T, cfg config.FileBrowserConfig) (*Service
 	t.Helper()
 	root := t.TempDir()
 	cfg.MaxFileBytes = 64
-	svc := NewService(cfg, map[string]config.Workspace{
-		"ws": {ID: "ws", Roots: []string{root}},
-	})
+	svc := NewService(cfg, config.Root{Path: root})
 	return svc, root
 }
 
-func TestWorkspacesReturnsRootIDsWithoutAbsolutePaths(t *testing.T) {
-	svc, _ := testService(t)
-	items, err := svc.Workspaces()
+func TestResolveDirectoryUsesConfiguredRoot(t *testing.T) {
+	svc, root := testService(t)
+	ctx, err := svc.ResolveDirectory(PathRequest{})
 	if err != nil {
-		t.Fatalf("workspaces: %v", err)
+		t.Fatalf("resolve root: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "ws" || len(items[0].Roots) != 1 || items[0].Roots[0].ID != "0" {
-		t.Fatalf("unexpected workspaces: %#v", items)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve fixture root: %v", err)
+	}
+	if ctx.Path != "" || ctx.AbsPath != realRoot {
+		t.Fatalf("unexpected root context: %#v", ctx)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestListFiltersHiddenAndExcludedEntries(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(root, "node_modules", "pkg.js"), "x")
 
-	result, err := svc.List(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0"})
+	result, err := svc.List(context.Background(), PathRequest{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestReadContentReturnsTextMetadata(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "main.go"), "package main\n")
 
-	content, err := svc.ReadContent(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "main.go"})
+	content, err := svc.ReadContent(context.Background(), PathRequest{Path: "main.go"})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -81,13 +81,13 @@ func TestReadContentRejectsEscapesBinaryAndLargeFiles(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "large.txt"), "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz")
 	mustWriteBytes(t, filepath.Join(root, "bin.dat"), []byte{'a', 0, 'b'})
 
-	if _, err := svc.ReadContent(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "../outside.txt"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.ReadContent(context.Background(), PathRequest{Path: "../outside.txt"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
-	if _, err := svc.ReadContent(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "large.txt"}); !errors.Is(err, ErrFileTooLarge) {
+	if _, err := svc.ReadContent(context.Background(), PathRequest{Path: "large.txt"}); !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected too large, got %v", err)
 	}
-	if _, err := svc.ReadContent(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "bin.dat"}); !errors.Is(err, ErrBinaryFile) {
+	if _, err := svc.ReadContent(context.Background(), PathRequest{Path: "bin.dat"}); !errors.Is(err, ErrBinaryFile) {
 		t.Fatalf("expected binary file, got %v", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestSymlinkEscapeIsRejected(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "link.txt")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	_, err := svc.ReadContent(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "link.txt"})
+	_, err := svc.ReadContent(context.Background(), PathRequest{Path: "link.txt"})
 	if !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
@@ -107,7 +107,7 @@ func TestSymlinkEscapeIsRejected(t *testing.T) {
 
 func TestSaveContentCreateOverwriteAndETagConflict(t *testing.T) {
 	svc, root := testService(t)
-	created, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "one", Create: true})
+	created, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "note.txt", Content: "one", Create: true})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -117,10 +117,10 @@ func TestSaveContentCreateOverwriteAndETagConflict(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, "note.txt")); err != nil || string(got) != "one" {
 		t.Fatalf("unexpected file content: %q err=%v", got, err)
 	}
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "two", ETag: "sha256:wrong"}); !errors.Is(err, ErrFileChanged) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "note.txt", Content: "two", ETag: "sha256:wrong"}); !errors.Is(err, ErrFileChanged) {
 		t.Fatalf("expected file changed, got %v", err)
 	}
-	overwritten, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "two", ETag: created.ETag})
+	overwritten, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "note.txt", Content: "two", ETag: created.ETag})
 	if err != nil {
 		t.Fatalf("overwrite with etag: %v", err)
 	}
@@ -135,16 +135,16 @@ func TestSaveContentCreateOverwriteAndETagConflict(t *testing.T) {
 func TestSaveContentRejectsUnsafeWrites(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "existing.txt"), "old")
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "../escape.txt", Content: "x", Create: true}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "../escape.txt", Content: "x", Create: true}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "existing.txt", Content: "x", Create: true}); !errors.Is(err, ErrFileExists) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "existing.txt", Content: "x", Create: true}); !errors.Is(err, ErrFileExists) {
 		t.Fatalf("expected file exists, got %v", err)
 	}
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "new.txt", Content: "x"}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "new.txt", Content: "x"}); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("expected file not found without create, got %v", err)
 	}
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "bin.txt", Content: string([]byte{'a', 0, 'b'}), Create: true}); !errors.Is(err, ErrBinaryFile) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "bin.txt", Content: string([]byte{'a', 0, 'b'}), Create: true}); !errors.Is(err, ErrBinaryFile) {
 		t.Fatalf("expected binary file, got %v", err)
 	}
 }
@@ -154,24 +154,24 @@ func TestSaveContentHonorsReadOnlyAndApprovalRequired(t *testing.T) {
 	cfg.ReadOnly = true
 	cfg.RequireApprovalForWrite = false
 	svc, _ := testServiceWithConfig(t, cfg)
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "x", Create: true}); !errors.Is(err, ErrReadOnly) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "note.txt", Content: "x", Create: true}); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("expected read only, got %v", err)
 	}
 	cfg = config.Default().FileBrowser
 	cfg.ReadOnly = false
 	cfg.RequireApprovalForWrite = true
 	svc, _ = testServiceWithConfig(t, cfg)
-	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "x", Create: true}); !errors.Is(err, ErrApprovalRequired) {
+	if _, err := svc.SaveContent(context.Background(), SaveContentRequest{Path: "note.txt", Content: "x", Create: true}); !errors.Is(err, ErrApprovalRequired) {
 		t.Fatalf("expected approval required, got %v", err)
 	}
-	if _, err := svc.SaveContentApproved(context.Background(), SaveContentRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt", Content: "x", Create: true}); err != nil {
+	if _, err := svc.SaveContentApproved(context.Background(), SaveContentRequest{Path: "note.txt", Content: "x", Create: true}); err != nil {
 		t.Fatalf("approved save should bypass approval-required policy: %v", err)
 	}
 }
 
 func TestMkdirCreatesDirectoryAndRejectsUnsafePaths(t *testing.T) {
 	svc, root := testService(t)
-	res, err := svc.Mkdir(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"})
+	res, err := svc.Mkdir(context.Background(), MkdirRequest{Path: "docs"})
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -181,13 +181,13 @@ func TestMkdirCreatesDirectoryAndRejectsUnsafePaths(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(root, "docs")); err != nil || !info.IsDir() {
 		t.Fatalf("directory not created: info=%#v err=%v", info, err)
 	}
-	if _, err := svc.Mkdir(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"}); !errors.Is(err, ErrFileExists) {
+	if _, err := svc.Mkdir(context.Background(), MkdirRequest{Path: "docs"}); !errors.Is(err, ErrFileExists) {
 		t.Fatalf("expected file exists, got %v", err)
 	}
-	if _, err := svc.Mkdir(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "../escape"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.Mkdir(context.Background(), MkdirRequest{Path: "../escape"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
-	if _, err := svc.Mkdir(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "missing/child"}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := svc.Mkdir(context.Background(), MkdirRequest{Path: "missing/child"}); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("expected missing parent, got %v", err)
 	}
 }
@@ -196,10 +196,10 @@ func TestMkdirHonorsApprovalRequired(t *testing.T) {
 	cfg := config.Default().FileBrowser
 	cfg.RequireApprovalForWrite = true
 	svc, root := testServiceWithConfig(t, cfg)
-	if _, err := svc.Mkdir(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"}); !errors.Is(err, ErrApprovalRequired) {
+	if _, err := svc.Mkdir(context.Background(), MkdirRequest{Path: "docs"}); !errors.Is(err, ErrApprovalRequired) {
 		t.Fatalf("expected approval required, got %v", err)
 	}
-	if _, err := svc.MkdirApproved(context.Background(), MkdirRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"}); err != nil {
+	if _, err := svc.MkdirApproved(context.Background(), MkdirRequest{Path: "docs"}); err != nil {
 		t.Fatalf("approved mkdir: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(root, "docs")); err != nil || !info.IsDir() {
@@ -210,7 +210,7 @@ func TestMkdirHonorsApprovalRequired(t *testing.T) {
 func TestRenameMovesFileAndDirectory(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "old.txt"), "hello")
-	res, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "old.txt", ToPath: "new.txt"})
+	res, err := svc.Rename(context.Background(), RenameRequest{FromPath: "old.txt", ToPath: "new.txt"})
 	if err != nil {
 		t.Fatalf("rename file: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRenameMovesFileAndDirectory(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res, err = svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "docs", ToPath: "notes"})
+	res, err = svc.Rename(context.Background(), RenameRequest{FromPath: "docs", ToPath: "notes"})
 	if err != nil {
 		t.Fatalf("rename dir: %v", err)
 	}
@@ -242,13 +242,13 @@ func TestRenameRejectsUnsafeOperations(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "a.txt"), "a")
 	mustWrite(t, filepath.Join(root, "b.txt"), "b")
-	if _, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "a.txt", ToPath: "b.txt"}); !errors.Is(err, ErrFileExists) {
+	if _, err := svc.Rename(context.Background(), RenameRequest{FromPath: "a.txt", ToPath: "b.txt"}); !errors.Is(err, ErrFileExists) {
 		t.Fatalf("expected file exists, got %v", err)
 	}
-	if _, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "missing.txt", ToPath: "x.txt"}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := svc.Rename(context.Background(), RenameRequest{FromPath: "missing.txt", ToPath: "x.txt"}); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("expected file not found, got %v", err)
 	}
-	if _, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "a.txt", ToPath: "../x.txt"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.Rename(context.Background(), RenameRequest{FromPath: "a.txt", ToPath: "../x.txt"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
 	if err := os.Mkdir(filepath.Join(root, "parent"), 0o755); err != nil {
@@ -257,7 +257,7 @@ func TestRenameRejectsUnsafeOperations(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "parent", "child"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "parent", ToPath: "parent/child/moved"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.Rename(context.Background(), RenameRequest{FromPath: "parent", ToPath: "parent/child/moved"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected moving directory into itself to be rejected, got %v", err)
 	}
 }
@@ -267,10 +267,10 @@ func TestRenameHonorsApprovalRequired(t *testing.T) {
 	cfg.RequireApprovalForWrite = true
 	svc, root := testServiceWithConfig(t, cfg)
 	mustWrite(t, filepath.Join(root, "old.txt"), "hello")
-	if _, err := svc.Rename(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "old.txt", ToPath: "new.txt"}); !errors.Is(err, ErrApprovalRequired) {
+	if _, err := svc.Rename(context.Background(), RenameRequest{FromPath: "old.txt", ToPath: "new.txt"}); !errors.Is(err, ErrApprovalRequired) {
 		t.Fatalf("expected approval required, got %v", err)
 	}
-	if _, err := svc.RenameApproved(context.Background(), RenameRequest{WorkspaceID: "ws", RootID: "0", FromPath: "old.txt", ToPath: "new.txt"}); err != nil {
+	if _, err := svc.RenameApproved(context.Background(), RenameRequest{FromPath: "old.txt", ToPath: "new.txt"}); err != nil {
 		t.Fatalf("approved rename: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, "new.txt")); err != nil || string(got) != "hello" {
@@ -288,11 +288,9 @@ func TestResolveDirectoryUsesSandboxedCurrentPath(t *testing.T) {
 		t.Fatalf("write note: %v", err)
 	}
 	cfg := config.Default().FileBrowser
-	svc := NewService(cfg, map[string]config.Workspace{
-		"ws": {ID: "ws", Roots: []string{root}},
-	})
+	svc := NewService(cfg, config.Root{Path: root})
 
-	ctx, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"})
+	ctx, err := svc.ResolveDirectory(PathRequest{Path: "docs"})
 	if err != nil {
 		t.Fatalf("resolve directory: %v", err)
 	}
@@ -300,13 +298,13 @@ func TestResolveDirectoryUsesSandboxedCurrentPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve docs fixture: %v", err)
 	}
-	if ctx.WorkspaceID != "ws" || ctx.RootID != "0" || ctx.Path != "docs" || ctx.AbsPath != realDocs {
+	if ctx.Path != "docs" || ctx.AbsPath != realDocs {
 		t.Fatalf("unexpected directory context: %#v", ctx)
 	}
-	if _, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt"}); !errors.Is(err, ErrNotDirectory) {
+	if _, err := svc.ResolveDirectory(PathRequest{Path: "note.txt"}); !errors.Is(err, ErrNotDirectory) {
 		t.Fatalf("expected file rejection, got %v", err)
 	}
-	if _, err := svc.ResolveDirectory(PathRequest{WorkspaceID: "ws", RootID: "0", Path: "../outside"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.ResolveDirectory(PathRequest{Path: "../outside"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path rejection, got %v", err)
 	}
 }
@@ -314,7 +312,7 @@ func TestResolveDirectoryUsesSandboxedCurrentPath(t *testing.T) {
 func TestDeleteRemovesFileAndDirectory(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "old.txt"), "hello")
-	res, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "old.txt"})
+	res, err := svc.Delete(context.Background(), DeleteRequest{Path: "old.txt"})
 	if err != nil {
 		t.Fatalf("delete file: %v", err)
 	}
@@ -328,10 +326,10 @@ func TestDeleteRemovesFileAndDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(root, "docs", "a.txt"), "a")
-	if _, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"}); !errors.Is(err, ErrPathIsDirectory) {
+	if _, err := svc.Delete(context.Background(), DeleteRequest{Path: "docs"}); !errors.Is(err, ErrPathIsDirectory) {
 		t.Fatalf("expected directory delete without recursive rejected, got %v", err)
 	}
-	res, err = svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "docs", Recursive: true})
+	res, err = svc.Delete(context.Background(), DeleteRequest{Path: "docs", Recursive: true})
 	if err != nil {
 		t.Fatalf("recursive delete: %v", err)
 	}
@@ -345,17 +343,17 @@ func TestDeleteRemovesFileAndDirectory(t *testing.T) {
 
 func TestDeleteRejectsUnsafeOperations(t *testing.T) {
 	svc, root := testService(t)
-	if _, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "missing.txt"}); !errors.Is(err, ErrFileNotFound) {
+	if _, err := svc.Delete(context.Background(), DeleteRequest{Path: "missing.txt"}); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("expected file not found, got %v", err)
 	}
-	if _, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "../escape.txt"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.Delete(context.Background(), DeleteRequest{Path: "../escape.txt"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
 	outside := t.TempDir()
 	if err := os.Symlink(filepath.Join(outside, "x"), filepath.Join(root, "link")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if _, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "link"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.Delete(context.Background(), DeleteRequest{Path: "link"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected symlink delete rejected, got %v", err)
 	}
 }
@@ -366,10 +364,10 @@ func TestDeleteHonorsApprovalRequired(t *testing.T) {
 	cfg.RequireApprovalForDelete = true
 	svc, root := testServiceWithConfig(t, cfg)
 	mustWrite(t, filepath.Join(root, "old.txt"), "hello")
-	if _, err := svc.Delete(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "old.txt"}); !errors.Is(err, ErrApprovalRequired) {
+	if _, err := svc.Delete(context.Background(), DeleteRequest{Path: "old.txt"}); !errors.Is(err, ErrApprovalRequired) {
 		t.Fatalf("expected approval required, got %v", err)
 	}
-	if _, err := svc.DeleteApproved(context.Background(), DeleteRequest{WorkspaceID: "ws", RootID: "0", Path: "old.txt"}); err != nil {
+	if _, err := svc.DeleteApproved(context.Background(), DeleteRequest{Path: "old.txt"}); err != nil {
 		t.Fatalf("approved delete: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "old.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -380,7 +378,7 @@ func TestDeleteHonorsApprovalRequired(t *testing.T) {
 func TestDownloadFileReturnsSafeRegularFile(t *testing.T) {
 	svc, root := testService(t)
 	mustWrite(t, filepath.Join(root, "file.bin"), "hello")
-	res, err := svc.DownloadFile(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "file.bin"})
+	res, err := svc.DownloadFile(context.Background(), PathRequest{Path: "file.bin"})
 	if err != nil {
 		t.Fatalf("download file: %v", err)
 	}
@@ -394,10 +392,10 @@ func TestDownloadFileRejectsDirectoryEscapeAndSymlink(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.DownloadFile(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "docs"}); !errors.Is(err, ErrPathIsDirectory) {
+	if _, err := svc.DownloadFile(context.Background(), PathRequest{Path: "docs"}); !errors.Is(err, ErrPathIsDirectory) {
 		t.Fatalf("expected directory rejection, got %v", err)
 	}
-	if _, err := svc.DownloadFile(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "../escape"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.DownloadFile(context.Background(), PathRequest{Path: "../escape"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected path not allowed, got %v", err)
 	}
 	outside := t.TempDir()
@@ -406,7 +404,7 @@ func TestDownloadFileRejectsDirectoryEscapeAndSymlink(t *testing.T) {
 	if err := os.Symlink(outsideFile, filepath.Join(root, "link.txt")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if _, err := svc.DownloadFile(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "link.txt"}); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := svc.DownloadFile(context.Background(), PathRequest{Path: "link.txt"}); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("expected symlink rejection, got %v", err)
 	}
 }
@@ -417,7 +415,7 @@ func TestPreviewImageAllowsSupportedImagesAndEnforcesLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "image.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "image.png"})
+	preview, err := svc.PreviewImage(context.Background(), PathRequest{Path: "image.png"})
 	if err != nil {
 		t.Fatalf("preview image: %v", err)
 	}
@@ -428,7 +426,7 @@ func TestPreviewImageAllowsSupportedImagesAndEnforcesLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "note.txt"}); !errors.Is(err, ErrUnsupportedPreview) {
+	if _, err := svc.PreviewImage(context.Background(), PathRequest{Path: "note.txt"}); !errors.Is(err, ErrUnsupportedPreview) {
 		t.Fatalf("expected unsupported preview, got %v", err)
 	}
 
@@ -436,14 +434,14 @@ func TestPreviewImageAllowsSupportedImagesAndEnforcesLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "large.png"), large, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PreviewImage(context.Background(), PathRequest{WorkspaceID: "ws", RootID: "0", Path: "large.png"}); !errors.Is(err, ErrFileTooLarge) {
+	if _, err := svc.PreviewImage(context.Background(), PathRequest{Path: "large.png"}); !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected file too large, got %v", err)
 	}
 }
 
 func TestUploadCreatesBinaryFileAndRejectsExistingOrLarge(t *testing.T) {
 	svc, root := testService(t)
-	res, err := svc.Upload(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "image.bin", Content: []byte{0, 1, 2}, Create: true})
+	res, err := svc.Upload(context.Background(), UploadRequest{Path: "image.bin", Content: []byte{0, 1, 2}, Create: true})
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
@@ -453,7 +451,7 @@ func TestUploadCreatesBinaryFileAndRejectsExistingOrLarge(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, "image.bin")); err != nil || !bytes.Equal(got, []byte{0, 1, 2}) {
 		t.Fatalf("unexpected uploaded content: %v err=%v", got, err)
 	}
-	if _, err := svc.Upload(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "image.bin", Content: []byte("new"), Create: true}); !errors.Is(err, ErrFileExists) {
+	if _, err := svc.Upload(context.Background(), UploadRequest{Path: "image.bin", Content: []byte("new"), Create: true}); !errors.Is(err, ErrFileExists) {
 		t.Fatalf("expected file exists, got %v", err)
 	}
 	cfg := config.Default().FileBrowser
@@ -461,7 +459,7 @@ func TestUploadCreatesBinaryFileAndRejectsExistingOrLarge(t *testing.T) {
 	cfg.RequireApprovalForDelete = false
 	cfg.MaxUploadBytes = 2
 	smallSvc, _ := testServiceWithConfig(t, cfg)
-	if _, err := smallSvc.Upload(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "too-big.bin", Content: []byte{0, 1, 2}, Create: true}); !errors.Is(err, ErrFileTooLarge) {
+	if _, err := smallSvc.Upload(context.Background(), UploadRequest{Path: "too-big.bin", Content: []byte{0, 1, 2}, Create: true}); !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected too large, got %v", err)
 	}
 }
@@ -471,10 +469,10 @@ func TestUploadHonorsApprovalRequired(t *testing.T) {
 	cfg.RequireApprovalForWrite = true
 	cfg.RequireApprovalForDelete = false
 	svc, root := testServiceWithConfig(t, cfg)
-	if _, err := svc.Upload(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "upload.bin", Content: []byte{0}, Create: true}); !errors.Is(err, ErrApprovalRequired) {
+	if _, err := svc.Upload(context.Background(), UploadRequest{Path: "upload.bin", Content: []byte{0}, Create: true}); !errors.Is(err, ErrApprovalRequired) {
 		t.Fatalf("expected approval required, got %v", err)
 	}
-	if _, err := svc.UploadApproved(context.Background(), UploadRequest{WorkspaceID: "ws", RootID: "0", Path: "upload.bin", Content: []byte{0}, Create: true}); err != nil {
+	if _, err := svc.UploadApproved(context.Background(), UploadRequest{Path: "upload.bin", Content: []byte{0}, Create: true}); err != nil {
 		t.Fatalf("approved upload: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, "upload.bin")); err != nil || !bytes.Equal(got, []byte{0}) {

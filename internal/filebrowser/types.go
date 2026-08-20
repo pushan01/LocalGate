@@ -2,21 +2,9 @@ package filebrowser
 
 import "time"
 
-type Root struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-type WorkspaceItem struct {
-	ID    string `json:"id"`
-	Roots []Root `json:"roots"`
-}
-
 type DirectoryContext struct {
-	WorkspaceID string `json:"workspace_id"`
-	RootID      string `json:"root_id"`
-	Path        string `json:"path"`
-	AbsPath     string `json:"-"`
+	Path    string `json:"path"`
+	AbsPath string `json:"-"`
 }
 
 type Entry struct {
@@ -32,15 +20,11 @@ type Entry struct {
 }
 
 type ListResult struct {
-	WorkspaceID string  `json:"workspace_id"`
-	RootID      string  `json:"root_id"`
-	Path        string  `json:"path"`
-	Entries     []Entry `json:"entries"`
+	Path    string  `json:"path"`
+	Entries []Entry `json:"entries"`
 }
 
 type FileContent struct {
-	WorkspaceID string    `json:"workspace_id"`
-	RootID      string    `json:"root_id"`
 	Path        string    `json:"path"`
 	Content     string    `json:"content"`
 	Encoding    string    `json:"encoding"`
@@ -51,8 +35,6 @@ type FileContent struct {
 }
 
 type SaveContentRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 	Content     string
 	ETag        string
@@ -61,8 +43,6 @@ type SaveContentRequest struct {
 }
 
 type UploadRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 	Content     []byte
 	ETag        string
@@ -71,8 +51,6 @@ type UploadRequest struct {
 }
 
 type SaveContentResult struct {
-	WorkspaceID string    `json:"workspace_id"`
-	RootID      string    `json:"root_id"`
 	Path        string    `json:"path"`
 	Status      string    `json:"status"`
 	Bytes       int       `json:"bytes"`
@@ -86,29 +64,21 @@ type SaveContentResult struct {
 type UploadResult = SaveContentResult
 
 type MkdirRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 }
 
 type MkdirResult struct {
-	WorkspaceID string    `json:"workspace_id"`
-	RootID      string    `json:"root_id"`
 	Path        string    `json:"path"`
 	Status      string    `json:"status"`
 	ModTime     time.Time `json:"mod_time"`
 }
 
 type RenameRequest struct {
-	WorkspaceID string
-	RootID      string
 	FromPath    string
 	ToPath      string
 }
 
 type RenameResult struct {
-	WorkspaceID string    `json:"workspace_id"`
-	RootID      string    `json:"root_id"`
 	FromPath    string    `json:"from_path"`
 	ToPath      string    `json:"to_path"`
 	Type        string    `json:"type"`
@@ -117,15 +87,11 @@ type RenameResult struct {
 }
 
 type DeleteRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 	Recursive   bool
 }
 
 type DeleteResult struct {
-	WorkspaceID string    `json:"workspace_id"`
-	RootID      string    `json:"root_id"`
 	Path        string    `json:"path"`
 	Type        string    `json:"type"`
 	Status      string    `json:"status"`
@@ -134,8 +100,6 @@ type DeleteResult struct {
 }
 
 type DownloadFile struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 	AbsPath     string
 	Name        string
@@ -149,8 +113,6 @@ type PreviewFile struct {
 }
 
 type PathRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 }
 
@@ -163,8 +125,6 @@ type GitStatusEntry struct {
 }
 
 type GitStatusResult struct {
-	WorkspaceID    string           `json:"workspace_id"`
-	RootID         string           `json:"root_id"`
 	Path           string           `json:"path"`
 	Repository     bool             `json:"repository"`
 	RepositoryPath string           `json:"repository_path,omitempty"`
@@ -179,8 +139,6 @@ type GitStatusResult struct {
 }
 
 type GitDiffResult struct {
-	WorkspaceID    string `json:"workspace_id"`
-	RootID         string `json:"root_id"`
 	Path           string `json:"path"`
 	RepositoryPath string `json:"repository_path"`
 	Staged         bool   `json:"staged"`

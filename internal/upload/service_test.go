@@ -11,14 +11,14 @@ func TestIssueAndGet(t *testing.T) {
 	svc := NewService()
 	svc.now = func() time.Time { return base }
 
-	grant, err := svc.Issue("ws", "/tmp/target.bin", 10*time.Minute)
+	grant, err := svc.Issue("/tmp/target.bin", 10*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 	if grant.Token == "" {
 		t.Fatalf("expected token")
 	}
-	if grant.WorkspaceID != "ws" || grant.Path != "/tmp/target.bin" {
+	if grant.Path != "/tmp/target.bin" {
 		t.Fatalf("unexpected grant: %#v", grant)
 	}
 
@@ -36,7 +36,7 @@ func TestGetRejectsExpiredToken(t *testing.T) {
 	svc := NewService()
 	svc.now = func() time.Time { return base }
 
-	grant, err := svc.Issue("ws", "/tmp/target.bin", time.Minute)
+	grant, err := svc.Issue("/tmp/target.bin", time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestGetAllowsRepeatedUseBeforeExpiry(t *testing.T) {
 	svc := NewService()
 	svc.now = func() time.Time { return base }
 
-	grant, err := svc.Issue("ws", "/tmp/target.bin", 10*time.Minute)
+	grant, err := svc.Issue("/tmp/target.bin", 10*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}

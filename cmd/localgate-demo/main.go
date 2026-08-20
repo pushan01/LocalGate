@@ -43,22 +43,18 @@ func TestAdd(t *testing.T) {
 `))
 
 	cfg := config.Config{
-		Workspaces: []config.Workspace{
-			{
-				ID:               "demo",
-				Roots:            []string{tmp},
-				CWD:              proj,
-				CommandAllowlist: []string{"go", "diff", "sh", "cat"},
-			},
+		Root: config.Root{
+			Path:             tmp,
+			CommandAllowlist: []string{"go", "diff", "sh", "cat"},
 		},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
 		panic(err)
 	}
-	reg := application.Registries["demo"]
+	reg := application.Registry
 
-	fmt.Printf("workspace=%s\n", proj)
+	fmt.Printf("root=%s\n", tmp)
 
 	before, _ := runTool(application, reg, "run_command", map[string]any{"command": "go test ./...", "cwd": proj, "timeout_ms": 10_000})
 	fmt.Printf("initial_test=%s task_id=%s\n", before.Status, before.ID)
@@ -92,8 +88,8 @@ func runTool(a *app.App, reg *core.Registry, tool string, args map[string]any) (
 	resCh := make(chan map[string]any, 1)
 	errCh := make(chan error, 1)
 
-	task := a.Tasks.CreateTask(core.Task{Requester: "demo", WorkspaceID: "demo"}, func(ctx context.Context, taskID string) (int, error) {
-		res, err := reg.Invoke(ctx, tool, core.InvokeContext{TaskID: taskID, WorkspaceID: "demo", Sink: a.Sink}, args)
+	task := a.Tasks.CreateTask(core.Task{Requester: "demo"}, func(ctx context.Context, taskID string) (int, error) {
+		res, err := reg.Invoke(ctx, tool, core.InvokeContext{TaskID: taskID, Sink: a.Sink}, args)
 		resCh <- res
 		errCh <- err
 		return intFromAny(res["exit_code"]), err

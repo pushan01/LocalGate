@@ -13,9 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Workspace struct {
-	ID                     string         `yaml:"id"`
-	Roots                  []string       `yaml:"roots"`
+type Root struct {
+	Path                   string         `yaml:"root"`
 	PathDenylist           []string       `yaml:"path_denylist"`
 	CommandAllowlist       []string       `yaml:"command_allowlist"`
 	CommandDenylist        []string       `yaml:"command_denylist"`
@@ -24,12 +23,12 @@ type Workspace struct {
 	AllowShellControl      bool           `yaml:"allow_shell_control"`
 	AllowShellBackground   bool           `yaml:"allow_shell_background"`
 	AllowShellSubstitution bool           `yaml:"allow_shell_substitution"`
-	CWD                    string         `yaml:"cwd"`
 	EnvAllowlist           []string       `yaml:"env_allowlist"`
 	ApprovalPolicy         ApprovalPolicy `yaml:"approval_policy"`
 }
 
 type Config struct {
+	Root             Root                `yaml:",inline"`
 	Bind             string              `yaml:"bind"`
 	MaxConcurrency   int                 `yaml:"max_concurrency"`
 	DefaultTimeoutMs int64               `yaml:"default_timeout_ms"`
@@ -50,7 +49,6 @@ type Config struct {
 	MCPServers       []MCPServer         `yaml:"mcp_servers"`
 	Upgrade          Upgrade             `yaml:"-"`
 	Runtime          Runtime             `yaml:"-"`
-	Workspaces       []Workspace         `yaml:"workspaces"`
 }
 
 type LoadOptions struct {
@@ -808,18 +806,13 @@ func Load(opts LoadOptions) (Config, error) {
 		cfg.Deployments.PrivateBind = opts.PrivateDeploymentsBind
 	}
 
-	// Normalize paths
-	for i := range cfg.Workspaces {
-		ws := &cfg.Workspaces[i]
-		for j := range ws.Roots {
-			ws.Roots[j] = absPath(ws.Roots[j])
-		}
-		for j := range ws.PathDenylist {
-			ws.PathDenylist[j] = absPath(ws.PathDenylist[j])
-		}
-		if ws.CWD != "" {
-			ws.CWD = absPath(ws.CWD)
-		}
+	// Normalize the single execution root and its denylist.
+	if strings.TrimSpace(cfg.Root.Path) == "" {
+		return Config{}, errors.New("root is required")
+	}
+	cfg.Root.Path = absPath(cfg.Root.Path)
+	for i := range cfg.Root.PathDenylist {
+		cfg.Root.PathDenylist[i] = absPath(cfg.Root.PathDenylist[i])
 	}
 	for i := range cfg.MCPServers {
 		srv := &cfg.MCPServers[i]
@@ -890,8 +883,28 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return Config{}, err
 	}
+	if err := validateRoot(cfg.Root); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
+}
+
+func validateRoot(root Root) error {
+	if strings.TrimSpace(root.Path) == "" {
+		return errors.New("root is required")
+	}
+	if !filepath.IsAbs(root.Path) {
+		return errors.New("root must be absolute")
+	}
+	info, err := os.Stat(root.Path)
+	if err != nil {
+		return fmt.Errorf("root is not accessible: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("root must be a directory")
+	}
+	return nil
 }
 
 func rejectLegacyConfig(data []byte) error {
@@ -923,12 +936,8 @@ func rejectLegacyConfig(data []byte) error {
 	if _, exists := dynamic["control_hosts"]; exists {
 		return errors.New("deployments.dynamic.control_hosts was removed; control host is derived from http.base_url")
 	}
-	workspaces, _ := root["workspaces"].([]any)
-	for i, raw := range workspaces {
-		workspace, _ := raw.(map[string]any)
-		if _, exists := workspace["hidden_tools"]; exists {
-			return fmt.Errorf("workspaces[%d].hidden_tools was removed; LocalGate now uses a fixed built-in hidden tool list", i)
-		}
+	if _, exists := root["workspaces"]; exists {
+		return errors.New("workspaces was removed; configure one top-level root instead")
 	}
 	admin, _ := root["admin"].(map[string]any)
 	approval, _ := admin["approval"].(map[string]any)
@@ -939,15 +948,6 @@ func rejectLegacyConfig(data []byte) error {
 }
 
 func (c Config) SafeSummary() map[string]any {
-	type ws struct {
-		ID    string   `yaml:"id"`
-		Roots []string `yaml:"roots"`
-		CWD   string   `yaml:"cwd"`
-	}
-	wss := make([]ws, 0, len(c.Workspaces))
-	for _, w := range c.Workspaces {
-		wss = append(wss, ws{ID: w.ID, Roots: w.Roots, CWD: w.CWD})
-	}
 	mcpServers := make([]map[string]any, 0, len(c.MCPServers))
 	for _, s := range c.MCPServers {
 		mcpServers = append(mcpServers, map[string]any{
@@ -958,6 +958,7 @@ func (c Config) SafeSummary() map[string]any {
 		})
 	}
 	return map[string]any{
+		"root":               c.Root.Path,
 		"bind":               c.Bind,
 		"max_concurrency":    c.MaxConcurrency,
 		"default_timeout_ms": c.DefaultTimeoutMs,
@@ -1102,8 +1103,6 @@ func (c Config) SafeSummary() map[string]any {
 		},
 		"mcp_servers":      mcpServers,
 		"mcp_server_count": len(c.MCPServers),
-		"workspace_count":  len(c.Workspaces),
-		"workspaces":       wss,
 	}
 }
 

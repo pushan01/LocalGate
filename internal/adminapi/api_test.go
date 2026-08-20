@@ -19,7 +19,7 @@ func TestTaskListFiltersSessionAndOmitsResult(t *testing.T) {
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Approval.Enabled = false
 	cfg.Admin.BaseURL = "https://admin.test"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -31,7 +31,7 @@ func TestTaskListFiltersSessionAndOmitsResult(t *testing.T) {
 	})
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/tasks?session_id=session-a", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -70,7 +70,7 @@ func TestTaskEventsFallBackToPersistedHistory(t *testing.T) {
 	cfg.Admin.Approval.Enabled = false
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.BaseURL = "https://admin.test"
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -83,7 +83,7 @@ func TestTaskEventsFallBackToPersistedHistory(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: "ws", BaseURL: "https://admin.test"}).Register(mux)
+	(&API{App: application, BaseURL: "https://admin.test"}).Register(mux)
 	req := httptest.NewRequest(http.MethodGet, "https://admin.test/api/admin/v1/tasks/history-task/events", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

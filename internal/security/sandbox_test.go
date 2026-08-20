@@ -10,10 +10,7 @@ import (
 
 func TestValidatePathWithinRoots(t *testing.T) {
 	dir := t.TempDir()
-	ws := config.Workspace{
-		ID:    "ws1",
-		Roots: []string{dir},
-	}
+	ws := config.Root{Path: dir}
 	target := filepath.Join(dir, "a.txt")
 	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -28,9 +25,7 @@ func TestValidatePathDenylist(t *testing.T) {
 	dir := t.TempDir()
 	deny := filepath.Join(dir, "secret")
 	_ = os.MkdirAll(deny, 0o755)
-	ws := config.Workspace{
-		ID:           "ws1",
-		Roots:        []string{dir},
+	ws := config.Root{Path: dir,
 		PathDenylist: []string{deny},
 	}
 	target := filepath.Join(deny, "k.txt")
@@ -43,10 +38,7 @@ func TestValidatePathDenylist(t *testing.T) {
 
 func TestValidatePathAllowNonExistWithMissingParents(t *testing.T) {
 	dir := t.TempDir()
-	ws := config.Workspace{
-		ID:    "ws1",
-		Roots: []string{dir},
-	}
+	ws := config.Root{Path: dir}
 	target := filepath.Join(dir, "nested", "more", "a.txt")
 	dec := ValidatePath(target, ws, Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {

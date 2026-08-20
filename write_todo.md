@@ -1,5 +1,7 @@
 # Write TODO
 
+> 历史 TODO：其中 `workspace_id` 等条目记录早期设计背景，不代表当前 API。现行实现为单 Root 模型。
+
 以下事项在 Step 01 暂不实现，放入后续步骤或未来迭代：
 
 - 配置文件多路径搜索策略（XDG 规范：`~/.config/localgate/config.yaml`、`/etc/localgate/config.yaml` 等），含优先级与合并逻辑

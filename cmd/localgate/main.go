@@ -117,7 +117,7 @@ func main() {
 	defer application.Close()
 
 	if *mcpMode {
-		s, err := mcpgo.New(application, "localgate", Version, application.DefaultWSID)
+		s, err := mcpgo.New(application, "localgate", Version)
 		if err != nil {
 			logger.Error("failed to init mcp-go server", "err", err)
 			os.Exit(1)
@@ -129,7 +129,7 @@ func main() {
 		return
 	}
 
-	api := &httpapi.API{App: application, DefaultWSID: application.DefaultWSID}
+	api := &httpapi.API{App: application}
 	var publicAuthPrefixes []string
 	if cfg.FileExports.Enabled {
 		publicAuthPrefixes = []string{"/system/exports/"}
@@ -151,7 +151,7 @@ func main() {
 		Register: func(mux *http.ServeMux) {
 			api.RegisterControl(mux)
 			// Mount MCP Streamable-HTTP at /mcp
-			if s, err := mcpgo.New(application, "localgate", Version, application.DefaultWSID); err == nil {
+			if s, err := mcpgo.New(application, "localgate", Version); err == nil {
 				s.MountHTTP(mux, "/mcp", mcpgo.HTTPOptions{
 					Stateless: cfg.MCPHTTP.Stateless,
 				})

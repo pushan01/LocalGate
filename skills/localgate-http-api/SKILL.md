@@ -140,7 +140,7 @@ Use these rules consistently:
 5. If the user wants a **simple command or file operation**, prefer tasks unless they explicitly need interactivity.
 6. If the user wants a **binary self-upgrade of the running HTTP daemon**, use `/system/upgrades` instead of inventing file replacement steps.
 7. If the instance exposes only `get_startup_instructions`, `get_skill`, `get_temporary_access_token`, and `get_tool_schema`, switch to the tool HTTP workflow instead of recommending MCP `tools/call`. Load a matching built-in LocalGate skill with `get_skill` before a multi-tool workflow.
-8. If a tool accepts a host-provided file object, preserve that structure. For `upload_file`, pass the file object under `file` and the target workspace path under `path`.
+8. If a tool accepts a host-provided file object, preserve that structure. For `upload_file`, pass the file object under `file` and the target absolute path inside the configured root under `path`.
 9. If `tool_arguments.enable_base64=true`, `/tools/{tool}/call`, `/tasks.args`, and MCP `tools/call.arguments` may be a base64 string; decode it to the tool's normal JSON object shape before reasoning about fields.
 10. If `mcp_http.stateless=true`, HTTP MCP `/mcp` does not require `Mcp-Session-Id`; if it is `false`, keep the normal `initialize -> save SessionID -> send Mcp-Session-Id` workflow.
 
@@ -149,7 +149,7 @@ Use these rules consistently:
 You usually need:
 
 - `BASE_URL`, for example `http://127.0.0.1:8000`
-- `workspace_id`, usually `default`
+- the instance's configured `root`; callers do not select it per request
 - Bearer Token, if HTTP auth is enabled
 
 If they are missing:
@@ -206,13 +206,13 @@ Important:
 
 ## Tool Introduction
 
-These are the core tools exposed by LocalGate in the default workspace.
+These are the core tools exposed by the current LocalGate instance.
 
 ### Filesystem tools
 
 - `read_file`: read a regular text file up to the service limit
 - `write_file`: write file content
-- `upload_file`: download a host-provided file object from a public HTTP(S) target and save it into the workspace
+- `upload_file`: download a host-provided file object from a public HTTP(S) target and save it inside the configured root
 - `apply_patch`: validate a multi-file patch and commit it with best-effort in-process rollback
 
 For `upload_file`, the expected `file` shape is:
@@ -256,7 +256,7 @@ Use `run_command` instead when guiding a model through tool discovery under defa
 - `read_thread_terminal`: read buffered terminal output for a known `session_id` from an explicit absolute `cursor`, optionally waiting with `wait_ms`
 - `close_session`: terminate and close a running session after `exec_command` has already returned
 
-Preserve the returned `next_offset` and pass it as the next `cursor`. Continue while `has_more=true`; `completed=true` / `output_complete=true` means a terminal session's retained output is caught up. A trimmed buffer is reported through `base_offset`, `buffer_truncated` (plus compatibility `truncated`), and `cursor_expired`. Prefer `max_output_items`; `max_output_tokens` is only a compatibility alias and still counts output items. Session access must use the workspace that created the session.
+Preserve the returned `next_offset` and pass it as the next `cursor`. Continue while `has_more=true`; `completed=true` / `output_complete=true` means a terminal session's retained output is caught up. A trimmed buffer is reported through `base_offset`, `buffer_truncated` (plus compatibility `truncated`), and `cursor_expired`. Prefer `max_output_items`; `max_output_tokens` is only a compatibility alias and still counts output items. Sessions belong to the current LocalGate instance and are addressed by `session_id`.
 
 ### MCP admin tools
 
@@ -348,7 +348,7 @@ Use this for normal API-driven execution.
 Use either a known health endpoint if available in the deployment, or directly test a lightweight endpoint such as:
 
 ```bash
-curl -sS "$BASE_URL/tools?workspace_id=$WS&summary=1"
+curl -sS "$BASE_URL/tools?summary=1"
 ```
 
 ### Step 1: Discover tools
@@ -356,20 +356,20 @@ curl -sS "$BASE_URL/tools?workspace_id=$WS&summary=1"
 Fast summary:
 
 ```bash
-curl -sS "$BASE_URL/tools?workspace_id=$WS&summary=1"
+curl -sS "$BASE_URL/tools?summary=1"
 ```
 
 Full schema list:
 
 ```bash
-curl -sS "$BASE_URL/tools?workspace_id=$WS"
+curl -sS "$BASE_URL/tools"
 ```
 
 ### Step 2: Inspect one tool schema when arguments matter
 
 ```bash
 TOOL="run_command"
-curl -sS "$BASE_URL/tools/$TOOL?workspace_id=$WS"
+curl -sS "$BASE_URL/tools/$TOOL"
 ```
 
 Do this before constructing complex requests.
@@ -381,7 +381,6 @@ curl -sS -X POST "$BASE_URL/tasks" \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "run_command",
-    "workspace_id": "default",
     "requester": "http",
     "args": {
       "command": "echo hello"
@@ -438,7 +437,6 @@ curl -sS -X POST "$BASE_URL/sessions/exec" \
   -H "Content-Type: application/json" \
   -d '{
     "cmd": "cat",
-    "workspace_id": "default",
     "yield_time_ms": 100,
     "max_output_items": 200
   }'
@@ -517,7 +515,7 @@ Approval responses and audit details recursively redact common secret fields. A 
 
 Approval actor identity is server-derived. With HTTP Bearer authentication enabled, decisions are recorded as principal `http-bearer` with `auth_method=bearer`; with authentication disabled they are recorded as `local-unauthenticated`. Never send or trust `X-LocalGate-Actor`.
 
-Before approval is committed, LocalGate verifies the task is still `awaiting_approval` and that `approval_id`, `task_id`, workspace, requester, tool, and `args_digest` match. A mismatch returns `approval_binding_mismatch` and leaves the approval pending.
+Before approval is committed, LocalGate verifies the task is still `awaiting_approval` and that `approval_id`, `task_id`, requester, tool, and `args_digest` match. A mismatch returns `approval_binding_mismatch` and leaves the approval pending.
 
 Canceled task reasons are stable: `approval_rejected`, `approval_expired`, `approval_canceled`, `approval_restart`, and `approval_release_failed`.
 
@@ -661,7 +659,7 @@ go run ./cmd/localgate -config ./localgate.yaml
 List tools:
 
 ```bash
-curl -sS "$BASE_URL/tools?workspace_id=$WS&summary=1"
+curl -sS "$BASE_URL/tools?summary=1"
 ```
 
 Create task:
@@ -669,7 +667,7 @@ Create task:
 ```bash
 curl -sS -X POST "$BASE_URL/tasks" \
   -H "Content-Type: application/json" \
-  -d "{\"tool\":\"run_command\",\"workspace_id\":\"$WS\",\"requester\":\"http\",\"args\":{\"command\":\"echo hello\"}}"
+  -d "{\"tool\":\"run_command\",\"requester\":\"http\",\"args\":{\"command\":\"echo hello\"}}"
 ```
 
 Start session:
@@ -677,7 +675,7 @@ Start session:
 ```bash
 curl -sS -X POST "$BASE_URL/sessions/exec" \
   -H "Content-Type: application/json" \
-  -d "{\"cmd\":\"cat\",\"workspace_id\":\"$WS\",\"yield_time_ms\":100,\"max_output_items\":200}"
+  -d "{\"cmd\":\"cat\",\"yield_time_ms\":100,\"max_output_items\":200}"
 ```
 
 HTTP MCP list tools:

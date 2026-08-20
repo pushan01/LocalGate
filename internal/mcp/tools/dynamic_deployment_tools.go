@@ -243,7 +243,6 @@ func (t *CoreDynamicDeploymentTool) recordAudit(ic core.InvokeContext, args map[
 	}
 	_, err := t.approvals.RecordAudit(approval.AuditRecord{
 		ApprovalID: ic.ApprovalID, OperationID: operationID, TaskID: ic.TaskID,
-		Action: action, Tool: t.Name(), WorkspaceID: ic.WorkspaceID,
 		Requester: requester, Transport: ic.Transport, MCPSessionID: ic.MCPSessionID,
 		SessionMode: ic.SessionMode, SessionIDSource: ic.SessionIDSource, RequestID: ic.RequestID,
 		Details: details, Error: errorText,

@@ -114,7 +114,8 @@ func (t ArtifactGetTool) Execute(_ context.Context, ic core.InvokeContext, args 
 	if err := requireText("artifact_id", artifactID, 128); err != nil {
 		return nil, err
 	}
-	agent, err := t.manager.Get(ic.WorkspaceID, subagentID)
+	_ = ic
+	agent, err := t.manager.Get(subagentID)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +135,6 @@ func (t ArtifactGetTool) Execute(_ context.Context, ic core.InvokeContext, args 
 		ttl = time.Duration(value) * time.Second
 	}
 	grant, err := t.exports.Issue(fileexport.Grant{
-		WorkspaceID:     ic.WorkspaceID,
 		Path:            artifact.Path,
 		FileName:        artifact.FileName,
 		MIMEType:        artifact.MIMEType,

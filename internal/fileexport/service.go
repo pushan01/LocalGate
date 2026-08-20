@@ -31,7 +31,6 @@ type Options struct {
 
 type Grant struct {
 	ID              string    `json:"id"`
-	WorkspaceID     string    `json:"workspace_id"`
 	Path            string    `json:"path"`
 	FileName        string    `json:"file_name"`
 	MIMEType        string    `json:"mime_type"`
@@ -92,13 +91,12 @@ func (s *Service) Issue(grant Grant, ttl time.Duration) (Grant, error) {
 	if s == nil {
 		return Grant{}, errors.New("file export service is nil")
 	}
-	grant.WorkspaceID = strings.TrimSpace(grant.WorkspaceID)
 	grant.Path = strings.TrimSpace(grant.Path)
 	grant.FileName = strings.TrimSpace(grant.FileName)
 	grant.MIMEType = strings.TrimSpace(grant.MIMEType)
 	grant.SHA256 = strings.ToLower(strings.TrimSpace(grant.SHA256))
-	if grant.WorkspaceID == "" || grant.Path == "" || grant.FileName == "" {
-		return Grant{}, errors.New("workspace id, path, and file name are required")
+	if grant.Path == "" || grant.FileName == "" {
+		return Grant{}, errors.New("path and file name are required")
 	}
 	if grant.Size < 0 {
 		return Grant{}, errors.New("file size must not be negative")
@@ -140,7 +138,7 @@ func (s *Service) Link(id string) (Link, error) {
 	return Link{
 		URI:         s.baseURL + path.Clean("/system/exports/"+url.PathEscape(grant.ID)) + "?" + q.Encode(),
 		Name:        grant.FileName,
-		Description: "Exported from LocalGate workspace",
+		Description: "Exported from LocalGate",
 		MIMEType:    grant.MIMEType,
 		Size:        grant.Size,
 	}, nil

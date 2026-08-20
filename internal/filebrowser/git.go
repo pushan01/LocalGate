@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"localgate/internal/config"
 	"localgate/internal/security"
 )
 
@@ -26,7 +25,7 @@ const (
 var (
 	ErrGitUnavailable           = errors.New("git is unavailable")
 	ErrGitRepositoryNotFound    = errors.New("git repository not found")
-	ErrGitRepositoryOutsideRoot = errors.New("git repository is outside workspace root")
+	ErrGitRepositoryOutsideRoot = errors.New("git repository is outside LocalGate root")
 	ErrGitOutputTooLarge        = errors.New("git output too large")
 	ErrGitTimeout               = errors.New("git command timed out")
 )
@@ -43,10 +42,8 @@ func (s *Service) GitStatus(ctx context.Context, req PathRequest) (GitStatusResu
 		return GitStatusResult{}, err
 	}
 	result := GitStatusResult{
-		WorkspaceID: resolved.workspaceID,
-		RootID:      resolved.rootID,
-		Path:        filepath.ToSlash(resolved.relPath),
-		Entries:     []GitStatusEntry{},
+		Path:    filepath.ToSlash(resolved.relPath),
+		Entries: []GitStatusEntry{},
 	}
 	repo, err := s.findGitRepository(ctx, resolved)
 	if errors.Is(err, ErrGitRepositoryNotFound) {
@@ -112,8 +109,6 @@ func (s *Service) GitDiff(ctx context.Context, req PathRequest, staged bool) (Gi
 		return GitDiffResult{}, err
 	}
 	return GitDiffResult{
-		WorkspaceID:    resolved.workspaceID,
-		RootID:         resolved.rootID,
 		Path:           filepath.ToSlash(resolved.relPath),
 		RepositoryPath: repo.rootPath,
 		Staged:         staged,
@@ -130,23 +125,7 @@ func (s *Service) resolveGitTarget(req PathRequest) (resolvedPath, error) {
 	if !s.Enabled() {
 		return resolvedPath{}, ErrDisabled
 	}
-	workspaceID := strings.TrimSpace(req.WorkspaceID)
-	if workspaceID == "" {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	ws, ok := s.workspaces[workspaceID]
-	if !ok {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	rootID := strings.TrimSpace(req.RootID)
-	if rootID == "" {
-		rootID = "0"
-	}
-	rootIndex, parseErr := strconv.Atoi(rootID)
-	if parseErr != nil || rootIndex < 0 || rootIndex >= len(ws.Roots) {
-		return resolvedPath{}, ErrRootNotFound
-	}
-	root := filepath.Clean(ws.Roots[rootIndex])
+	root := filepath.Clean(s.root.Path)
 	rel, cleanErr := cleanRelative(req.Path)
 	if cleanErr != nil || rel == "" {
 		return resolvedPath{}, fmt.Errorf("%w: invalid Git target", ErrPathNotAllowed)
@@ -159,7 +138,7 @@ func (s *Service) resolveGitTarget(req PathRequest) (resolvedPath, error) {
 		return resolvedPath{}, err
 	}
 	parent := filepath.Dir(logical)
-	decision := security.ValidatePath(parent, config.Workspace{ID: ws.ID, Roots: []string{root}, PathDenylist: ws.PathDenylist}, security.Options{FollowSymlink: true, AllowNonExist: false})
+	decision := security.ValidatePath(parent, s.root, security.Options{FollowSymlink: true, AllowNonExist: false})
 	if !decision.Allowed {
 		return resolvedPath{}, fmt.Errorf("%w: parent %s", ErrPathNotAllowed, decision.Reason)
 	}
@@ -174,11 +153,9 @@ func (s *Service) resolveGitTarget(req PathRequest) (resolvedPath, error) {
 		return resolvedPath{}, ErrNotDirectory
 	}
 	return resolvedPath{
-		workspaceID: workspaceID,
-		rootID:      rootID,
-		root:        root,
-		relPath:     rel,
-		absPath:     filepath.Join(decision.Path, filepath.Base(logical)),
+		root:    root,
+		relPath: rel,
+		absPath: filepath.Join(decision.Path, filepath.Base(logical)),
 	}, nil
 }
 

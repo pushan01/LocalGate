@@ -11,9 +11,8 @@ import (
 const Prefix = "/api/admin/v1"
 
 type API struct {
-	App         *app.App
-	DefaultWSID string
-	BaseURL     string
+	App     *app.App
+	BaseURL string
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -27,7 +26,6 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc(Prefix+"/approvals/", a.wrap(a.handleApprovalRoutes))
 	mux.HandleFunc(Prefix+"/deployments", a.wrap(a.handleDeployments))
 	mux.HandleFunc(Prefix+"/deployments/", a.wrap(a.handleDeploymentRoutes))
-	mux.HandleFunc(Prefix+"/file-browser/workspaces", a.wrap(a.handleFileBrowserWorkspaces))
 	mux.HandleFunc(Prefix+"/file-browser/files/list", a.wrap(a.handleFileList))
 	mux.HandleFunc(Prefix+"/file-browser/files/content", a.wrap(a.handleFileContent))
 	mux.HandleFunc(Prefix+"/file-browser/files/mkdir", a.wrap(a.handleFileMkdir))

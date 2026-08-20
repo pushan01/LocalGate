@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,8 +23,6 @@ import (
 
 var (
 	ErrDisabled           = errors.New("file browser is disabled")
-	ErrWorkspaceNotFound  = errors.New("workspace not found")
-	ErrRootNotFound       = errors.New("workspace root not found")
 	ErrPathNotAllowed     = errors.New("path not allowed")
 	ErrPathExcluded       = errors.New("path excluded")
 	ErrPathIsDirectory    = errors.New("path is directory")
@@ -41,41 +38,16 @@ var (
 )
 
 type Service struct {
-	cfg        config.FileBrowserConfig
-	workspaces map[string]config.Workspace
+	cfg  config.FileBrowserConfig
+	root config.Root
 }
 
-func NewService(cfg config.FileBrowserConfig, workspaces map[string]config.Workspace) *Service {
-	copied := make(map[string]config.Workspace, len(workspaces))
-	for id, ws := range workspaces {
-		copied[id] = ws
-	}
-	return &Service{cfg: cfg, workspaces: copied}
+func NewService(cfg config.FileBrowserConfig, root config.Root) *Service {
+	return &Service{cfg: cfg, root: root}
 }
 
 func (s *Service) Enabled() bool {
 	return s != nil && s.cfg.Enabled
-}
-
-func (s *Service) Workspaces() ([]WorkspaceItem, error) {
-	if !s.Enabled() {
-		return nil, ErrDisabled
-	}
-	ids := make([]string, 0, len(s.workspaces))
-	for id := range s.workspaces {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	items := make([]WorkspaceItem, 0, len(ids))
-	for _, id := range ids {
-		ws := s.workspaces[id]
-		roots := make([]Root, 0, len(ws.Roots))
-		for i, root := range ws.Roots {
-			roots = append(roots, Root{ID: strconv.Itoa(i), Name: rootDisplayName(root, i)})
-		}
-		items = append(items, WorkspaceItem{ID: id, Roots: roots})
-	}
-	return items, nil
 }
 
 func (s *Service) ResolveDirectory(req PathRequest) (DirectoryContext, error) {
@@ -84,10 +56,8 @@ func (s *Service) ResolveDirectory(req PathRequest) (DirectoryContext, error) {
 		return DirectoryContext{}, err
 	}
 	return DirectoryContext{
-		WorkspaceID: resolved.workspaceID,
-		RootID:      resolved.rootID,
-		Path:        filepath.ToSlash(resolved.relPath),
-		AbsPath:     resolved.absPath,
+		Path:    filepath.ToSlash(resolved.relPath),
+		AbsPath: resolved.absPath,
 	}, nil
 }
 
@@ -137,7 +107,7 @@ func (s *Service) List(ctx context.Context, req PathRequest) (ListResult, error)
 		}
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
-	return ListResult{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), Entries: out}, nil
+	return ListResult{Path: filepath.ToSlash(resolved.relPath), Entries: out}, nil
 }
 
 func (s *Service) ReadContent(ctx context.Context, req PathRequest) (FileContent, error) {
@@ -186,8 +156,6 @@ func (s *Service) ReadContent(ctx context.Context, req PathRequest) (FileContent
 		return FileContent{}, ErrBinaryFile
 	}
 	return FileContent{
-		WorkspaceID: resolved.workspaceID,
-		RootID:      resolved.rootID,
 		Path:        filepath.ToSlash(resolved.relPath),
 		Content:     string(b),
 		Encoding:    "utf-8",
@@ -225,7 +193,7 @@ func (s *Service) DownloadFile(ctx context.Context, req PathRequest) (DownloadFi
 		return DownloadFile{}, ctx.Err()
 	default:
 	}
-	return DownloadFile{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), AbsPath: logical, Name: filepath.Base(logical), Size: info.Size(), ModTime: info.ModTime().UTC()}, nil
+	return DownloadFile{Path: filepath.ToSlash(resolved.relPath), AbsPath: logical, Name: filepath.Base(logical), Size: info.Size(), ModTime: info.ModTime().UTC()}, nil
 }
 
 func (s *Service) PreviewImage(ctx context.Context, req PathRequest) (PreviewFile, error) {
@@ -292,7 +260,7 @@ func (s *Service) mkdir(ctx context.Context, req MkdirRequest, approved bool) (M
 	if s.cfg.RequireApprovalForWrite && !approved {
 		return MkdirResult{}, ErrApprovalRequired
 	}
-	resolved, err := s.resolveForWrite(PathRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path})
+	resolved, err := s.resolveForWrite(PathRequest{Path: req.Path})
 	if err != nil {
 		return MkdirResult{}, err
 	}
@@ -319,7 +287,7 @@ func (s *Service) mkdir(ctx context.Context, req MkdirRequest, approved bool) (M
 	if err != nil {
 		return MkdirResult{}, err
 	}
-	return MkdirResult{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), Status: "created", ModTime: info.ModTime().UTC()}, nil
+	return MkdirResult{Path: filepath.ToSlash(resolved.relPath), Status: "created", ModTime: info.ModTime().UTC()}, nil
 }
 
 func (s *Service) Delete(ctx context.Context, req DeleteRequest) (DeleteResult, error) {
@@ -340,7 +308,7 @@ func (s *Service) delete(ctx context.Context, req DeleteRequest, approved bool) 
 	if s.cfg.RequireApprovalForDelete && !approved {
 		return DeleteResult{}, ErrApprovalRequired
 	}
-	resolved, err := s.resolveForWrite(PathRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path})
+	resolved, err := s.resolveForWrite(PathRequest{Path: req.Path})
 	if err != nil {
 		return DeleteResult{}, err
 	}
@@ -381,7 +349,7 @@ func (s *Service) delete(ctx context.Context, req DeleteRequest, approved bool) 
 			return DeleteResult{}, err
 		}
 	}
-	return DeleteResult{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), Type: typeName, Status: "deleted", Recursive: req.Recursive, DeletedAt: time.Now().UTC()}, nil
+	return DeleteResult{Path: filepath.ToSlash(resolved.relPath), Type: typeName, Status: "deleted", Recursive: req.Recursive, DeletedAt: time.Now().UTC()}, nil
 }
 
 func (s *Service) Rename(ctx context.Context, req RenameRequest) (RenameResult, error) {
@@ -402,16 +370,13 @@ func (s *Service) rename(ctx context.Context, req RenameRequest, approved bool) 
 	if s.cfg.RequireApprovalForWrite && !approved {
 		return RenameResult{}, ErrApprovalRequired
 	}
-	from, err := s.resolveForWrite(PathRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.FromPath})
+	from, err := s.resolveForWrite(PathRequest{Path: req.FromPath})
 	if err != nil {
 		return RenameResult{}, err
 	}
-	to, err := s.resolveForWrite(PathRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.ToPath})
+	to, err := s.resolveForWrite(PathRequest{Path: req.ToPath})
 	if err != nil {
 		return RenameResult{}, err
-	}
-	if from.workspaceID != to.workspaceID || from.rootID != to.rootID {
-		return RenameResult{}, ErrRootNotFound
 	}
 	if from.relPath == to.relPath {
 		return RenameResult{}, fmt.Errorf("%w: source and destination are identical", ErrFileExists)
@@ -464,7 +429,7 @@ func (s *Service) rename(ctx context.Context, req RenameRequest, approved bool) 
 	} else if !newInfo.Mode().IsRegular() {
 		typeName = "other"
 	}
-	return RenameResult{WorkspaceID: from.workspaceID, RootID: from.rootID, FromPath: filepath.ToSlash(from.relPath), ToPath: filepath.ToSlash(to.relPath), Type: typeName, Status: "renamed", ModTime: newInfo.ModTime().UTC()}, nil
+	return RenameResult{FromPath: filepath.ToSlash(from.relPath), ToPath: filepath.ToSlash(to.relPath), Type: typeName, Status: "renamed", ModTime: newInfo.ModTime().UTC()}, nil
 }
 
 func (s *Service) saveContent(ctx context.Context, req SaveContentRequest, approved bool) (SaveContentResult, error) {
@@ -475,16 +440,14 @@ func (s *Service) saveContent(ctx context.Context, req SaveContentRequest, appro
 	if int64(len(content)) > s.cfg.MaxFileBytes {
 		return SaveContentResult{}, fmt.Errorf("%w: %d > %d", ErrFileTooLarge, len(content), s.cfg.MaxFileBytes)
 	}
-	return s.writeBytes(ctx, writeBytesRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path, Content: content, ETag: req.ETag, Create: req.Create, Overwrite: req.Overwrite, LimitBytes: s.cfg.MaxFileBytes, Approved: approved})
+	return s.writeBytes(ctx, writeBytesRequest{Path: req.Path, Content: content, ETag: req.ETag, Create: req.Create, Overwrite: req.Overwrite, LimitBytes: s.cfg.MaxFileBytes, Approved: approved})
 }
 
 func (s *Service) upload(ctx context.Context, req UploadRequest, approved bool) (UploadResult, error) {
-	return s.writeBytes(ctx, writeBytesRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path, Content: req.Content, ETag: req.ETag, Create: req.Create, Overwrite: req.Overwrite, LimitBytes: s.cfg.MaxUploadBytes, Approved: approved})
+	return s.writeBytes(ctx, writeBytesRequest{Path: req.Path, Content: req.Content, ETag: req.ETag, Create: req.Create, Overwrite: req.Overwrite, LimitBytes: s.cfg.MaxUploadBytes, Approved: approved})
 }
 
 type writeBytesRequest struct {
-	WorkspaceID string
-	RootID      string
 	Path        string
 	Content     []byte
 	ETag        string
@@ -508,7 +471,7 @@ func (s *Service) writeBytes(ctx context.Context, req writeBytesRequest) (SaveCo
 	if int64(len(content)) > req.LimitBytes {
 		return SaveContentResult{}, fmt.Errorf("%w: %d > %d", ErrFileTooLarge, len(content), req.LimitBytes)
 	}
-	resolved, err := s.resolveForWrite(PathRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path})
+	resolved, err := s.resolveForWrite(PathRequest{Path: req.Path})
 	if err != nil {
 		return SaveContentResult{}, err
 	}
@@ -576,38 +539,20 @@ func (s *Service) writeBytes(ctx context.Context, req writeBytesRequest) (SaveCo
 	} else if overwrote {
 		status = "overwritten"
 	}
-	return SaveContentResult{WorkspaceID: resolved.workspaceID, RootID: resolved.rootID, Path: filepath.ToSlash(resolved.relPath), Status: status, Bytes: len(content), ETag: etag(content), Size: info.Size(), ModTime: info.ModTime().UTC(), Created: created, Overwritten: overwrote}, nil
+	return SaveContentResult{Path: filepath.ToSlash(resolved.relPath), Status: status, Bytes: len(content), ETag: etag(content), Size: info.Size(), ModTime: info.ModTime().UTC(), Created: created, Overwritten: overwrote}, nil
 }
 
 type resolvedPath struct {
-	workspaceID string
-	rootID      string
-	root        string
-	relPath     string
-	absPath     string
+	root    string
+	relPath string
+	absPath string
 }
 
 func (s *Service) resolve(req PathRequest, requireDirectory bool) (resolvedPath, error) {
 	if !s.Enabled() {
 		return resolvedPath{}, ErrDisabled
 	}
-	workspaceID := strings.TrimSpace(req.WorkspaceID)
-	if workspaceID == "" {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	ws, ok := s.workspaces[workspaceID]
-	if !ok {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	rootID := strings.TrimSpace(req.RootID)
-	if rootID == "" {
-		rootID = "0"
-	}
-	rootIndex, err := strconv.Atoi(rootID)
-	if err != nil || rootIndex < 0 || rootIndex >= len(ws.Roots) {
-		return resolvedPath{}, ErrRootNotFound
-	}
-	root := filepath.Clean(ws.Roots[rootIndex])
+	root := filepath.Clean(s.root.Path)
 	rel, err := cleanRelative(req.Path)
 	if err != nil {
 		return resolvedPath{}, fmt.Errorf("%w: %v", ErrPathNotAllowed, err)
@@ -619,7 +564,7 @@ func (s *Service) resolve(req PathRequest, requireDirectory bool) (resolvedPath,
 	if rel != "" {
 		absPath = filepath.Join(root, rel)
 	}
-	dec := security.ValidatePath(absPath, config.Workspace{ID: ws.ID, Roots: []string{root}, PathDenylist: ws.PathDenylist}, security.Options{FollowSymlink: true, AllowNonExist: false})
+	dec := security.ValidatePath(absPath, s.root, security.Options{FollowSymlink: true, AllowNonExist: false})
 	if !dec.Allowed {
 		return resolvedPath{}, fmt.Errorf("%w: %s", ErrPathNotAllowed, dec.Reason)
 	}
@@ -633,30 +578,14 @@ func (s *Service) resolve(req PathRequest, requireDirectory bool) (resolvedPath,
 	if requireDirectory && !info.IsDir() {
 		return resolvedPath{}, ErrNotDirectory
 	}
-	return resolvedPath{workspaceID: workspaceID, rootID: rootID, root: root, relPath: rel, absPath: dec.Path}, nil
+	return resolvedPath{root: root, relPath: rel, absPath: dec.Path}, nil
 }
 
 func (s *Service) resolveForWrite(req PathRequest) (resolvedPath, error) {
 	if !s.Enabled() {
 		return resolvedPath{}, ErrDisabled
 	}
-	workspaceID := strings.TrimSpace(req.WorkspaceID)
-	if workspaceID == "" {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	ws, ok := s.workspaces[workspaceID]
-	if !ok {
-		return resolvedPath{}, ErrWorkspaceNotFound
-	}
-	rootID := strings.TrimSpace(req.RootID)
-	if rootID == "" {
-		rootID = "0"
-	}
-	rootIndex, err := strconv.Atoi(rootID)
-	if err != nil || rootIndex < 0 || rootIndex >= len(ws.Roots) {
-		return resolvedPath{}, ErrRootNotFound
-	}
-	root := filepath.Clean(ws.Roots[rootIndex])
+	root := filepath.Clean(s.root.Path)
 	rel, err := cleanRelative(req.Path)
 	if err != nil {
 		return resolvedPath{}, fmt.Errorf("%w: %v", ErrPathNotAllowed, err)
@@ -668,7 +597,7 @@ func (s *Service) resolveForWrite(req PathRequest) (resolvedPath, error) {
 		return resolvedPath{}, ErrPathExcluded
 	}
 	absPath := filepath.Join(root, rel)
-	dec := security.ValidatePath(absPath, config.Workspace{ID: ws.ID, Roots: []string{root}, PathDenylist: ws.PathDenylist}, security.Options{FollowSymlink: true, AllowNonExist: true})
+	dec := security.ValidatePath(absPath, s.root, security.Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {
 		return resolvedPath{}, fmt.Errorf("%w: %s", ErrPathNotAllowed, dec.Reason)
 	}
@@ -679,7 +608,7 @@ func (s *Service) resolveForWrite(req PathRequest) (resolvedPath, error) {
 		}
 		return resolvedPath{}, err
 	}
-	parentDec := security.ValidatePath(parent, config.Workspace{ID: ws.ID, Roots: []string{root}, PathDenylist: ws.PathDenylist}, security.Options{FollowSymlink: true, AllowNonExist: false})
+	parentDec := security.ValidatePath(parent, s.root, security.Options{FollowSymlink: true, AllowNonExist: false})
 	if !parentDec.Allowed {
 		return resolvedPath{}, fmt.Errorf("%w: parent %s", ErrPathNotAllowed, parentDec.Reason)
 	}
@@ -691,7 +620,7 @@ func (s *Service) resolveForWrite(req PathRequest) (resolvedPath, error) {
 	} else if !info.IsDir() {
 		return resolvedPath{}, ErrNotDirectory
 	}
-	return resolvedPath{workspaceID: workspaceID, rootID: rootID, root: root, relPath: rel, absPath: dec.Path}, nil
+	return resolvedPath{root: root, relPath: rel, absPath: dec.Path}, nil
 }
 
 func cleanRelative(value string) (string, error) {
@@ -817,12 +746,4 @@ func languageForPath(p string) string {
 	default:
 		return "plaintext"
 	}
-}
-
-func rootDisplayName(root string, index int) string {
-	name := filepath.Base(filepath.Clean(root))
-	if strings.TrimSpace(name) == "" || name == string(os.PathSeparator) {
-		return "root " + strconv.Itoa(index)
-	}
-	return name
 }

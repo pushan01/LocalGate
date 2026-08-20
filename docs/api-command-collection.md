@@ -118,7 +118,7 @@ session 直调工具包括：
 }
 ```
 
-`download_url` 是临时地址。`upload_file` 会读取这个 URL，把内容保存到 `path` 指定的 workspace 绝对路径。
+`download_url` 是临时地址。`upload_file` 会读取这个 URL，把内容保存到 `path` 指定的、位于配置 root 内的绝对路径。
 
 ## 工具 HTTP 化模式
 
@@ -167,7 +167,6 @@ LocalGate 会切换到工具 HTTP 化模式。
 
 ```json
 {
-  "workspace_id": "default",
   "auth_value": "lgta_xxx",
   "auth_header_name": "X-LocalGate-Tool-Access",
   "base_url": "http://127.0.0.1:8000",
@@ -179,7 +178,7 @@ LocalGate 会切换到工具 HTTP 化模式。
 注意：
 
 - 字段刻意不使用 `token`
-- `auth_value` 是 workspace 级短期访问凭证
+- `auth_value` 是当前 LocalGate 实例的短期访问凭证
 - 若服务启用了全局 Bearer 鉴权，工具 HTTP 请求仍然要额外带 `Authorization: Bearer ...`
 
 ### 工具 HTTP 路由
@@ -188,7 +187,7 @@ LocalGate 会切换到工具 HTTP 化模式。
 
 - `GET /tools`
 
-返回当前 workspace 可见工具的：
+返回当前 LocalGate 实例可见工具的：
 
 - `name`
 - `description`
@@ -296,7 +295,6 @@ curl -X POST "http://127.0.0.1:8000/tasks" \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "deploy_tool",
-    "workspace_id": "default",
     "args": {
       "type": "dynamic",
       "name": "blog",
@@ -330,13 +328,12 @@ curl -X POST "http://127.0.0.1:8000/tasks" \
 
 **查询参数**
 
-- `workspace_id`：可选，默认当前默认 workspace
 - `summary=1`：可选，仅返回 `name + description`
 
 **示例**
 
 ```bash
-curl "http://127.0.0.1:8000/tools?workspace_id=default"
+curl "http://127.0.0.1:8000/tools"
 ```
 
 ### 2. 查看单个工具定义
@@ -345,14 +342,10 @@ curl "http://127.0.0.1:8000/tools?workspace_id=default"
 
 - `GET /tools/{name}`
 
-**查询参数**
-
-- `workspace_id`：可选
-
 **示例**
 
 ```bash
-curl "http://127.0.0.1:8000/tools/read_file?workspace_id=default"
+curl "http://127.0.0.1:8000/tools/read_file"
 ```
 
 ### 3. 直接调用工具
@@ -381,13 +374,13 @@ curl "http://127.0.0.1:8000/tools/read_file/call" \
 用途：
 
 - 当宿主给的是文件对象，而不是当前机器上的本地路径
-- 需要把 `download_url` 指向的文件落到 LocalGate workspace 内
+- 需要把 `download_url` 指向的文件落到 LocalGate 配置 root 内
 
 参数：
 
 ```json
 {
-  "path": "/abs/path/in/workspace/report.pdf",
+  "path": "/abs/path/in/root/report.pdf",
   "file": {
     "download_url": "https://example.com/tmp/report.pdf",
     "file_id": "file_123",
@@ -401,7 +394,7 @@ curl "http://127.0.0.1:8000/tools/read_file/call" \
 
 ```json
 {
-  "path": "/abs/path/in/workspace/report.pdf",
+  "path": "/abs/path/in/root/report.pdf",
   "bytes": 12345,
   "file_id": "file_123",
   "file_name": "report.pdf",
@@ -423,7 +416,6 @@ curl "http://127.0.0.1:8000/tools/read_file/call" \
   "args": {
     "command": "go test ./..."
   },
-  "workspace_id": "default",
   "requester": "cli"
 }
 ```
@@ -444,7 +436,6 @@ curl -X POST "http://127.0.0.1:8000/tasks" \
   -d '{
     "tool": "run_command",
     "args": { "command": "pwd" },
-    "workspace_id": "default",
     "requester": "cli"
   }'
 ```
@@ -558,7 +549,6 @@ curl -N "http://127.0.0.1:8000/tasks/<task_id>/events/stream"
   "shell": "/bin/zsh",
   "login": false,
   "tty": true,
-  "workspace_id": "default",
   "requester": "cli",
   "env": {
     "NODE_ENV": "development"
@@ -580,7 +570,6 @@ curl -N "http://127.0.0.1:8000/tasks/<task_id>/events/stream"
 - `cursor_expired`
 - `output_error`
 - `exit_code`
-- `workspace_id`
 
 `next_offset` 是绝对 cursor。后续读取或写入 stdin 时，应把它作为 `cursor` 传回。若旧输出已被缓冲裁剪，服务端返回当前 `base_offset`，并设置 `truncated=true`、`cursor_expired=true`。
 
@@ -591,7 +580,6 @@ curl -X POST "http://127.0.0.1:8000/sessions/exec" \
   -H "Content-Type: application/json" \
   -d '{
     "cmd": "cat",
-    "workspace_id": "default",
     "yield_time_ms": 100,
     "max_output_items": 200
   }'
@@ -739,7 +727,7 @@ curl -X POST "$APPROVAL_BASE_URL/approvals/<approval_id>/cancel" \
 
 审批人由服务端认证上下文确定，客户端不能通过 `X-LocalGate-Actor` 指定。启用 Bearer 鉴权时 actor 为可信 principal `http-bearer`、`auth_method=bearer`；未启用鉴权时明确记录为 `local-unauthenticated`。
 
-批准前会重新校验 approval 与 task 的 `approval_id`、`task_id`、workspace、requester、tool、`args_digest` 以及 task 必须仍为 `awaiting_approval`。不一致返回 `409 approval_binding_mismatch`，并记录 `approval_validation_failed` 审计。
+批准前会重新校验 approval 与 task 的 `approval_id`、`task_id`、requester、tool、`args_digest` 以及 task 必须仍为 `awaiting_approval`。不一致返回 `409 approval_binding_mismatch`，并记录 `approval_validation_failed` 审计。
 
 审批导致的 task 终态错误码包括：`approval_rejected`、`approval_expired`、`approval_canceled`、`approval_restart`、`approval_release_failed`。
 
@@ -768,7 +756,7 @@ curl "http://127.0.0.1:8000/audits?requester=cli&limit=20&offset=0"
 
 ## HTTP 工具集合
 
-当前工具注册在 [app.go](file:///Users/bytedance/project/LocalGate.mcp/internal/app/app.go)，每个 workspace 默认包含以下工具。
+当前工具由单一 LocalGate Registry 注册，当前实例包含以下工具能力。
 
 ### 文件系统工具
 
@@ -902,7 +890,7 @@ LocalGate 使用固定的内置隐藏工具列表。这些工具不会出现在 
 - `create_upload_token`
 - `create_download_token`
 
-这些隐藏项不可通过 workspace 配置动态增删。其中前三项可由模型通过 `run_command` 组合实现；上传和下载令牌工具保留给内部或专用传输流程。
+这些隐藏项不可通过 root 配置动态增删。其中前三项可由模型通过 `run_command` 组合实现；上传和下载令牌工具保留给内部或专用传输流程。
 
 脚本会在启动成功后输出 pid、pid 文件和日志文件路径；若 pid 文件已存在且进程仍存活，脚本会直接失败，避免重复启动。
 
@@ -1083,7 +1071,7 @@ curl -X POST "http://127.0.0.1:8000/mcp" \
 
 #### 4. tools/call: `read_file`
 
-调用中继工具时同样使用 `tools/call`，只需把 `params.name` 换成 `server__tool`。这类工具的参数和返回值由下游 MCP server 决定，不应假设它们遵循本地 workspace 的文件 sandbox 约束。
+调用中继工具时同样使用 `tools/call`，只需把 `params.name` 换成 `server__tool`。这类工具的参数和返回值由下游 MCP server 决定，不应假设它们遵循 LocalGate 本地 root 的文件 sandbox 约束。
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/mcp" \
@@ -1314,7 +1302,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 **返回内容**
 
-- workspace 下所有注册工具
+- 当前实例 Registry 中所有注册工具
 - 3 个管理工具：
   - `task_status`
   - `task_logs`
@@ -1379,7 +1367,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 ```json
 {
-  "path": "/absolute/workspace/path"
+  "path": "/absolute/root/path"
 }
 ```
 
@@ -1398,7 +1386,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 ```json
 {
-  "path": "/absolute/workspace/path",
+  "path": "/absolute/root/path",
   "recursive": true,
   "max_results": 1000
 }
@@ -1410,7 +1398,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 
 ```json
 {
-  "root": "/absolute/workspace/path",
+  "root": "/absolute/root/path",
   "glob": "*.go",
   "max_results": 50
 }
@@ -1506,7 +1494,7 @@ stdio 模式仍然使用单行 JSON-RPC，请求格式与下文一致，但应�
 }
 ```
 
-每次保存返回的 `next_offset` 并作为下一次 `cursor`；`has_more=true` 时继续读取，`completed=true` / `output_complete=true` 表示终态 Session 的保留输出已追平。`buffer_truncated=true` 表示旧缓冲已被裁剪，`cursor_expired=true` 表示传入 cursor 已失效。优先使用 `max_output_items`；`max_output_tokens` 仅是兼容 alias，并不按模型 token 计数。Session 必须通过其所属 workspace 的工具或 `/sessions/*?workspace_id=...` 路由访问。
+每次保存返回的 `next_offset` 并作为下一次 `cursor`；`has_more=true` 时继续读取，`completed=true` / `output_complete=true` 表示终态 Session 的保留输出已追平。`buffer_truncated=true` 表示旧缓冲已被裁剪，`cursor_expired=true` 表示传入 cursor 已失效。优先使用 `max_output_items`；`max_output_tokens` 仅是兼容 alias，并不按模型 token 计数。Session 属于当前 LocalGate 实例，后续读写只需要 `session_id` 和 cursor。
 
 ### `task_status`
 

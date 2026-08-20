@@ -29,11 +29,11 @@ func (r *failingReader) Read(p []byte) (int, error) {
 
 func TestSessionRunnerPreservesLongOutputWithoutScannerLimit(t *testing.T) {
 	sessions := core.NewSessionManager()
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
-	r := SessionRunner{WS: config.Workspace{ID: "ws"}, Sessions: sessions}
+	s := sessions.Create(core.Session{}, core.SessionController{})
+	r := SessionRunner{WS: config.Root{}, Sessions: sessions}
 	want := strings.Repeat("x", 2*1024*1024)
 	r.streamSessionOutput(s.ID, "stdout", strings.NewReader(want))
-	read, err := sessions.ReadForWorkspace(s.ID, "ws", 0, 0)
+	read, err := sessions.Read(s.ID, 0, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -44,10 +44,10 @@ func TestSessionRunnerPreservesLongOutputWithoutScannerLimit(t *testing.T) {
 
 func TestSessionRunnerReportsOutputReadErrors(t *testing.T) {
 	sessions := core.NewSessionManager()
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
-	r := SessionRunner{WS: config.Workspace{ID: "ws"}, Sessions: sessions}
+	s := sessions.Create(core.Session{}, core.SessionController{})
+	r := SessionRunner{WS: config.Root{}, Sessions: sessions}
 	r.streamSessionOutput(s.ID, "stdout", &failingReader{})
-	read, err := sessions.ReadForWorkspace(s.ID, "ws", 0, 0)
+	read, err := sessions.Read(s.ID, 0, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSessionRunnerRejectsWorkspaceShell(t *testing.T) {
 	if err := os.WriteFile(fakeShell, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write fake shell: %v", err)
 	}
-	r := SessionRunner{WS: config.Workspace{ID: "ws", Roots: []string{root}, CWD: root, CommandAllowlist: []string{"echo"}}, Sessions: core.NewSessionManager()}
+	r := SessionRunner{WS: config.Root{Path: root, CommandAllowlist: []string{"echo"}}, Sessions: core.NewSessionManager()}
 	if _, err := r.StartSession(context.Background(), "tester", "echo hello", root, nil, fakeShell, false, false); err == nil || !strings.Contains(err.Error(), "trusted system shell") {
 		t.Fatalf("expected untrusted shell rejection, got %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSessionRunnerRejectsWorkspaceShell(t *testing.T) {
 
 func TestSessionRunnerDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	t.Setenv("LOCALGATE_SECRET_TEST", "should-not-leak")
-	r := SessionRunner{WS: config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}, Sessions: core.NewSessionManager()}
+	r := SessionRunner{WS: config.Root{CommandAllowlist: []string{"printf"}}, Sessions: core.NewSessionManager()}
 	s, err := r.StartSession(context.Background(), "tester", `printf '%s\n' "${LOCALGATE_SECRET_TEST-unset}"`, "", nil, "/bin/sh", false, false)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -100,7 +100,7 @@ func TestSessionRunnerInheritsProcessPathWithoutAllowlist(t *testing.T) {
 	t.Setenv("PATH", dir)
 
 	r := SessionRunner{
-		WS:       config.Workspace{ID: "ws", CommandAllowlist: []string{commandName}},
+		WS:       config.Root{CommandAllowlist: []string{commandName}},
 		Sessions: core.NewSessionManager(),
 	}
 	s, err := r.StartSession(context.Background(), "tester", commandName, "", nil, "/bin/sh", false, false)
@@ -118,10 +118,7 @@ func TestSessionRunnerInheritsProcessPathWithoutAllowlist(t *testing.T) {
 }
 
 func TestSessionRunnerStartAndRead(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"echo", "cat", "sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"echo", "cat", "sh"}}
 	sessions := core.NewSessionManager()
 	r := SessionRunner{WS: ws, Sessions: sessions}
 	s, err := r.StartSession(context.Background(), "tester", "echo hello", "", nil, "", false, false)
@@ -143,7 +140,7 @@ func TestSessionRunnerStartAndRead(t *testing.T) {
 
 func TestSessionOutputWriterPreservesLongLineAndNewlines(t *testing.T) {
 	sessions := core.NewSessionManagerWithLimit(1000)
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	s := sessions.Create(core.Session{}, core.SessionController{})
 	w := newSessionOutputWriter(sessions, s.ID, "stdout")
 	want := strings.Repeat("x", sessionOutputChunkBytes*2+17) + "\nsecond\nthird"
 	for start := 0; start < len(want); start += 7000 {
@@ -158,7 +155,7 @@ func TestSessionOutputWriterPreservesLongLineAndNewlines(t *testing.T) {
 	if err := w.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	_, read, err := sessions.ReadSnapshotForWorkspace(s.ID, "ws", 0, 100)
+	_, read, err := sessions.ReadSnapshot(s.ID, 0, 100)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -168,7 +165,7 @@ func TestSessionOutputWriterPreservesLongLineAndNewlines(t *testing.T) {
 }
 
 func TestSessionRunnerExitStatusMeansOutputDrained(t *testing.T) {
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"printf"}}
+	ws := config.Root{CommandAllowlist: []string{"printf"}}
 	sessions := core.NewSessionManager()
 	r := SessionRunner{WS: ws, Sessions: sessions}
 	s, err := r.StartSession(context.Background(), "tester", "printf 'tail-output'", "", nil, "", false, false)
@@ -177,7 +174,7 @@ func TestSessionRunnerExitStatusMeansOutputDrained(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		current, read, readErr := sessions.ReadSnapshotForWorkspace(s.ID, "ws", 0, 10)
+		current, read, readErr := sessions.ReadSnapshot(s.ID, 0, 10)
 		if readErr != nil {
 			t.Fatalf("read: %v", readErr)
 		}
@@ -196,7 +193,7 @@ func TestSessionRunnerExitStatusMeansOutputDrained(t *testing.T) {
 
 func TestReadThreadTerminalToolPagesTerminalOutputUntilComplete(t *testing.T) {
 	sessions := core.NewSessionManager()
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	s := sessions.Create(core.Session{}, core.SessionController{})
 	for _, value := range []string{"one", "two", "three"} {
 		if err := sessions.AppendOutput(s.ID, "stdout", value); err != nil {
 			t.Fatalf("append: %v", err)
@@ -205,7 +202,7 @@ func TestReadThreadTerminalToolPagesTerminalOutputUntilComplete(t *testing.T) {
 	if err := sessions.Finish(s.ID, 0, nil); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	tool := NewReadThreadTerminalTool(config.Workspace{ID: "ws"}, sessions)
+	tool := NewReadThreadTerminalTool(config.Root{}, sessions)
 	first, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"session_id":       s.ID,
 		"cursor":           0,
@@ -232,14 +229,14 @@ func TestReadThreadTerminalToolPagesTerminalOutputUntilComplete(t *testing.T) {
 
 func TestWriteStdinToolEmptyInputReadsExitedSession(t *testing.T) {
 	sessions := core.NewSessionManager()
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
+	s := sessions.Create(core.Session{}, core.SessionController{})
 	if err := sessions.AppendOutput(s.ID, "stdout", "tail"); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	if err := sessions.Finish(s.ID, 0, nil); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	tool := NewWriteStdinTool(config.Workspace{ID: "ws"}, sessions)
+	tool := NewWriteStdinTool(config.Root{}, sessions)
 	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"session_id":       s.ID,
 		"chars":            "",
@@ -256,15 +253,15 @@ func TestWriteStdinToolEmptyInputReadsExitedSession(t *testing.T) {
 
 func TestSessionToolsRejectInvalidCursorAndOversizedInput(t *testing.T) {
 	sessions := core.NewSessionManager()
-	s := sessions.Create(core.Session{WorkspaceID: "ws"}, core.SessionController{})
-	readTool := NewReadThreadTerminalTool(config.Workspace{ID: "ws"}, sessions)
+	s := sessions.Create(core.Session{}, core.SessionController{})
+	readTool := NewReadThreadTerminalTool(config.Root{}, sessions)
 	if _, err := readTool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"session_id": s.ID,
 		"cursor":     -1,
 	}); !errors.Is(err, core.ErrSessionCursorInvalid) {
 		t.Fatalf("expected invalid cursor, got %v", err)
 	}
-	writeTool := NewWriteStdinTool(config.Workspace{ID: "ws"}, sessions)
+	writeTool := NewWriteStdinTool(config.Root{}, sessions)
 	if _, err := writeTool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"session_id": s.ID,
 		"chars":      strings.Repeat("x", maxSessionInputBytes+1),
@@ -274,10 +271,7 @@ func TestSessionToolsRejectInvalidCursorAndOversizedInput(t *testing.T) {
 }
 
 func TestSessionRunnerWriteStdin(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"echo", "cat", "sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"echo", "cat", "sh"}}
 	sessions := core.NewSessionManager()
 	r := SessionRunner{WS: ws, Sessions: sessions}
 	s, err := r.StartSession(context.Background(), "tester", "cat", "", nil, "", false, false)
@@ -302,10 +296,7 @@ func TestSessionRunnerWriteStdin(t *testing.T) {
 }
 
 func TestCloseSessionToolTerminatesRunningSession(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"sh"}}
 	sessions := core.NewSessionManager()
 	r := SessionRunner{WS: ws, Sessions: sessions}
 	s, err := r.StartSession(context.Background(), "tester", "sh", "", nil, "", false, true)
@@ -320,7 +311,7 @@ func TestCloseSessionToolTerminatesRunningSession(t *testing.T) {
 	if res["status"] != core.SessionClosed || res["running"] != false {
 		t.Fatalf("unexpected close result: %#v", res)
 	}
-	current, err := sessions.GetForWorkspace(s.ID, ws.ID)
+	current, err := sessions.Get(s.ID)
 	if err != nil {
 		t.Fatalf("get closed session: %v", err)
 	}
@@ -330,10 +321,7 @@ func TestCloseSessionToolTerminatesRunningSession(t *testing.T) {
 }
 
 func TestSessionRunnerTTY(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"sh"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"sh"}}
 	sessions := core.NewSessionManager()
 	r := SessionRunner{WS: ws, Sessions: sessions}
 	s, err := r.StartSession(context.Background(), "tester", "sh", "", nil, "", false, true)
@@ -359,9 +347,7 @@ func TestSessionRunnerTTY(t *testing.T) {
 }
 
 func TestSessionRunnerRejectsRelativeWorkdir(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		Roots:            []string{t.TempDir()},
+	ws := config.Root{Path: t.TempDir(),
 		CommandAllowlist: []string{"echo", "sh"},
 	}
 	sessions := core.NewSessionManager()

@@ -56,12 +56,12 @@ type DeployOptions struct {
 }
 
 type DeployRequest struct {
-	Type      string
-	Name      string
-	Source    string
-	Workspace config.Workspace
-	Runtime   *dynamic.RuntimeSpec
-	Options   DeployOptions
+	Type    string
+	Name    string
+	Source  string
+	Root    config.Root
+	Runtime *dynamic.RuntimeSpec
+	Options DeployOptions
 }
 
 type DeployResult struct {
@@ -218,12 +218,12 @@ func (m *Manager) deployStatic(ctx context.Context, request DeployRequest) (Depl
 	if err := m.validateHostnameAvailable(TypeStatic, request.Name); err != nil {
 		return DeployResult{}, err
 	}
-	decision := security.ValidatePath(request.Source, request.Workspace, security.Options{FollowSymlink: true})
+	decision := security.ValidatePath(request.Source, request.Root, security.Options{FollowSymlink: true})
 	if !decision.Allowed {
 		return DeployResult{}, fmt.Errorf("static source is not allowed: %s", decision.Reason)
 	}
 	if !request.Options.PreserveSource && filepath.Clean(decision.Path) == filepath.Clean(decision.Root) {
-		return DeployResult{}, fmt.Errorf("%w: source must be a strict child of the workspace root", ErrUnsafeSourceRemoval)
+		return DeployResult{}, fmt.Errorf("%w: source must be a strict child of the LocalGate root", ErrUnsafeSourceRemoval)
 	}
 	result, err := m.static.DeploySiteWithOptions(ctx, request.Name, decision.Path, static.DeployOptions{
 		Overwrite: request.Options.Overwrite, RemoveSource: !request.Options.PreserveSource,
@@ -259,8 +259,7 @@ func (m *Manager) deployDynamic(ctx context.Context, request DeployRequest) (Dep
 		return DeployResult{}, err
 	}
 	result, err := m.dynamic.Deploy(ctx, dynamic.DeployRequest{
-		WorkspaceID: request.Workspace.ID,
-		Name:        request.Name, Source: request.Source, Runtime: *request.Runtime,
+		Name: request.Name, Source: request.Source, Runtime: *request.Runtime,
 		Options: dynamic.DeployOptions{
 			Overwrite: request.Options.Overwrite, PreserveSource: request.Options.PreserveSource,
 			Access:     normalizeAccess(request.Options.Access, m.defaultAccess),

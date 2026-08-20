@@ -1,5 +1,7 @@
 # File Browser / Online IDE Plan
 
+> 历史设计文档：其中 workspace/root selector API 是旧模型。现行 Files 页面和 Admin API 只使用配置的单一 `root` 与 relative `path`，不存在 workspace/root 选择器。
+
 ## 背景
 
 LocalGate 已经具备 workspace 沙箱、文件工具、任务系统、审批、审计、Session 终端和静态 / 动态部署能力。文件浏览器不应该绕过这些控制面能力直接暴露本机文件系统，而应该作为 LocalGate Admin Console 的一个受控功能，复用既有安全边界。

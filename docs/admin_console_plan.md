@@ -1,5 +1,7 @@
 # LocalGate 统一管理后台规划
 
+> 历史设计文档：其中出现的 `workspace` / `workspace_id` / root selector 描述属于旧多 Workspace 模型，现行实现已改为一个 LocalGate 实例对应一个配置 `root`，Admin API 不再选择 workspace。
+
 ## 状态
 
 实施中。第一阶段的统一调用元数据、Task 历史查询、管理 JSON API、独立管理前端、管理域隔离和兼容审批链接已经完成。审批配置和公开地址已归入 `admin.approval` 与 `admin.base_url`，不再存在独立审批域；后续继续进行旧模板迁移、前端工程化和增强型实时更新。

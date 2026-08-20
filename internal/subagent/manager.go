@@ -131,10 +131,6 @@ func (m *Manager) RegisterProvider(name string, provider Provider) error {
 }
 
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
-	workspaceID := strings.TrimSpace(req.WorkspaceID)
-	if workspaceID == "" {
-		return CreateResult{}, errors.New("workspace id is required")
-	}
 	providerName := strings.TrimSpace(req.Provider)
 	if providerName == "" {
 		providerName = m.defaultProvider
@@ -148,7 +144,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 		return CreateResult{}, err
 	}
 	state, err := provider.Create(ctx, ProviderCreateRequest{
-		WorkspaceID: workspaceID,
 		Name:        strings.TrimSpace(req.Name),
 		Instruction: req.Instruction,
 		Options:     cloneStringMap(req.Options),
@@ -164,7 +159,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 		SubagentType:  strings.TrimSpace(req.SubagentType),
 		Provider:      providerName,
 		Status:        StatusBusy,
-		WorkspaceID:   workspaceID,
 		Instruction:   req.Instruction,
 		ProviderState: cloneProviderState(state),
 		CreatedAt:     now,
@@ -196,11 +190,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 	return CreateResult{Subagent: cloneSubagent(agent)}, nil
 }
 
-func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Subagent, error) {
+func (m *Manager) Send(ctx context.Context, id, message string) (Subagent, error) {
 	if strings.TrimSpace(message) == "" {
 		return Subagent{}, errors.New("subagent message is required")
 	}
-	entry, err := m.entry(workspaceID, id)
+	entry, err := m.entry(id)
 	if err != nil {
 		return Subagent{}, err
 	}
@@ -287,16 +281,16 @@ func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Su
 	return snapshot, nil
 }
 
-func (m *Manager) Poll(ctx context.Context, workspaceID, id string) (ObserveResult, error) {
-	return m.observe(ctx, workspaceID, id, false)
+func (m *Manager) Poll(ctx context.Context, id string) (ObserveResult, error) {
+	return m.observe(ctx, id, false)
 }
 
-func (m *Manager) Wait(ctx context.Context, workspaceID, id string) (ObserveResult, error) {
-	return m.observe(ctx, workspaceID, id, true)
+func (m *Manager) Wait(ctx context.Context, id string) (ObserveResult, error) {
+	return m.observe(ctx, id, true)
 }
 
-func (m *Manager) observe(ctx context.Context, workspaceID, id string, wait bool) (ObserveResult, error) {
-	entry, err := m.entry(workspaceID, id)
+func (m *Manager) observe(ctx context.Context, id string, wait bool) (ObserveResult, error) {
+	entry, err := m.entry(id)
 	if err != nil {
 		return ObserveResult{}, err
 	}
@@ -382,8 +376,8 @@ func (m *Manager) observe(ctx context.Context, workspaceID, id string, wait bool
 	}
 }
 
-func (m *Manager) Get(workspaceID, id string) (Subagent, error) {
-	entry, err := m.entry(workspaceID, id)
+func (m *Manager) Get(id string) (Subagent, error) {
+	entry, err := m.entry(id)
 	if err != nil {
 		return Subagent{}, err
 	}
@@ -392,11 +386,7 @@ func (m *Manager) Get(workspaceID, id string) (Subagent, error) {
 	return cloneSubagent(entry.agent), nil
 }
 
-func (m *Manager) List(workspaceID string) ([]Subagent, error) {
-	workspaceID = strings.TrimSpace(workspaceID)
-	if workspaceID == "" {
-		return nil, errors.New("workspace id is required")
-	}
+func (m *Manager) List() ([]Subagent, error) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -410,9 +400,7 @@ func (m *Manager) List(workspaceID string) ([]Subagent, error) {
 	out := make([]Subagent, 0, len(entries))
 	for _, entry := range entries {
 		entry.mu.Lock()
-		if entry.agent.WorkspaceID == workspaceID {
-			out = append(out, cloneSubagent(entry.agent))
-		}
+		out = append(out, cloneSubagent(entry.agent))
 		entry.mu.Unlock()
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -424,8 +412,8 @@ func (m *Manager) List(workspaceID string) ([]Subagent, error) {
 	return out, nil
 }
 
-func (m *Manager) CloseAgent(ctx context.Context, workspaceID, id string) (Subagent, error) {
-	entry, err := m.entry(workspaceID, id)
+func (m *Manager) CloseAgent(ctx context.Context, id string) (Subagent, error) {
+	entry, err := m.entry(id)
 	if err != nil {
 		return Subagent{}, err
 	}
@@ -482,8 +470,8 @@ func (m *Manager) CloseAgent(ctx context.Context, workspaceID, id string) (Subag
 // remote conversation in place when no archive destination is configured. Any
 // remote or verification failure preserves the local mapping so the operation
 // can be inspected or retried safely.
-func (m *Manager) Archive(ctx context.Context, workspaceID, id string) (Subagent, error) {
-	entry, err := m.entry(workspaceID, id)
+func (m *Manager) Archive(ctx context.Context, id string) (Subagent, error) {
+	entry, err := m.entry(id)
 	if err != nil {
 		return Subagent{}, err
 	}
@@ -638,10 +626,9 @@ func (m *Manager) finishCreateReservation() {
 	m.mu.Unlock()
 }
 
-func (m *Manager) entry(workspaceID, id string) (*agentEntry, error) {
-	workspaceID = strings.TrimSpace(workspaceID)
+func (m *Manager) entry(id string) (*agentEntry, error) {
 	id = strings.TrimSpace(id)
-	if workspaceID == "" || id == "" {
+	if id == "" {
 		return nil, ErrNotFound
 	}
 	m.mu.RLock()
@@ -650,7 +637,7 @@ func (m *Manager) entry(workspaceID, id string) (*agentEntry, error) {
 		return nil, ErrManagerClosed
 	}
 	entry := m.agents[id]
-	if entry == nil || entry.agent.WorkspaceID != workspaceID {
+	if entry == nil {
 		return nil, ErrNotFound
 	}
 	return entry, nil

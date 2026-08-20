@@ -16,11 +16,7 @@ func TestMountHTTPRejectsRequestsWithoutSessionIDByDefault(t *testing.T) {
 	cfg := config.Config{
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root:             config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -28,7 +24,7 @@ func TestMountHTTPRejectsRequestsWithoutSessionIDByDefault(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
-	s, err := New(application, "localgate", "test", "ws")
+	s, err := New(application, "localgate", "test")
 	if err != nil {
 		t.Fatalf("mcpgo.New: %v", err)
 	}
@@ -53,11 +49,7 @@ func TestMountHTTPAllowsRequestsWithoutSessionIDWhenStateless(t *testing.T) {
 	cfg := config.Config{
 		LogStore:         t.TempDir(),
 		DefaultTimeoutMs: 10_000,
-		Workspaces: []config.Workspace{{
-			ID:    "ws",
-			Roots: []string{root},
-			CWD:   root,
-		}},
+		Root:             config.Root{Path: root},
 	}
 	application, err := app.New(cfg)
 	if err != nil {
@@ -65,7 +57,7 @@ func TestMountHTTPAllowsRequestsWithoutSessionIDWhenStateless(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 
-	s, err := New(application, "localgate", "test", "ws")
+	s, err := New(application, "localgate", "test")
 	if err != nil {
 		t.Fatalf("mcpgo.New: %v", err)
 	}

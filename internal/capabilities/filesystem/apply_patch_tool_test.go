@@ -118,7 +118,7 @@ func TestApplyPatchPreservesExecutableMode(t *testing.T) {
 
 func TestApplyPatchAddDoesNotOverwriteConcurrentCreate(t *testing.T) {
 	dir := t.TempDir()
-	tool := applyPatchTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}, CWD: dir}}}
+	tool := applyPatchTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	staged, err := tool.prepare([]patchOp{{action: "add", path: "new.txt", lines: []string{"ours"}}})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -196,7 +196,7 @@ func TestApplyPatchToolSchemaDocumentsPatchFormat(t *testing.T) {
 
 func mustApplyPatchTool(t *testing.T, root string) core.Tool {
 	t.Helper()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}, CWD: root}
+	ws := config.Root{Path: root}
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "apply_patch" {
 			return tl

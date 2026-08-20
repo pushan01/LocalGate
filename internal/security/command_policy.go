@@ -13,7 +13,7 @@ type CmdDecision struct {
 }
 
 // ValidateCommand applies a simple allowlist policy against the first argv token.
-func ValidateCommand(cmd string, ws config.Workspace) CmdDecision {
+func ValidateCommand(cmd string, ws config.Root) CmdDecision {
 	trim := strings.TrimSpace(cmd)
 	if trim == "" {
 		return CmdDecision{Allowed: false, Reason: "empty"}

@@ -10,12 +10,13 @@ import (
 	"strings"
 	"time"
 
+	toolcap "localgate/internal/capabilities/toolaccess"
 	"localgate/internal/config"
 	"localgate/internal/core"
 )
 
 type StartupInstructionsTool struct {
-	WS      config.Workspace
+	WS      config.Root
 	Reg     *core.Registry
 	Options StartupPromptOptions
 }
@@ -27,7 +28,7 @@ type StartupPromptOptions struct {
 	MCPServers   []config.MCPServer
 }
 
-func NewStartupInstructionsTool(ws config.Workspace, reg *core.Registry, opts StartupPromptOptions) core.Tool {
+func NewStartupInstructionsTool(ws config.Root, reg *core.Registry, opts StartupPromptOptions) core.Tool {
 	return StartupInstructionsTool{WS: ws, Reg: reg, Options: opts}
 }
 
@@ -50,27 +51,34 @@ func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeCont
 	_ = ctx
 	_ = args
 
-	tools := t.visibleTools()
+	tools := t.exposedTools()
 	hasTools := visibleToolFlags(tools)
+	capabilities := t.registryCapabilityFlags()
+	skillCapabilities := capabilities
+	if t.Options.ToolHTTPMode {
+		// Tool HTTP cannot use invoke_tool to reach hidden Registry capabilities,
+		// so skill routing must stay bounded to the HTTP-callable visible list.
+		skillCapabilities = hasTools
+	}
 	hasRG := executableAvailable("rg")
 	now := time.Now()
 	shell := os.Getenv("SHELL")
 	date := now.Format("2006-01-02")
 	timezone := displayTimezone(now)
-	skillRoots, externalSkills := visibleSkillsForPrompt(t.WS.CWD)
-	builtinSkills := visibleBuiltinSkillsForPrompt(hasTools, t.Options)
+	skillRoots, externalSkills := visibleSkillsForPrompt(t.WS.Path)
+	builtinSkills := visibleBuiltinSkillsForPrompt(skillCapabilities, t.Options)
 	skills := mergeSkillIndexes(builtinSkills, externalSkills)
 	mcpServers := safeMCPServersForPrompt(t.Options.MCPServers)
 	if t.Options.ToolHTTPMode {
 		mcpServers = nil
 	}
 	prompt, err := renderEmbeddedPromptTemplate(map[string]any{
-		"workspace_id":     ic.WorkspaceID,
-		"cwd":              t.WS.CWD,
-		"roots":            append([]string(nil), t.WS.Roots...),
+		"cwd":              t.WS.Path,
+		"roots":            []string{t.WS.Path},
 		"tool_count":       len(tools),
 		"tools":            tools,
 		"has_tools":        hasTools,
+		"has_capabilities": capabilities,
 		"skill_roots":      append([]string(nil), skillRoots...),
 		"skill_count":      len(skills),
 		"skills":           skills,
@@ -208,7 +216,38 @@ func timezoneNameFromPath(path string) string {
 	return normalizedTimezoneName(name)
 }
 
-func (t StartupInstructionsTool) visibleTools() []map[string]any {
+func (t StartupInstructionsTool) exposedTools() []map[string]any {
+	if t.Reg == nil {
+		return nil
+	}
+	if t.Options.ToolHTTPMode {
+		return t.visibleHTTPTools()
+	}
+
+	names := t.Reg.ListVisible()
+	slices.Sort(names)
+	tools := make([]map[string]any, 0, len(names)+1)
+	for _, name := range names {
+		if name == t.Name() || !toolcap.IsDirectMCPTool(name) {
+			continue
+		}
+		tool, ok := t.Reg.GetVisible(name)
+		if !ok {
+			continue
+		}
+		tools = append(tools, map[string]any{"name": name, "description": tool.Description()})
+	}
+	tools = append(tools, map[string]any{
+		"name":        toolcap.InvokeToolName,
+		"description": "Invoke one available LocalGate Registry tool by name after loading the relevant skill and exact tool schema.",
+	})
+	slices.SortFunc(tools, func(a, b map[string]any) int {
+		return strings.Compare(fmtString(a["name"]), fmtString(b["name"]))
+	})
+	return tools
+}
+
+func (t StartupInstructionsTool) visibleHTTPTools() []map[string]any {
 	if t.Reg == nil {
 		return nil
 	}
@@ -220,7 +259,7 @@ func (t StartupInstructionsTool) visibleTools() []map[string]any {
 		if name == t.Name() {
 			continue
 		}
-		if t.Options.ToolHTTPMode && isStartupBootstrapTool(name) {
+		if isStartupBootstrapTool(name) {
 			continue
 		}
 		tool, ok := t.Reg.GetVisible(name)
@@ -235,16 +274,25 @@ func (t StartupInstructionsTool) visibleTools() []map[string]any {
 	return tools
 }
 
+func (t StartupInstructionsTool) registryCapabilityFlags() map[string]any {
+	flags := make(map[string]any)
+	if t.Reg == nil {
+		return flags
+	}
+	for _, name := range t.Reg.List() {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			flags[name] = true
+		}
+	}
+	return flags
+}
+
 func fmtString(v any) string {
 	s, _ := v.(string)
 	return s
 }
 
 func isStartupBootstrapTool(name string) bool {
-	switch name {
-	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
-		return true
-	default:
-		return false
-	}
+	return toolcap.IsBootstrapTool(name)
 }

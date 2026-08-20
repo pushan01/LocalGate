@@ -22,7 +22,7 @@ AI Agent / MCP Client / HTTP Client
 ┌─────────────────────────────────────┐
 │              LocalGate              │
 │ Tool Registry · Task · Session      │
-│ Approval · Audit · Workspace Policy │
+│ Approval · Audit · Root Policy      │
 │ Static/Dynamic Deployment           │
 └─────────────────────────────────────┘
                  │
@@ -39,13 +39,27 @@ AI Agent / MCP Client / HTTP Client
 
 ### 1. 给 Agent 工具，而不是把整台机器交给它
 
-LocalGate 暴露的是 `read_file`、`apply_patch`、`run_command`、`deploy_tool` 等具名工具。每个调用都要经过 workspace、路径、命令、环境变量和 Shell 语法策略检查。
+LocalGate 通过具名工具提供能力，但不会把完整 Registry 平铺成 MCP 顶层工具。普通 MCP 模式只保留稳定的核心工具面；部署、Session、Task、Subagent 等领域能力由 Builtin Skill 渐进披露，再通过 `get_tool_schema` + `invoke_tool` 调用。无论从哪个入口执行，目标工具仍要经过 root、路径、命令、环境变量、审批和 Shell 语法策略检查。
 
 这意味着你可以让 Agent 真正完成开发和运维工作，同时把访问范围限制在指定项目目录，而不是开放一个无边界的远程终端。
 
+普通 MCP 模式的稳定顶层工具为：
+
+- `get_startup_instructions`
+- `get_skill`
+- `get_tool_schema`
+- `invoke_tool`
+- `read_file`
+- `apply_patch`
+- `run_command`
+- `upload_file`
+- `export_file`
+
+其中 `upload_file` / `export_file` 保持直接 MCP 暴露，用来保留宿主文件参数和 MCP `resource_link` 等原生协议语义。其余低频工具仍是完整的 LocalGate Registry 能力，只是不再长期占用 `tools/list`；匹配任务时先加载 startup 推荐的 Builtin Skill，再读取目标 schema 并通过 `invoke_tool` 执行。
+
 ### 2. 审批不是弹窗，而是执行状态机的一部分
 
-高风险操作可以在真正执行前进入 `pending_approval`。审批记录会绑定原始 Task、工具、参数摘要、workspace 和请求者。
+高风险操作可以在真正执行前进入 `pending_approval`。审批记录会绑定原始 Task、工具、参数摘要和请求者。
 
 批准后继续执行的是**同一个 Task**，客户端不需要重新发起命令，也不会因为“批准后重试”自然产生第二份任务。这使审批可以嵌入 Agent 的自动化流程，而不是成为流程之外的人工补丁。
 
@@ -83,13 +97,13 @@ LocalGate 会扫描两个标准位置：
 
 ```text
 ~/.agents/skills/<skill-name>/SKILL.md
-<workspace>/.agents/skills/<skill-name>/SKILL.md
+<root>/.agents/skills/<skill-name>/SKILL.md
 ```
 
 这套机制具备：
 
 - **动态安装**：把 Skill 目录复制、解压、克隆或软链接到上述目录后，下一次调用 `get_startup_instructions` 时即可被发现，通常无需重新编译或重启 LocalGate。
-- **全局与项目级作用域**：全局 Skills 可以被多个 workspace 共用，项目级 Skills 只服务于当前 workspace。
+- **全局与项目级作用域**：全局 Skills 可以被多个 LocalGate 实例共用，项目级 Skills 只服务于当前 root。
 - **标准 Frontmatter**：读取 `name`、`description` 和 `disable-model-invocation` 等字段。
 - **渐进式披露**：启动阶段只向模型披露 Skill 的名称、简介和文件位置；只有任务与描述匹配时，模型才使用 `read_file` 读取完整 `SKILL.md` 及其引用内容。
 - **上下文节省**：不会在每次请求中把所有 Skill 正文全部塞进提示词，减少无关上下文和 Token 消耗。
@@ -133,7 +147,7 @@ Agent 可以在同一个受控执行面中完成“修改代码 → 运行测试
 
 LocalGate 的限制不是客户端约定，而是在服务端执行：
 
-- workspace 根目录隔离
+- 单 root 目录隔离
 - 路径拒绝列表
 - 命令 allowlist / denylist
 - Shell 管道、重定向、后台执行和命令替换开关
@@ -147,7 +161,7 @@ LocalGate 的限制不是客户端约定，而是在服务端执行：
 
 在线 Agent 通常运行在隔离环境中，不能直接访问用户电脑上的路径，也很难主动连接本地上传接口。LocalGate 的 `upload_file` 不要求 Agent 先申请临时上传 Token，而是直接使用 MCP 宿主提供的文件对象。
 
-当用户在 ChatGPT 中上传文件时，ChatGPT 会为该文件签发短期可访问 URL，并把文件对象作为 MCP 工具参数传给 LocalGate。LocalGate 再将文件下载到经过 workspace 校验的本地绝对路径。
+当用户在 ChatGPT 中上传文件时，ChatGPT 会为该文件签发短期可访问 URL，并把文件对象作为 MCP 工具参数传给 LocalGate。LocalGate 再将文件下载到经过 root policy 校验的本地绝对路径。
 
 ```text
 用户在 ChatGPT 上传文件
@@ -161,7 +175,7 @@ LocalGate 的限制不是客户端约定，而是在服务端执行：
 LocalGate 下载并校验目标路径
           │
           ▼
-本地 workspace 文件系统
+本地 root 文件系统
 ```
 
 这样，在线 Agent 即使存在网络与文件系统隔离，也能通过标准 MCP 文件参数把附件可靠地送入本地开发环境。
@@ -180,7 +194,7 @@ LocalGate 下载并校验目标路径
 
 | 能力 | LocalGate 提供的机制 |
 | --- | --- |
-| 文件修改 | workspace 沙箱、原子多文件 Patch、宿主文件上传 |
+| 文件修改 | root 沙箱、原子多文件 Patch、宿主文件上传 |
 | 在线文件桥接 | MCP 文件对象、ChatGPT 临时下载 URL、受控本地落盘 |
 | 命令执行 | 命令策略、Shell 语法策略、超时和输出限制 |
 | 长进程 | 可交互 Session、终端缓冲、stdin 和生命周期管理 |
@@ -188,9 +202,9 @@ LocalGate 下载并校验目标路径
 | 可观察性 | Task 状态、增量日志、SSE 事件、审计记录 |
 | Bark 通知 | 待处理与异常审批、部署错误旁路通知、模型主动推送、AES-CBC 加密 |
 | MCP 接入 | stdio MCP、Streamable HTTP MCP、下游 MCP 转发 |
-| 标准 Skills | 动态发现、全局与 workspace 作用域、渐进式披露、按需读取 |
+| 标准 Skills | 动态发现、全局与 root 项目作用域、渐进式披露、按需读取 |
 | 应用发布 | 静态托管、动态进程监督、健康检查和回滚 |
-| 多项目隔离 | 多 workspace、独立根目录和命令策略 |
+| 多项目隔离 | 一个实例一个 root；需要多个安全域时运行多个 LocalGate 实例 |
 | 运维 | 管理后台、部署管理、受保护的二进制自升级 |
 
 ## Use Cases
@@ -224,7 +238,7 @@ cp localgate.example.yaml localgate.yaml
 - 关闭 Shell 管道、重定向、后台执行和命令替换
 - 对写文件、执行命令和部署操作启用审批规则
 
-使用前请根据实际目录和命令需求修改 `workspaces`。
+使用前请根据实际目录和命令需求修改顶层 `root` 以及实例级命令策略。
 
 ### 2. 构建
 
@@ -336,9 +350,9 @@ http://127.0.0.1:3737/mcp
 
 当 `mcp_http.stateless` 为 `false` 时，客户端需要保存初始化响应中的 MCP Session ID，并在后续请求中继续发送。
 
-## ChatGPT 附件上传到本地 workspace
+## ChatGPT 附件上传到配置 root
 
-LocalGate 的 `upload_file` 工具用于把 ChatGPT 或其他兼容 MCP 宿主中的文件对象保存到本地 workspace。
+LocalGate 的 `upload_file` 工具用于把 ChatGPT 或其他兼容 MCP 宿主中的文件对象保存到配置 root。
 
 ### 为什么不使用临时上传 Token
 
@@ -356,7 +370,7 @@ LocalGate 的 `upload_file` 工具用于把 ChatGPT 或其他兼容 MCP 宿主�
 2. ChatGPT 为文件生成短期 `download_url`。
 3. ChatGPT 通过 MCP 把文件对象传给 `upload_file`。
 4. LocalGate 从该临时 URL 下载文件。
-5. LocalGate 校验目标绝对路径属于指定 workspace 后写入本地磁盘。
+5. LocalGate 校验目标绝对路径位于配置 root 后写入本地磁盘。
 
 整个流程不需要 Agent 创建 `create_upload_token`，也不需要 Agent 自己实现 multipart 上传。
 
@@ -364,7 +378,7 @@ LocalGate 的 `upload_file` 工具用于把 ChatGPT 或其他兼容 MCP 宿主�
 
 ```json
 {
-  "path": "/absolute/workspace/input/report.pdf",
+  "path": "/absolute/root/input/report.pdf",
   "file": {
     "download_url": "https://host-issued-temporary-url.example/...",
     "file_id": "file_123",
@@ -376,7 +390,7 @@ LocalGate 的 `upload_file` 工具用于把 ChatGPT 或其他兼容 MCP 宿主�
 
 字段说明：
 
-- `path`：LocalGate 机器上的目标绝对路径，必须位于允许的 workspace 内。
+- `path`：LocalGate 机器上的目标绝对路径，必须位于配置 root 内。
 - `file.download_url`：由 ChatGPT 或 MCP 宿主自动签发的短期下载地址。
 - `file.file_id`：宿主侧文件标识，可选。
 - `file.mime_type`：文件 MIME 类型，可选。
@@ -421,18 +435,18 @@ GPT 应用可以先调用：
 ### 安全边界
 
 - 临时 URL 由 MCP 宿主签发，通常具有较短有效期，不应记录到日志或长期保存。
-- LocalGate 只允许写入 workspace 根目录内的绝对路径。
+- LocalGate 只允许写入配置 root 内的绝对路径。
 - `upload_file` 仍然受审批规则、路径策略和任务审计约束。
 - 文件大小、下载失败和目标路径冲突会作为结构化工具错误返回。
 - `create_upload_token` / `create_download_token` 更适合非 MCP 宿主之间的跨机器传输，不是 ChatGPT 附件上传的首选流程。
 
 ## 把本地文件返回给 ChatGPT / Agent
 
-LocalGate 的 `export_file` 工具用于把 workspace 内的普通文件返回给 ChatGPT 或其他支持 MCP `resource_link` 的 Agent 宿主。工具不会把二进制或 Base64 写进 MCP 结果，而是签发一个短期 HTTPS 下载资源。
+LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回给 ChatGPT 或其他支持 MCP `resource_link` 的 Agent 宿主。工具不会把二进制或 Base64 写进 MCP 结果，而是签发一个短期 HTTPS 下载资源。
 
 ```json
 {
-  "path": "/absolute/workspace/output/report.pdf",
+  "path": "/absolute/root/output/report.pdf",
   "file_name": "project-report.pdf",
   "ttl_seconds": 300
 }
@@ -465,9 +479,9 @@ file_exports:
 
 安全边界：
 
-- 只允许导出 workspace 内的普通文件，拒绝目录、符号链接和特殊文件。
+- 只允许导出配置 root 内的普通文件，拒绝目录、符号链接和特殊文件。
 - 默认最大 100 MiB，默认有效期 5 分钟，最长 10 分钟。
-- 签发和下载时都会重新校验 workspace、denylist、文件大小、修改时间和 SHA-256。
+- 签发和下载时都会重新校验 root policy、denylist、文件大小、修改时间和 SHA-256。
 - 文件在签发后发生变化时，下载返回 `409 export_source_changed`。
 - 签名 URL 不写入持久化 Task 结果、工具事件或审批审计。
 - 数据外传默认需要审批；审批摘要会显示本地路径和对外文件名。
@@ -480,7 +494,7 @@ file_exports:
 ### 查看工具
 
 ```bash
-curl -sS 'http://127.0.0.1:3737/tools?workspace_id=default&summary=1'
+curl -sS 'http://127.0.0.1:3737/tools?summary=1'
 ```
 
 ### 创建一次性任务
@@ -490,7 +504,6 @@ curl -sS -X POST http://127.0.0.1:3737/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "tool": "run_command",
-    "workspace_id": "default",
     "requester": "http",
     "args": {
       "command": "go test ./..."
@@ -513,7 +526,6 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/exec \
   -H 'Content-Type: application/json' \
   -d '{
     "cmd": "cat",
-    "workspace_id": "default",
     "yield_time_ms": 100,
     "max_output_items": 200
   }'
@@ -539,8 +551,8 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 
 - `read_file`
 - `write_file`
-- `upload_file`：接收 ChatGPT/MCP 宿主文件对象，并保存到本地 workspace
-- `export_file`：把 workspace 文件作为短期 MCP `resource_link` 返回给 ChatGPT/Agent
+- `upload_file`：接收 ChatGPT/MCP 宿主文件对象，并保存到配置 root
+- `export_file`：把配置 root 内文件作为短期 MCP `resource_link` 返回给 ChatGPT/Agent
 - `apply_patch`
 - `send_notification`：启用通知后，由模型明确请求向配置的 Bark 设备发送消息
 
@@ -558,11 +570,11 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 - `read_thread_terminal`：读取 Session 终端缓冲区
 - `close_session`：主动终止并关闭仍在运行的 Session
 
-Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；`has_more=true` 时继续分页读取。`buffer_truncated=true`（兼容字段 `truncated=true`）表示更老的缓冲输出已被丢弃，`cursor_expired=true` 表示传入 cursor 已早于当前 `base_offset`。优先使用 `max_output_items`（1–500）；旧 `max_output_tokens` 仅作为兼容 alias，实际限制的也是输出 item 数而不是模型 token。`read_thread_terminal` 可用 `wait_ms` 等待新输出，`write_stdin` 可用 `yield_time_ms` 在写入后等待；空 `chars` 可作为纯等待/读取。只有 `completed=true` / `output_complete=true` 才表示终态 Session 的保留输出已读到当前末尾。Session 的读取、输入和关闭都必须使用其所属 `workspace_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
+Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；`has_more=true` 时继续分页读取。`buffer_truncated=true`（兼容字段 `truncated=true`）表示更老的缓冲输出已被丢弃，`cursor_expired=true` 表示传入 cursor 已早于当前 `base_offset`。优先使用 `max_output_items`（1–500）；旧 `max_output_tokens` 仅作为兼容 alias，实际限制的也是输出 item 数而不是模型 token。`read_thread_terminal` 可用 `wait_ms` 等待新输出，`write_stdin` 可用 `yield_time_ms` 在写入后等待；空 `chars` 可作为纯等待/读取。只有 `completed=true` / `output_complete=true` 才表示终态 Session 的保留输出已读到当前末尾。Session 只属于当前 LocalGate 实例，读取、输入和关闭只需要 `session_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
 
 ### Subagent
 
-启用 `subagents` 后，LocalGate 会额外暴露一组持久化子 Agent 工具：
+启用 `subagents` 后，LocalGate 会在 Registry 中增加一组持久化子 Agent 工具。普通 MCP 模式下这些工具由 `localgate-subagents` Builtin Skill 渐进披露，并通过 `invoke_tool` 调用：
 
 - `subagent_spawn`：创建新的 `sg_*` 子 Agent 并提交首轮消息；拿到 conversation ID 后立即返回，不等待模型生成完成
 - `subagent_send`：向 `ready` 的 `sg_*` 提交下一轮消息并立即返回；若当前轮仍是 `busy`，会拒绝重入
@@ -577,6 +589,8 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 
 ### Task 管理
 
+Task lifecycle 工具属于 Registry 渐进能力，由 `localgate-task-session` 披露；它们不需要常驻 MCP `tools/list`：
+
 - `task_status`
 - `task_logs`
 - `task_cancel`
@@ -585,32 +599,32 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 
 ### 部署
 
+部署工具属于 Registry 渐进能力，由 `localgate-deployment` 披露；普通 MCP 模式下先读取目标 schema，再通过 `invoke_tool` 调用：
+
 - `deploy_tool`
 - `list_deployments`
 - `delete_deployment`
 
 启用动态托管后，还会提供启动、停止、重启、日志、版本列表和回滚工具。
 
-部分工具默认隐藏，例如 `list_directory`、`search_files`、`run_argv`、`create_upload_token` 和 `create_download_token`。可以通过 workspace 配置调整工具可见性。
+部分 Registry 工具默认不进入传统工具发现接口，例如 `list_directory`、`search_files`、`run_argv`、`create_upload_token` 和 `create_download_token`。普通 MCP 模式下，它们可以由对应 Builtin Skill 渐进披露并通过 `get_tool_schema` / `invoke_tool` 使用；Tool HTTP 是否可调用仍以 startup 返回的 HTTP 工具清单为准。
 
 ## 配置
 
 完整模板见 [`localgate.example.yaml`](./localgate.example.yaml)。
 
-### Workspace
+### Root
 
-每个 workspace 可以配置：
+一个 LocalGate 实例只配置一个顶层 `root`。路径、命令、环境变量、Shell 语法和审批策略都是实例级配置：
 
-- 可访问根目录 `roots`
-- 默认工作目录 `cwd`
-- 路径拒绝列表 `path_denylist`
-- 命令允许与拒绝列表
-- 可传入的环境变量
-- Shell 管道、重定向和后台执行策略
-- 隐藏工具
-- workspace 级审批规则
+- `root`：唯一允许访问的根目录
+- `path_denylist`：root 内额外禁止访问的路径
+- 命令 allowlist / denylist
+- 可传入的环境变量 allowlist
+- Shell 管道、重定向、后台执行和命令替换策略
+- 实例级审批策略
 
-所有文件路径都会被限制在 workspace 允许的根目录内。
+所有文件路径和 Shell workdir 都必须在 symlink 解析后位于配置 root 内。需要隔离多个项目或安全域时，运行多个 LocalGate 实例，而不是在一个实例内切换 root。
 
 ### Subagents
 
@@ -650,7 +664,7 @@ Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go
 
 Gemini 的图片生成结果会由内置 adapter 在生成结束后从已经渲染的 `<img>` 通过 canvas materialize 为 PNG，写入 `log_store/subagents/artifacts/<conversation_id>/turn-<n>/`。LocalGate 不持久化 Gemini 的 `blob:` URL；`subagent_poll` / `subagent_wait` 返回 provider-independent 的 artifact metadata（`id/type/mime_type/file_name/size/sha256/width/height/alt`），并把最新完成 turn 的 artifacts 持久化到对应 `sg_*` 记录，因此 subagent 已经 `ready` 后仍可通过 `subagent_get` / `subagent_list` 读取。artifact 的真实本机路径只保存在 LocalGate 内部持久化记录中，不通过 MCP artifact 列表暴露。开始下一次 `subagent_send` 时会清空上一轮 artifact 列表，避免把旧图片误认为新一轮结果。当前单张图片 materialize 上限为 16 MiB；artifact 抽取失败不会把一个已经完成的 Gemini turn 重新判成 `busy/degraded`。
 
-调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于该 workspace 下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`。内部 artifact 不要求位于用户 workspace root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 workspace path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
+调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于当前实例下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`。内部 artifact 不要求位于用户配置 root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 root path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
 
 ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect/project-move` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
 
@@ -713,7 +727,7 @@ Authorization: Bearer <token>
 
 <p align="center"><sub>管理后台集中查看任务、审批、部署与审计记录</sub></p>
 
-管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览、只读 Git status / staged 与 unstaged diff，以及从当前 workspace 目录启动受控终端。Git 查询要求 worktree 根、Git dir 和 common dir 都位于选中的 file-browser root 内，并禁用 external diff、textconv、pager、fsmonitor 和用户 / 系统 Git 配置。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
+管理后台的 Files 页面支持多标签安全编辑、ETag 冲突处理、Markdown / 图片预览、只读 Git status / staged 与 unstaged diff，以及从当前 root 目录启动受控终端。Git 查询要求 worktree 根、Git dir 和 common dir 都位于配置 root 内，并禁用 external diff、textconv、pager、fsmonitor 和用户 / 系统 Git 配置。终端继续复用 `exec_command`、Task、Approval 和 Session 安全边界；需要审批时可在完成决定后返回原文件上下文，轮询输出不会覆盖未保存编辑内容。
 
 ### Bark 通知
 
@@ -874,7 +888,7 @@ LocalGate 会管理进程、健康检查、日志轮转、Release 保留和回�
 - 默认只监听 loopback 地址。
 - 对外暴露时启用 HTTP Bearer 鉴权。
 - 不要在配置、脚本或 Git 历史中保存真实 Token。
-- workspace 的 `roots` 应尽可能小。
+- `root` 应尽可能小，只覆盖当前实例真正需要访问的项目目录。
 - 命令使用明确 allowlist，不要使用 `*`。
 - 非必要不要开启 Shell 管道、重定向、控制符和命令替换。
 - 部署、删除、升级和高权限命令应要求审批。
@@ -936,17 +950,17 @@ web/admin/                管理后台前端
 
 ```text
 ~/.agents/skills/
-<workspace>/.agents/skills/
+<root>/.agents/skills/
 ```
 
-LocalGate 还内置一组随二进制发布的工作流 Skills。`get_startup_instructions` 只暴露匹配当前能力面的 skill 索引；需要部署、文件传输、task/session、Tool HTTP 或 MCP relay 等复杂流程时，再通过 `get_skill` 按名称加载完整说明。外部 Skills 仍通过 `read_file` 渐进式加载；与 built-in 同名的外部 Skill 不会覆盖内置版本。
+LocalGate 还内置一组随二进制发布的工作流 Skills。`get_startup_instructions` 返回稳定的直接 MCP 工具摘要，并按完整 Registry capability 生成 skill 索引；需要 filesystem 扩展、部署、文件传输、task/session、Subagent、通知或 MCP relay 等领域能力时，通过 `get_skill` 按名称加载完整说明，再使用 `get_tool_schema` + `invoke_tool`。外部 Skills 仍通过 `read_file` 渐进式加载；与 built-in 同名的外部 Skill 不会覆盖内置版本。
 
 ## 进一步文档
 
 - [`api-command-collection.md`](./api-command-collection.md)：HTTP 和命令调用示例
 - [`skills/localgate-http-api/SKILL.md`](./skills/localgate-http-api/SKILL.md)：HTTP API 使用指南
 - [`skills/localgate-mcp-tools/SKILL.md`](./skills/localgate-mcp-tools/SKILL.md)：MCP 工具选择指南
-- 标准 Skills：安装到 `~/.agents/skills/` 或 `<workspace>/.agents/skills/`，由 `get_startup_instructions` 动态发现并渐进式披露
+- 标准 Skills：安装到 `~/.agents/skills/` 或 `<root>/.agents/skills/`，由 `get_startup_instructions` 动态发现并渐进式披露
 - [`docs/`](./docs/)：部署、管理后台和执行系统设计文档
 - [`docs/file_browser_plan.md`](./docs/file_browser_plan.md)：文件浏览器 / 在线 IDE 能力规划
 - [`todo.md`](./todo.md)：当前待办与已知的工程改进项

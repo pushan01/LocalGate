@@ -30,7 +30,7 @@ func TestExportFileToolDeclaresAndReturnsResourceLink(t *testing.T) {
 			MaxFileBytes:      1 << 20,
 			RequireApproval:   false,
 		},
-		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}},
+		Root: config.Root{Path: root},
 	})
 
 	registered := s.impl.ListTools()["export_file"]

@@ -37,7 +37,6 @@ type Request struct {
 	ID              string         `json:"id"`
 	TaskID          string         `json:"task_id,omitempty"`
 	Tool            string         `json:"tool"`
-	WorkspaceID     string         `json:"workspace_id"`
 	Requester       string         `json:"requester,omitempty"`
 	Transport       string         `json:"transport,omitempty"`
 	MCPSessionID    string         `json:"session_id,omitempty"`
@@ -68,7 +67,6 @@ type AuditRecord struct {
 	Actor           string         `json:"actor,omitempty"`
 	AuthMethod      string         `json:"auth_method,omitempty"`
 	Tool            string         `json:"tool"`
-	WorkspaceID     string         `json:"workspace_id"`
 	Requester       string         `json:"requester,omitempty"`
 	Transport       string         `json:"transport,omitempty"`
 	MCPSessionID    string         `json:"session_id,omitempty"`
@@ -89,7 +87,6 @@ type Actor struct {
 type Binding struct {
 	ApprovalID  string
 	TaskID      string
-	WorkspaceID string
 	Requester   string
 	Tool        string
 	ArgsDigest  string
@@ -315,7 +312,7 @@ func (s *Service) RecordAudit(rec AuditRecord) (AuditRecord, error) {
 	return rec, nil
 }
 
-func (s *Service) RequiresApproval(tool string, ws config.Workspace, args map[string]any) (bool, string) {
+func (s *Service) RequiresApproval(tool string, ws config.Root, args map[string]any) (bool, string) {
 	if tool == "run_command" || tool == "run_argv" || tool == "exec_command" {
 		cmd := strings.ToLower(strings.TrimSpace(firstString(args)))
 		for _, p := range ws.ApprovalPolicy.Commands {
@@ -348,7 +345,7 @@ func (s *Service) Create(req Request) (Request, error) {
 	if rawArgs == nil {
 		rawArgs = map[string]any{}
 	}
-	req.ArgsDigest = Digest(req.WorkspaceID, req.Tool, req.Requester, rawArgs)
+	req.ArgsDigest = Digest(req.Tool, req.Requester, rawArgs)
 	req.Args = RedactMap(rawArgs)
 	if s.baseURL != "" {
 		req.ApprovalURL = s.baseURL + s.approvalPath + req.ID
@@ -361,7 +358,6 @@ func (s *Service) Create(req Request) (Request, error) {
 		ApprovalID:  req.ID,
 		Action:      "created",
 		Tool:        req.Tool,
-		WorkspaceID: req.WorkspaceID,
 		Requester:   req.Requester,
 		Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
 		SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
@@ -447,7 +443,6 @@ func (s *Service) ApproveBound(id string, actor Actor, binding Binding) (Request
 				Actor:       normalizeActor(actor).ID,
 				AuthMethod:  normalizeActor(actor).AuthMethod,
 				Tool:        req.Tool,
-				WorkspaceID: req.WorkspaceID,
 				Requester:   req.Requester,
 				Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
 				SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
@@ -457,7 +452,6 @@ func (s *Service) ApproveBound(id string, actor Actor, binding Binding) (Request
 					"binding": map[string]any{
 						"approval_id":  binding.ApprovalID,
 						"task_id":      binding.TaskID,
-						"workspace_id": binding.WorkspaceID,
 						"requester":    binding.Requester,
 						"tool":         binding.Tool,
 						"args_digest":  binding.ArgsDigest,
@@ -630,7 +624,6 @@ func (s *Service) appendDecisionAudit(req Request, action string, actor Actor) e
 		Actor:       actor.ID,
 		AuthMethod:  actor.AuthMethod,
 		Tool:        req.Tool,
-		WorkspaceID: req.WorkspaceID,
 		Requester:   req.Requester,
 		Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
 		SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
@@ -657,9 +650,6 @@ func validateBinding(req Request, binding Binding) error {
 	}
 	if req.TaskID == "" || binding.TaskID != req.TaskID {
 		return fmt.Errorf("%w: task_id", ErrApprovalBindingMismatch)
-	}
-	if binding.WorkspaceID != req.WorkspaceID {
-		return fmt.Errorf("%w: workspace_id", ErrApprovalBindingMismatch)
 	}
 	if binding.Requester != req.Requester {
 		return fmt.Errorf("%w: requester", ErrApprovalBindingMismatch)
@@ -756,9 +746,8 @@ func redactRequests(requests []Request) []Request {
 	return out
 }
 
-func Digest(workspaceID, tool, requester string, args map[string]any) string {
+func Digest(tool, requester string, args map[string]any) string {
 	payload, _ := json.Marshal(map[string]any{
-		"workspace_id": workspaceID,
 		"tool":         tool,
 		"requester":    requester,
 		"args":         args,

@@ -3,19 +3,19 @@ import test from "node:test";
 
 import { FileGitState, fileGitContextKey, gitEntryHasStagedChanges, gitEntryHasWorktreeChanges } from "./file-git.js";
 
-test("git context change clears stale status and diff", () => {
-  const state = new FileGitState().setContext("ws", "0", "one");
+test("git path change clears stale status and diff", () => {
+  const state = new FileGitState().setContext("one");
   state.applyStatus({ repository: true }).applyDiff({ diff: "x" });
-  state.setContext("ws", "0", "two");
+  state.setContext("two");
   assert.equal(state.status, null);
   assert.equal(state.diff, null);
-  assert.equal(state.contextKey, fileGitContextKey("ws", "0", "two"));
+  assert.equal(state.contextKey, fileGitContextKey("two"));
 });
 
-test("same git context preserves loaded state", () => {
-  const state = new FileGitState().setContext("ws", "0", "one");
+test("same git path preserves loaded state", () => {
+  const state = new FileGitState().setContext("one");
   const status = { repository: true, entries: [] };
-  state.applyStatus(status).setContext("ws", "0", "one");
+  state.applyStatus(status).setContext("one");
   assert.equal(state.status, status);
 });
 

@@ -14,7 +14,7 @@ func TestAdminDisabledHidesAdminAndLegacyManagementRoutes(t *testing.T) {
 	cfg := config.Default()
 	cfg.LogStore = t.TempDir()
 	cfg.Admin.Enabled = false
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 
 	application, err := app.New(cfg)
 	if err != nil {
@@ -26,7 +26,7 @@ func TestAdminDisabledHidesAdminAndLegacyManagementRoutes(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	(&API{App: application, DefaultWSID: application.DefaultWSID}).Register(mux)
+	(&API{App: application}).Register(mux)
 	for _, path := range []string{
 		"/admin",
 		"/api/admin/v1/overview",

@@ -43,7 +43,7 @@ type stagedPatchFile struct {
 	original os.FileInfo
 }
 
-func newApplyPatchTool(ws config.Workspace) core.Tool {
+func newApplyPatchTool(ws config.Root) core.Tool {
 	return applyPatchTool{fsToolBase: fsToolBase{ws: ws}}
 }
 
@@ -163,9 +163,9 @@ func (t applyPatchTool) prepare(ops []patchOp) ([]stagedPatchFile, error) {
 	return staged, nil
 }
 
-func validatePatchPath(op patchOp, ws config.Workspace) (security.Decision, error) {
+func validatePatchPath(op patchOp, ws config.Root) (security.Decision, error) {
 	allowNonExist := op.action == "add"
-	targetPath := resolveWorkspacePath(op.path, ws)
+	targetPath := resolveRootPath(op.path, ws)
 	if fi, err := os.Lstat(targetPath); err == nil && (fi.Mode()&os.ModeSymlink) != 0 {
 		return security.Decision{}, errors.New("path not allowed: symlink")
 	}
@@ -209,15 +209,12 @@ func validatePatchPath(op patchOp, ws config.Workspace) (security.Decision, erro
 	return dec, nil
 }
 
-func resolveWorkspacePath(p string, ws config.Workspace) string {
+func resolveRootPath(p string, root config.Root) string {
 	if filepath.IsAbs(p) {
 		return p
 	}
-	if ws.CWD != "" {
-		return filepath.Join(ws.CWD, p)
-	}
-	if len(ws.Roots) > 0 {
-		return filepath.Join(ws.Roots[0], p)
+	if root.Path != "" {
+		return filepath.Join(root.Path, p)
 	}
 	return p
 }

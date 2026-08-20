@@ -53,17 +53,15 @@ type DeployOptions struct {
 }
 
 type DeployRequest struct {
-	WorkspaceID string
-	Name        string
-	Source      string
-	Runtime     RuntimeSpec
-	Options     DeployOptions
+	Name    string
+	Source  string
+	Runtime RuntimeSpec
+	Options DeployOptions
 }
 
 type Deployment struct {
 	Name              string            `json:"name"`
 	Type              string            `json:"type"`
-	WorkspaceID       string            `json:"workspace_id"`
 	Access            string            `json:"access,omitempty"`
 	ActiveRelease     string            `json:"active_release"`
 	DesiredState      string            `json:"desired_state"`
@@ -91,7 +89,6 @@ type Deployment struct {
 type View struct {
 	Name           string   `json:"site"`
 	Type           string   `json:"type"`
-	WorkspaceID    string   `json:"workspace_id"`
 	Access         string   `json:"access"`
 	Hostname       string   `json:"hostname"`
 	URL            string   `json:"url"`
@@ -135,7 +132,6 @@ type Release struct {
 type releaseMetadata struct {
 	Name          string   `json:"name,omitempty"`
 	Type          string   `json:"type,omitempty"`
-	WorkspaceID   string   `json:"workspace_id,omitempty"`
 	ReleaseID     string   `json:"release_id"`
 	CreatedAt     string   `json:"created_at"`
 	FileCount     int      `json:"file_count"`
@@ -169,7 +165,6 @@ type Operation struct {
 type Event struct {
 	Action       string
 	Name         string
-	WorkspaceID  string
 	ReleaseID    string
 	Executable   string
 	Hostname     string
@@ -242,7 +237,7 @@ func publicView(d Deployment, hostname, publicURL string) View {
 	sort.Strings(envKeys)
 	access := normalizeAccess(d.Access, "public")
 	return View{
-		Name: d.Name, Type: Type, WorkspaceID: d.WorkspaceID, Access: access, Hostname: hostname,
+		Name: d.Name, Type: Type, Access: access, Hostname: hostname,
 		URL: publicURL, ReleaseID: d.ActiveRelease, DesiredState: d.DesiredState,
 		Status: d.Status, Health: d.Health, Argv: append([]string(nil), d.Argv...),
 		WorkingDir: d.WorkingDir, HealthPath: d.HealthPath, RestartPolicy: d.RestartPolicy,

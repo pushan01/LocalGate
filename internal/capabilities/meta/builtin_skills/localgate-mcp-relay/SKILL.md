@@ -5,21 +5,22 @@ description: Use for tools relayed from configured downstream MCP servers, inclu
 
 # LocalGate MCP Relay
 
-Use this skill when startup instructions indicate downstream MCP servers are configured or the current tool list contains relayed tools.
+Use this skill when startup instructions indicate downstream MCP servers are configured. Relayed tools are progressive capabilities and should not need to occupy LocalGate's top-level MCP tool list.
 
 ## Identify relay tools
 
 LocalGate can expose downstream MCP tools with names shaped like `server__tool`. Treat these as downstream capabilities, not as LocalGate filesystem, shell, deployment, or sandbox primitives.
 
-- Use the relayed tool's own description and schema as authoritative.
-- Do not infer LocalGate workspace path restrictions for downstream tools unless that downstream tool explicitly documents them.
+- Use `get_tool_schema` for the `server__tool` name and treat the relayed tool's own description and schema as authoritative.
+- In normal MCP mode, call the relayed capability through `invoke_tool`; LocalGate dispatches it to the configured downstream server.
+- Do not infer LocalGate root path restrictions for downstream tools unless that downstream tool explicitly documents them.
 - Do not reuse LocalGate-specific argument conventions such as `cwd`, patch syntax, task/session semantics, or deployment fields unless the downstream schema actually defines them.
 
 ## Server context
 
 Startup instructions can include configured downstream server names and environment variable keys. Environment values are intentionally omitted and must not be reconstructed, echoed, or guessed.
 
-A relay server can expose different tools over time or fail independently from LocalGate. Re-check the current host tool list/schema when a relay capability is missing or has changed instead of relying on stale names.
+A relay server can expose different tools over time or fail independently from LocalGate. Re-check startup capability routing and the current schema when a relay capability is missing or has changed instead of relying on stale names.
 
 ## Calls and failures
 

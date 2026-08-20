@@ -174,7 +174,7 @@ func (a *API) handleDeploymentManagementAction(w http.ResponseWriter, r *http.Re
 		requester = "deployment-ui"
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport: invocation.TransportAdmin, WorkspaceID: a.DefaultWSID, Requester: requester,
+		Transport: invocation.TransportAdmin, Requester: requester,
 	}, tool, func() map[string]any {
 		args := map[string]any{"type": deploymentType, "name": name}
 		if action == "set-public" {

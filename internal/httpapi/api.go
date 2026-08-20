@@ -44,9 +44,8 @@ const (
 )
 
 type API struct {
-	App         *app.App
-	DefaultWSID string
-	mcpRuntime  *mcpRuntime
+	App        *app.App
+	mcpRuntime *mcpRuntime
 }
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -56,7 +55,7 @@ func (a *API) Register(mux *http.ServeMux) {
 
 func (a *API) RegisterAdmin(mux *http.ServeMux) {
 	if a.App.Admin.Enabled {
-		(&adminapi.API{App: a.App, DefaultWSID: a.DefaultWSID, BaseURL: a.App.Admin.BaseURL}).Register(mux)
+		(&adminapi.API{App: a.App, BaseURL: a.App.Admin.BaseURL}).Register(mux)
 		mux.Handle("/admin", adminui.Handler(a.App.Admin.BaseURL))
 		mux.Handle("/admin/", adminui.Handler(a.App.Admin.BaseURL))
 		mux.HandleFunc("/approvals", a.handleApprovalList)
@@ -99,7 +98,6 @@ type toolDetail struct {
 type createTaskRequest struct {
 	Tool            string `json:"tool"`
 	Args            any    `json:"args"`
-	WorkspaceID     string `json:"workspace_id"`
 	Requester       string `json:"requester"`
 	SessionID       string `json:"session_id,omitempty"`
 	SessionMode     string `json:"session_mode,omitempty"`
@@ -117,7 +115,6 @@ type execSessionRequest struct {
 	Login           bool           `json:"login"`
 	TTY             bool           `json:"tty"`
 	Requester       string         `json:"requester"`
-	WorkspaceID     string         `json:"workspace_id"`
 	Env             map[string]any `json:"env"`
 }
 
@@ -143,13 +140,9 @@ func (a *API) handleTasks(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusBadRequest, "bad_request", "tool is required", nil)
 		return
 	}
-	wsid := req.WorkspaceID
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	reg, ok := a.App.Registries[wsid]
-	if !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": wsid})
+	reg := a.App.Registry
+	if reg == nil {
+		server.WriteError(w, http.StatusServiceUnavailable, "tool_registry_unavailable", "tool registry is not available", nil)
 		return
 	}
 	args, err := toolargs.Decode(req.Args, a.App.ToolArguments.EnableBase64)
@@ -163,7 +156,6 @@ func (a *API) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
 		Transport:       invocation.TransportREST,
-		WorkspaceID:     wsid,
 		Requester:       req.Requester,
 		MCPSessionID:    req.SessionID,
 		SessionMode:     req.SessionMode,
@@ -203,8 +195,9 @@ func (a *API) handleTools(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 		return
 	}
-	wsid, reg, ok := a.resolveRegistry(w, r)
-	if !ok {
+	reg := a.App.Registry
+	if reg == nil {
+		server.WriteError(w, http.StatusServiceUnavailable, "tool_registry_unavailable", "tool registry is not available", nil)
 		return
 	}
 	names := reg.ListVisible()
@@ -222,10 +215,7 @@ func (a *API) handleTools(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, toolDetail{Name: t.Name(), Description: t.Description(), Schema: t.Schema(), Meta: core.ToolMetadata(t)})
 	}
-	server.WriteJSON(w, http.StatusOK, map[string]any{
-		"workspace_id": wsid,
-		"items":        items,
-	})
+	server.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *API) handleSessionExec(w http.ResponseWriter, r *http.Request) {
@@ -240,14 +230,6 @@ func (a *API) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Cmd == "" {
 		server.WriteError(w, http.StatusBadRequest, "bad_request", "cmd is required", nil)
-		return
-	}
-	wsid := req.WorkspaceID
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	if _, ok := a.App.Registries[wsid]; !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": wsid})
 		return
 	}
 	args := map[string]any{
@@ -265,7 +247,7 @@ func (a *API) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 		args["max_output_tokens"] = req.MaxOutputTokens
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport: invocation.TransportREST, WorkspaceID: wsid, Requester: req.Requester,
+		Transport: invocation.TransportREST, Requester: req.Requester,
 	}, "exec_command", args)
 	if err != nil {
 		server.WriteError(w, http.StatusBadRequest, "session_exec_failed", err.Error(), nil)
@@ -286,20 +268,12 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
 	}
-	wsid := strings.TrimSpace(r.URL.Query().Get("workspace_id"))
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	if _, ok := a.App.Registries[wsid]; !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": wsid})
-		return
-	}
 	if len(parts) == 1 {
 		if r.Method != http.MethodGet {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		s, err := a.App.Sessions.GetForWorkspace(sessionID, wsid)
+		s, err := a.App.Sessions.Get(sessionID)
 		if err != nil {
 			writeSessionRouteError(w, err)
 			return
@@ -331,9 +305,9 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		} else if req.MaxOutputTokens > 0 {
 			args["max_output_tokens"] = req.MaxOutputTokens
 		}
-		res, err := a.App.InvokeTool(r.Context(), wsid, "write_stdin", args)
+		res, err := a.App.InvokeTool(r.Context(), "write_stdin", args)
 		if err != nil {
-			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {
+			if errors.Is(err, core.ErrSessionNotFound) {
 				writeSessionRouteError(w, err)
 			} else {
 				server.WriteError(w, http.StatusBadRequest, "stdin_failed", err.Error(), nil)
@@ -369,14 +343,14 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				waitMS = i
 			}
 		}
-		res, err := a.App.InvokeTool(r.Context(), wsid, "read_thread_terminal", map[string]any{
+		res, err := a.App.InvokeTool(r.Context(), "read_thread_terminal", map[string]any{
 			"session_id":       sessionID,
 			"max_output_items": maxOutput,
 			"cursor":           cursor,
 			"wait_ms":          waitMS,
 		})
 		if err != nil {
-			if errors.Is(err, core.ErrSessionNotFound) || errors.Is(err, core.ErrSessionWorkspaceMismatch) {
+			if errors.Is(err, core.ErrSessionNotFound) {
 				writeSessionRouteError(w, err)
 			} else {
 				server.WriteError(w, http.StatusBadRequest, "terminal_read_failed", err.Error(), nil)
@@ -390,7 +364,7 @@ func (a *API) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 			return
 		}
-		s, err := a.App.Sessions.CloseForWorkspace(sessionID, wsid)
+		s, err := a.App.Sessions.Close(sessionID)
 		if err != nil {
 			writeSessionRouteError(w, err)
 			return
@@ -407,8 +381,6 @@ func writeSessionRouteError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, core.ErrSessionNotFound):
 		server.WriteError(w, http.StatusNotFound, "session_not_found", "session not found", nil)
-	case errors.Is(err, core.ErrSessionWorkspaceMismatch):
-		server.WriteError(w, http.StatusForbidden, "session_workspace_mismatch", "session does not belong to the requested workspace", nil)
 	default:
 		server.WriteError(w, http.StatusBadRequest, "session_operation_failed", err.Error(), nil)
 	}
@@ -432,8 +404,9 @@ func (a *API) handleToolRoutes(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
 	}
-	wsid, reg, ok := a.resolveRegistry(w, r)
-	if !ok {
+	reg := a.App.Registry
+	if reg == nil {
+		server.WriteError(w, http.StatusServiceUnavailable, "tool_registry_unavailable", "tool registry is not available", nil)
 		return
 	}
 	t, ok := reg.GetVisible(name)
@@ -442,11 +415,10 @@ func (a *API) handleToolRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server.WriteJSON(w, http.StatusOK, map[string]any{
-		"workspace_id": wsid,
-		"name":         t.Name(),
-		"description":  t.Description(),
-		"schema":       t.Schema(),
-		"_meta":        core.ToolMetadata(t),
+		"name":        t.Name(),
+		"description": t.Description(),
+		"schema":      t.Schema(),
+		"_meta":       core.ToolMetadata(t),
 	})
 }
 
@@ -463,13 +435,12 @@ func (a *API) handleToolCall(w http.ResponseWriter, r *http.Request, name string
 		server.WriteError(w, http.StatusNotFound, "not_found", "not found", nil)
 		return
 	}
-	grant, ok := a.authorizeToolRequest(w, r)
-	if !ok {
+	if _, ok := a.authorizeToolRequest(w, r); !ok {
 		return
 	}
-	reg, ok := a.App.Registries[grant.WorkspaceID]
-	if !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": grant.WorkspaceID})
+	reg := a.App.Registry
+	if reg == nil {
+		server.WriteError(w, http.StatusServiceUnavailable, "tool_registry_unavailable", "tool registry is not available", nil)
 		return
 	}
 	if !reg.IsVisible(name) {
@@ -492,7 +463,7 @@ func (a *API) handleToolCall(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 	submission, err := a.App.SubmitToolTaskWithMeta(invocation.Meta{
-		Transport: invocation.TransportToolHTTP, WorkspaceID: grant.WorkspaceID, Requester: "tool-http",
+		Transport: invocation.TransportToolHTTP, Requester: "tool-http",
 	}, name, args)
 	if err != nil {
 		server.WriteError(w, http.StatusBadRequest, "tool_call_failed", err.Error(), map[string]any{"tool": name})
@@ -832,7 +803,7 @@ func (a *API) handleApprovalUI(w http.ResponseWriter, r *http.Request) {
 		RejectURL:  approvalActionURL(a.App.Admin.BaseURL, req.ID, "reject"),
 		ListURL:    approvalManagementURL(a.App.Admin.BaseURL, "pending"),
 	}
-	tpl := template.Must(template.New("approval").Parse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LocalGate Approval</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:48px auto;padding:0 20px}pre{white-space:pre-wrap;background:#f5f5f5;padding:16px;border-radius:8px}button{padding:10px 18px;margin-right:10px}</style></head><body><p><a href="{{.ListURL}}">← Approval management</a></p><h1>Approval required</h1><p><strong>Status:</strong> {{.Request.Status}}</p><p><strong>Summary:</strong> {{.Request.Summary}}</p><p><strong>Risk:</strong> {{.Request.RiskLevel}}</p><p><strong>Tool:</strong> {{.Request.Tool}}</p><p><strong>Workspace:</strong> {{.Request.WorkspaceID}}</p><p><strong>Task:</strong> {{.Request.TaskID}}</p><p><strong>Expires:</strong> {{.Request.ExpiresAt}}</p><pre>{{printf "%#v" .Request.Args}}</pre>{{if eq .Request.Status "pending"}}<form method="post" action="{{.ApproveURL}}" style="display:inline"><button type="submit">Approve and execute</button></form><form method="post" action="{{.RejectURL}}" style="display:inline"><button type="submit">Reject</button></form>{{end}}</body></html>`))
+	tpl := template.Must(template.New("approval").Parse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LocalGate Approval</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:48px auto;padding:0 20px}pre{white-space:pre-wrap;background:#f5f5f5;padding:16px;border-radius:8px}button{padding:10px 18px;margin-right:10px}</style></head><body><p><a href="{{.ListURL}}">← Approval management</a></p><h1>Approval required</h1><p><strong>Status:</strong> {{.Request.Status}}</p><p><strong>Summary:</strong> {{.Request.Summary}}</p><p><strong>Risk:</strong> {{.Request.RiskLevel}}</p><p><strong>Tool:</strong> {{.Request.Tool}}</p><p><strong>Task:</strong> {{.Request.TaskID}}</p><p><strong>Expires:</strong> {{.Request.ExpiresAt}}</p><pre>{{printf "%#v" .Request.Args}}</pre>{{if eq .Request.Status "pending"}}<form method="post" action="{{.ApproveURL}}" style="display:inline"><button type="submit">Approve and execute</button></form><form method="post" action="{{.RejectURL}}" style="display:inline"><button type="submit">Reject</button></form>{{end}}</body></html>`))
 	if err := tpl.Execute(w, view); err != nil {
 		server.WriteError(w, http.StatusInternalServerError, "approval_page_failed", err.Error(), nil)
 	}
@@ -983,12 +954,7 @@ func (a *API) handleUploads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, ok := a.App.Workspaces[grant.WorkspaceID]
-	if !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": grant.WorkspaceID})
-		return
-	}
-	dec := security.ValidatePath(grant.Path, ws, security.Options{FollowSymlink: true, AllowNonExist: true})
+	dec := security.ValidatePath(grant.Path, a.App.Root, security.Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {
 		server.WriteError(w, http.StatusBadRequest, "path_not_allowed", "path not allowed: "+dec.Reason, nil)
 		return
@@ -1054,12 +1020,7 @@ func (a *API) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, ok := a.App.Workspaces[grant.WorkspaceID]
-	if !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": grant.WorkspaceID})
-		return
-	}
-	dec := security.ValidatePath(grant.Path, ws, security.Options{FollowSymlink: true, AllowNonExist: true})
+	dec := security.ValidatePath(grant.Path, a.App.Root, security.Options{FollowSymlink: true, AllowNonExist: true})
 	if !dec.Allowed {
 		server.WriteError(w, http.StatusBadRequest, "path_not_allowed", "path not allowed: "+dec.Reason, nil)
 		return
@@ -1118,12 +1079,7 @@ func (a *API) handleExports(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		ws, ok := a.App.Workspaces[grant.WorkspaceID]
-		if !ok {
-			server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
-			return
-		}
-		lexical := security.ValidatePath(grant.Path, ws, security.Options{})
+		lexical := security.ValidatePath(grant.Path, a.App.Root, security.Options{})
 		if !lexical.Allowed {
 			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
 			return
@@ -1132,7 +1088,7 @@ func (a *API) handleExports(w http.ResponseWriter, r *http.Request) {
 			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
 			return
 		}
-		dec := security.ValidatePath(lexical.Path, ws, security.Options{FollowSymlink: true})
+		dec := security.ValidatePath(lexical.Path, a.App.Root, security.Options{FollowSymlink: true})
 		if !dec.Allowed {
 			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
 			return
@@ -1198,19 +1154,6 @@ func (a *API) handleUpgradeRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server.WriteJSON(w, http.StatusOK, state)
-}
-
-func (a *API) resolveRegistry(w http.ResponseWriter, r *http.Request) (string, *core.Registry, bool) {
-	wsid := r.URL.Query().Get("workspace_id")
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	reg, ok := a.App.Registries[wsid]
-	if !ok {
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", map[string]any{"workspace_id": wsid})
-		return "", nil, false
-	}
-	return wsid, reg, true
 }
 
 func (a *API) authorizeToolRequest(w http.ResponseWriter, r *http.Request) (toolaccess.Grant, bool) {

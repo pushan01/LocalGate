@@ -10,11 +10,11 @@ import (
 )
 
 type Tool struct {
-	WS               config.Workspace
+	WS               config.Root
 	DefaultTimeoutMs int64
 }
 
-func NewTool(ws config.Workspace, defaultTimeoutMs int64) core.Tool {
+func NewTool(ws config.Root, defaultTimeoutMs int64) core.Tool {
 	return Tool{WS: ws, DefaultTimeoutMs: defaultTimeoutMs}
 }
 

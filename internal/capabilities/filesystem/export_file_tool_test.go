@@ -17,7 +17,7 @@ import (
 
 func TestExportFileToolDescriptionAndSchema(t *testing.T) {
 	cfg := config.FileExports{MaxTTLSeconds: 600}
-	tool := NewExportFileTool(config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}, cfg, nil)
+	tool := NewExportFileTool(config.Root{Path: t.TempDir()}, cfg, nil)
 
 	description := tool.Description()
 	for _, want := range []string{
@@ -80,8 +80,8 @@ func TestExportFileToolCreatesResourceLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	tool := NewExportFileTool(config.Workspace{ID: "ws", Roots: []string{root}, CWD: root}, cfg, svc)
-	result, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+	tool := NewExportFileTool(config.Root{Path: root}, cfg, svc)
+	result, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path":        target,
 		"file_name":   "renamed.txt",
 		"ttl_seconds": 120,
@@ -125,7 +125,7 @@ func TestExportFileToolRejectsUnsafeOrOversizedSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	tool := NewExportFileTool(config.Workspace{ID: "ws", Roots: []string{root}, CWD: root}, cfg, svc)
+	tool := NewExportFileTool(config.Root{Path: root}, cfg, svc)
 
 	large := filepath.Join(root, "large.bin")
 	if err := os.WriteFile(large, []byte("four"), 0o644); err != nil {

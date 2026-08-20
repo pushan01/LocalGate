@@ -19,7 +19,7 @@ func TestDeleteTerminatesManagedProcessTree(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	service.config.EnvAllowlist = append(service.config.EnvAllowlist, "LOCALGATE_DYNAMIC_CHILD_PID_FILE")
 	_, err := service.Deploy(context.Background(), DeployRequest{
-		WorkspaceID: "ws", Name: "tree", Source: source,
+		Name: "tree", Source: source,
 		Runtime: RuntimeSpec{Argv: []string{executable, "-test.run=^TestDynamicHelperProcess$"}, Env: map[string]string{
 			"LOCALGATE_DYNAMIC_HELPER": "1", "LOCALGATE_DYNAMIC_CHILD_PID_FILE": pidFile,
 		}},

@@ -11,10 +11,7 @@ import (
 )
 
 func TestRunArgvEcho(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"echo"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"echo"}}
 	tool := NewArgvTool(ws, 0)
 	sink := core.NewEventSink()
 	res, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "targv1", Sink: sink}, map[string]any{
@@ -29,10 +26,7 @@ func TestRunArgvEcho(t *testing.T) {
 }
 
 func TestRunArgvTimeout(t *testing.T) {
-	ws := config.Workspace{
-		ID:               "ws",
-		CommandAllowlist: []string{"sleep"},
-	}
+	ws := config.Root{CommandAllowlist: []string{"sleep"}}
 	tool := NewArgvTool(ws, 0)
 	start := time.Now()
 	_, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "targv2", Sink: core.NewEventSink()}, map[string]any{
@@ -48,7 +42,7 @@ func TestRunArgvTimeout(t *testing.T) {
 }
 
 func TestRunArgvRejectsNegativeTimeout(t *testing.T) {
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"sleep"}}
+	ws := config.Root{CommandAllowlist: []string{"sleep"}}
 	tool := NewArgvTool(ws, 12_000)
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"argv":       []string{"sleep", "1"},
@@ -59,7 +53,7 @@ func TestRunArgvRejectsNegativeTimeout(t *testing.T) {
 }
 
 func TestRunArgvAllowsLiteralShellMetacharactersInArguments(t *testing.T) {
-	ws := config.Workspace{ID: "ws", CommandAllowlist: []string{"echo"}}
+	ws := config.Root{CommandAllowlist: []string{"echo"}}
 	tool := NewArgvTool(ws, 0)
 	sink := core.NewEventSink()
 	_, err := tool.Execute(context.Background(), core.InvokeContext{TaskID: "literal-meta", Sink: sink}, map[string]any{

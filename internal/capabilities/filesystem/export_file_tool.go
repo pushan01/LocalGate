@@ -21,12 +21,12 @@ import (
 )
 
 type exportFileTool struct {
-	ws      config.Workspace
+	ws      config.Root
 	config  config.FileExports
 	exports *fileexport.Service
 }
 
-func NewExportFileTool(ws config.Workspace, cfg config.FileExports, exports *fileexport.Service) core.Tool {
+func NewExportFileTool(ws config.Root, cfg config.FileExports, exports *fileexport.Service) core.Tool {
 	return exportFileTool{ws: ws, config: cfg, exports: exports}
 }
 
@@ -181,7 +181,6 @@ func (t exportFileTool) Execute(ctx context.Context, ic core.InvokeContext, args
 		ttl = time.Duration(value) * time.Second
 	}
 	grant, err := t.exports.Issue(fileexport.Grant{
-		WorkspaceID:     t.ws.ID,
 		Path:            lexical.Path,
 		FileName:        fileName,
 		MIMEType:        mimeType,

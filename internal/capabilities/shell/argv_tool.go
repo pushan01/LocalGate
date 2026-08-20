@@ -10,11 +10,11 @@ import (
 )
 
 type ArgvTool struct {
-	WS               config.Workspace
+	WS               config.Root
 	DefaultTimeoutMs int64
 }
 
-func NewArgvTool(ws config.Workspace, defaultTimeoutMs int64) core.Tool {
+func NewArgvTool(ws config.Root, defaultTimeoutMs int64) core.Tool {
 	return ArgvTool{WS: ws, DefaultTimeoutMs: defaultTimeoutMs}
 }
 

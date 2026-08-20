@@ -16,7 +16,7 @@ func TestSubmitToolTaskWithMetaPersistsSessionAcrossApproval(t *testing.T) {
 	cfg.Admin.Approval.Enabled = true
 	cfg.Admin.BaseURL = "https://admin.test"
 	cfg.Admin.Approval.Rules = []config.ApprovalRule{{ID: "approve-write", Effect: "require_approval", Tools: []string{"write_file"}, Risk: "high"}}
-	cfg.Workspaces = []config.Workspace{{ID: "ws", Roots: []string{root}, CWD: root}}
+	cfg.Root = config.Root{Path: root}
 	application, err := New(cfg)
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -25,7 +25,6 @@ func TestSubmitToolTaskWithMetaPersistsSessionAcrossApproval(t *testing.T) {
 
 	submission, err := application.SubmitToolTaskWithMeta(invocation.Meta{
 		Transport:       invocation.TransportMCPHTTP,
-		WorkspaceID:     "ws",
 		Requester:       "mcp",
 		MCPSessionID:    "client-session",
 		SessionMode:     invocation.SessionModeStateless,

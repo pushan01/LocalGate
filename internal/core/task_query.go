@@ -14,7 +14,6 @@ type TaskFilter struct {
 	Transport     string
 	Tool          string
 	Status        Status
-	WorkspaceID   string
 	Requester     string
 	ApprovalID    string
 	CreatedAfter  time.Time
@@ -112,9 +111,6 @@ func matchesTaskFilter(task Task, filter TaskFilter) bool {
 		return false
 	}
 	if filter.Status != "" && task.Status != filter.Status {
-		return false
-	}
-	if value := strings.TrimSpace(filter.WorkspaceID); value != "" && task.WorkspaceID != value {
 		return false
 	}
 	if value := strings.TrimSpace(filter.Requester); value != "" && task.Requester != value {

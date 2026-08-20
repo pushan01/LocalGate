@@ -21,11 +21,11 @@ import (
 )
 
 type Service struct {
-	root       string
-	config     config.DynamicHosting
-	workspaces map[string]config.Workspace
-	store      *registryStore
-	owner      bool
+	root          string
+	config        config.DynamicHosting
+	executionRoot config.Root
+	store         *registryStore
+	owner         bool
 
 	opMu             sync.Mutex
 	mu               sync.RWMutex
@@ -40,7 +40,7 @@ type Service struct {
 	eventSink        EventSink
 }
 
-func NewService(root string, cfg config.DynamicHosting, workspaces map[string]config.Workspace, ownsRuntime bool) (*Service, error) {
+func NewService(root string, cfg config.DynamicHosting, executionRoot config.Root, ownsRuntime bool) (*Service, error) {
 	cfg = normalizeConfig(cfg)
 	if err := validateDomainSuffix(cfg.DomainSuffix); err != nil {
 		return nil, err
@@ -62,15 +62,15 @@ func NewService(root string, cfg config.DynamicHosting, workspaces map[string]co
 		loaded = &registry{Deployments: map[string]Deployment{}}
 	}
 	service := &Service{
-		root:        root,
-		config:      cfg,
-		workspaces:  cloneWorkspaces(workspaces),
-		store:       store,
-		owner:       ownsRuntime,
-		deployments: loaded.Deployments,
-		processes:   map[string]*managedProcess{},
-		orphans:     map[int]*managedProcess{},
-		proxySlots:  make(chan struct{}, cfg.MaxConcurrentRequests),
+		root:          root,
+		config:        cfg,
+		executionRoot: executionRoot,
+		store:         store,
+		owner:         ownsRuntime,
+		deployments:   loaded.Deployments,
+		processes:     map[string]*managedProcess{},
+		orphans:       map[int]*managedProcess{},
+		proxySlots:    make(chan struct{}, cfg.MaxConcurrentRequests),
 		proxyTransport: &http.Transport{
 			Proxy:                  http.ProxyFromEnvironment,
 			DialContext:            (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -174,14 +174,6 @@ func validateDomainSuffix(value string) error {
 	return nil
 }
 
-func cloneWorkspaces(input map[string]config.Workspace) map[string]config.Workspace {
-	out := make(map[string]config.Workspace, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
-	return out
-}
-
 func (s *Service) Enabled() bool { return s != nil && s.config.Enabled }
 
 func (s *Service) Config() config.DynamicHosting {
@@ -204,14 +196,10 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
-	workspace, ok := s.workspaces[request.WorkspaceID]
-	if !ok {
-		return DeployResult{}, errorf("deployment_source_invalid", "workspace not found")
-	}
 	if err := s.validateName(request.Name); err != nil {
 		return DeployResult{}, err
 	}
-	decision := security.ValidatePath(request.Source, workspace, security.Options{FollowSymlink: true})
+	decision := security.ValidatePath(request.Source, s.executionRoot, security.Options{FollowSymlink: true})
 	if !decision.Allowed {
 		return DeployResult{}, errorf("deployment_source_invalid", "source is not allowed: %s", decision.Reason)
 	}
@@ -224,7 +212,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 		return DeployResult{}, errorf("deployment_source_invalid", "source must be an existing directory")
 	}
 	if !request.Options.PreserveSource && filepath.Clean(source) == filepath.Clean(decision.Root) {
-		return DeployResult{}, errorf("deployment_source_invalid", "source must be a strict child of the workspace root when preserve_source is false")
+		return DeployResult{}, errorf("deployment_source_invalid", "source must be a strict child of the LocalGate root when preserve_source is false")
 	}
 
 	s.mu.RLock()
@@ -266,7 +254,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 	if err != nil {
 		return DeployResult{}, errorf("deployment_snapshot_failed", "create release id: %v", err)
 	}
-	provisional := Deployment{Name: request.Name, Type: Type, WorkspaceID: request.WorkspaceID, ActiveRelease: releaseID, Executable: executable, HealthPath: healthPath}
+	provisional := Deployment{Name: request.Name, Type: Type, ActiveRelease: releaseID, Executable: executable, HealthPath: healthPath}
 	s.emit(ctx, "deployment_staging_started", provisional, nil, nil)
 	releasesRoot := filepath.Join(s.root, "apps", request.Name, "releases")
 	if err := os.MkdirAll(releasesRoot, 0o700); err != nil {
@@ -321,7 +309,7 @@ func (s *Service) Deploy(ctx context.Context, request DeployRequest) (DeployResu
 		createdAt = previous.CreatedAt
 	}
 	deployment := Deployment{
-		Name: request.Name, Type: Type, WorkspaceID: request.WorkspaceID,
+		Name: request.Name, Type: Type,
 		Access:        normalizeAccess(request.Options.Access, s.config.DefaultAccess),
 		ActiveRelease: releaseID, DesiredState: DesiredRunning, Status: StatusStarting, Health: "checking",
 		Argv: append([]string(nil), request.Runtime.Argv...), Executable: executable, WorkingDir: workingDir, Env: environment,

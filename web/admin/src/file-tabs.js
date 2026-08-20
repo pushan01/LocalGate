@@ -1,5 +1,5 @@
-export function fileTabKey(workspaceID, rootID, path) {
-  return JSON.stringify([String(workspaceID || ""), String(rootID || ""), String(path || "")]);
+export function fileTabKey(path) {
+  return String(path || "");
 }
 
 function pathMatches(candidate, target, recursive) {
@@ -29,8 +29,8 @@ export class FileTabStore {
     return this.items.find(item => item.key === key) || null;
   }
 
-  find(workspaceID, rootID, path) {
-    return this.get(fileTabKey(workspaceID, rootID, path));
+  find(path) {
+    return this.get(fileTabKey(path));
   }
 
   active() {
@@ -38,7 +38,7 @@ export class FileTabStore {
   }
 
   open(input) {
-    const key = fileTabKey(input.workspaceID, input.rootID, input.path);
+    const key = fileTabKey(input.path);
     let tab = this.get(key);
     if (!tab) {
       tab = {
@@ -84,14 +84,12 @@ export class FileTabStore {
     return this.items.filter(item => item.dirty);
   }
 
-  matching(workspaceID, rootID, path, recursive = false) {
-    return this.items.filter(item => item.workspaceID === workspaceID
-      && item.rootID === rootID
-      && pathMatches(item.path, path, recursive));
+  matching(path, recursive = false) {
+    return this.items.filter(item => pathMatches(item.path, path, recursive));
   }
 
-  removeMatching(workspaceID, rootID, path, recursive = false) {
-    const keys = new Set(this.matching(workspaceID, rootID, path, recursive).map(item => item.key));
+  removeMatching(path, recursive = false) {
+    const keys = new Set(this.matching(path, recursive).map(item => item.key));
     if (!keys.size) return [];
     const removed = this.items.filter(item => keys.has(item.key));
     const activeIndex = this.items.findIndex(item => item.key === this.activeKey);
@@ -103,15 +101,15 @@ export class FileTabStore {
     return removed;
   }
 
-  renameMatching(workspaceID, rootID, fromPath, toPath, recursive = false) {
-    const matches = this.matching(workspaceID, rootID, fromPath, recursive);
+  renameMatching(fromPath, toPath, recursive = false) {
+    const matches = this.matching(fromPath, recursive);
     if (!matches.length) return [];
     const active = this.active();
     for (const tab of matches) {
       const exactFile = tab.path === fromPath;
       tab.path = replacePathPrefix(tab.path, fromPath, toPath);
       tab.dirPath = exactFile ? parentPath(toPath) : replacePathPrefix(tab.dirPath || "", fromPath, toPath);
-      tab.key = fileTabKey(tab.workspaceID, tab.rootID, tab.path);
+      tab.key = fileTabKey(tab.path);
     }
     if (active) this.activeKey = active.key;
     return matches;

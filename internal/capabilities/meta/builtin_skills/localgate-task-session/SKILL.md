@@ -7,6 +7,8 @@ description: Use for LocalGate task lifecycle, approvals, long-running or intera
 
 Use this skill when work spans more than a single immediate tool result.
 
+In normal MCP mode, `run_command` remains direct, while session and Task lifecycle helpers may be progressive Registry tools. Before calling a non-direct helper, use `get_tool_schema` and then `invoke_tool`. Keep the original task/session identifiers inside the target tool's `arguments` object.
+
 ## Choose task vs session
 
 - Use `run_command` for one-shot, non-interactive commands that should produce a final result.
@@ -18,14 +20,14 @@ Do not start an interactive session when a one-shot command is sufficient.
 
 ## Follow asynchronous tasks
 
-A tool can return a `task_id` before work is terminal. When task lifecycle helpers such as `task_status`, `task_logs`, `wait_task_finish`, `task_result`, or `task_cancel` are exposed by the host/transport, keep using the original `task_id`.
+A tool can return a `task_id` before work is terminal. Use Registry lifecycle helpers such as `task_status`, `task_logs`, `wait_task_finish`, `task_result`, or `task_cancel` through the current transport and keep using the original `task_id`.
 
 - Waiting, queued, or running states are not failures.
 - Use logs for incremental diagnostics when useful.
 - Read the final result after the task reaches a terminal success state.
 - Cancel only when the user asks or continuing the task is no longer appropriate.
 
-These lifecycle helpers can be host/transport additions and therefore may not appear in the LocalGate Registry tool summary. Call only helpers actually exposed by the current host.
+These lifecycle helpers do not need to appear as top-level MCP tools. Their availability is disclosed through this skill and `get_tool_schema`.
 
 ## Approval handoff
 
@@ -49,4 +51,4 @@ When session output APIs return an absolute cursor/offset such as `next_offset`,
 - `write_stdin` can use `yield_time_ms` to wait for output after input. Empty `chars` performs only the wait/read step, including after the process has exited.
 - A canceled stdin write may have been partially delivered. LocalGate closes that session to avoid leaving an interactive protocol in an unknown state.
 
-Keep session access within the workspace/session context that created it, and do not guess a session id or cursor.
+Keep session access within the LocalGate instance/session context that created it, and do not guess a session id or cursor.

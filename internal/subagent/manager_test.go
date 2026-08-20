@@ -184,7 +184,7 @@ func newTestManager(t *testing.T, provider *fakeProvider, options Options) *Mana
 
 func markReady(t *testing.T, m *Manager, workspaceID, id string) {
 	t.Helper()
-	result, err := m.Poll(context.Background(), workspaceID, id)
+	result, err := m.Poll(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,20 +227,20 @@ func TestStoreLoadsLegacySubagentWithoutType(t *testing.T) {
 func TestManagerArchiveMovesBeforeDeletingLocalRecord(t *testing.T) {
 	provider := &archiveFakeProvider{fakeProvider: newFakeProvider()}
 	m, store := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "archive", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "archive", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider.pollBusy = false
 
-	archived, err := m.Archive(context.Background(), "ws", created.Subagent.ID)
+	archived, err := m.Archive(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if archived.ProviderState.ProjectID != "cafebabe" || archived.Status != StatusClosed {
 		t.Fatalf("unexpected archived snapshot: %#v", archived)
 	}
-	if _, err := m.Get("ws", created.Subagent.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := m.Get(created.Subagent.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("archived subagent should be removed from manager, got %v", err)
 	}
 	loaded, err := store.Load()
@@ -266,11 +266,11 @@ func TestManagerRejectsTwoSubagentsOwningSameConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "first", Instruction: "one"})
+	first, err := m.Create(context.Background(), CreateRequest{Name: "first", Instruction: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "second", Instruction: "two"})
+	_, err = m.Create(context.Background(), CreateRequest{Name: "second", Instruction: "two"})
 	if !errors.Is(err, ErrConversationConflict) {
 		t.Fatalf("second create error = %v, want conversation conflict", err)
 	}
@@ -279,14 +279,14 @@ func TestManagerRejectsTwoSubagentsOwningSameConversation(t *testing.T) {
 		t.Fatalf("unexpected conflict details: %#v err=%v", conflict, err)
 	}
 
-	agent, err := m.Get("ws", first.Subagent.ID)
+	agent, err := m.Get(first.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if agent.Status != StatusDegraded || !strings.Contains(agent.LastError, "shared-conversation") {
 		t.Fatalf("existing owner should be quarantined after provider collision: %#v", agent)
 	}
-	agents, err := m.List("ws")
+	agents, err := m.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,10 +299,9 @@ func TestManagerQuarantinesLoadedDuplicateConversationMapping(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "subagents"))
 	baseTime := time.Now().UTC().Add(-time.Minute)
 	first := Subagent{
-		ID:          "sg_first0000000000000000000",
-		Provider:    "fake",
-		Status:      StatusBusy,
-		WorkspaceID: "ws",
+		ID:       "sg_first0000000000000000000",
+		Provider: "fake",
+		Status:   StatusBusy,
 		ProviderState: ProviderState{
 			ConversationID: "shared-conversation",
 		},
@@ -329,21 +328,21 @@ func TestManagerQuarantinesLoadedDuplicateConversationMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	owner, err := m.Get("ws", first.ID)
+	owner, err := m.Get(first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if owner.Status != StatusBusy {
 		t.Fatalf("earliest mapping should remain owner, got %#v", owner)
 	}
-	duplicate, err := m.Get("ws", second.ID)
+	duplicate, err := m.Get(second.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if duplicate.Status != StatusDegraded || !strings.Contains(duplicate.LastError, first.ID) {
 		t.Fatalf("loaded duplicate was not quarantined: %#v", duplicate)
 	}
-	if _, err := m.Poll(context.Background(), "ws", second.ID); !errors.Is(err, ErrConversationConflict) {
+	if _, err := m.Poll(context.Background(), second.ID); !errors.Is(err, ErrConversationConflict) {
 		t.Fatalf("duplicate poll error = %v, want conversation conflict", err)
 	}
 }
@@ -352,19 +351,19 @@ func TestManagerArchiveRefusesGeneratingConversationAndKeepsMapping(t *testing.T
 	provider := &archiveFakeProvider{fakeProvider: newFakeProvider()}
 	provider.pollBusy = true
 	m, _ := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "busy", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "busy", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = m.Archive(context.Background(), "ws", created.Subagent.ID)
+	_, err = m.Archive(context.Background(), created.Subagent.ID)
 	if !errors.Is(err, ErrArchiveBusy) {
 		t.Fatalf("archive busy error = %v", err)
 	}
 	if provider.archiveCount != 0 {
 		t.Fatalf("archive provider called while generating: %d", provider.archiveCount)
 	}
-	if _, err := m.Get("ws", created.Subagent.ID); err != nil {
+	if _, err := m.Get(created.Subagent.ID); err != nil {
 		t.Fatalf("busy archive must preserve mapping: %v", err)
 	}
 }
@@ -372,17 +371,17 @@ func TestManagerArchiveRefusesGeneratingConversationAndKeepsMapping(t *testing.T
 func TestManagerArchiveOutcomeUnknownKeepsDegradedMapping(t *testing.T) {
 	provider := &archiveFakeProvider{fakeProvider: newFakeProvider(), archiveErr: NewOutcomeUnknownError(errors.New("lost response"))}
 	m, _ := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "unknown", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "unknown", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider.pollBusy = false
 
-	_, err = m.Archive(context.Background(), "ws", created.Subagent.ID)
+	_, err = m.Archive(context.Background(), created.Subagent.ID)
 	if !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("archive error = %v, want outcome unknown", err)
 	}
-	agent, getErr := m.Get("ws", created.Subagent.ID)
+	agent, getErr := m.Get(created.Subagent.ID)
 	if getErr != nil {
 		t.Fatalf("uncertain archive must preserve mapping: %v", getErr)
 	}
@@ -403,7 +402,6 @@ func TestManagerCreatePersistsAndReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := m.Create(context.Background(), CreateRequest{
-		WorkspaceID:  "ws-a",
 		Name:         "reviewer",
 		SubagentType: "reviewer",
 		Instruction:  "review code",
@@ -428,7 +426,7 @@ func TestManagerCreatePersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := reloaded.Get("ws-a", result.Subagent.ID)
+	agent, err := reloaded.Get(result.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,11 +457,11 @@ func TestManagerPersistsLatestArtifactsAndClearsThemOnSend(t *testing.T) {
 	if err := m.RegisterProvider("fake", provider); err != nil {
 		t.Fatal(err)
 	}
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "image", Instruction: "draw"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "image", Instruction: "draw"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	observed, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	observed, err := m.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +476,7 @@ func TestManagerPersistsLatestArtifactsAndClearsThemOnSend(t *testing.T) {
 		t.Fatalf("persisted artifact mismatch: %#v", loaded)
 	}
 	provider.pollArtifacts = nil
-	sent, err := m.Send(context.Background(), "ws", created.Subagent.ID, "next")
+	sent, err := m.Send(context.Background(), created.Subagent.ID, "next")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,11 +496,11 @@ func TestManagerPollBusyThenWaitReadyAndRejectsSendWhileBusy(t *testing.T) {
 	provider := newFakeProvider()
 	provider.pollBusy = true
 	m := newTestManager(t, provider, Options{})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	polled, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	polled, err := m.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,23 +510,23 @@ func TestManagerPollBusyThenWaitReadyAndRejectsSendWhileBusy(t *testing.T) {
 	if polled.Subagent.LastObservedAt.IsZero() || !polled.Subagent.LastObservedAt.Equal(polled.Subagent.UpdatedAt) {
 		t.Fatalf("busy poll should record successful remote observation: %#v", polled.Subagent)
 	}
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "too early"); !errors.Is(err, ErrBusy) {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "too early"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("send while busy error = %v, want busy", err)
 	}
 	provider.mu.Lock()
 	provider.pollBusy = false
 	provider.mu.Unlock()
-	waited, err := m.Wait(context.Background(), "ws", created.Subagent.ID)
+	waited, err := m.Wait(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if waited.Subagent.Status != StatusReady || waited.Reply.Text != "created" {
 		t.Fatalf("unexpected wait result: %#v", waited)
 	}
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "next"); err != nil {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "next"); err != nil {
 		t.Fatal(err)
 	}
-	agent, err := m.Get("ws", created.Subagent.ID)
+	agent, err := m.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,19 +544,19 @@ func TestManagerThrottlesRepeatedPollsForSameAgent(t *testing.T) {
 		SameAgentPollInterval:      80 * time.Millisecond,
 		DifferentAgentPollInterval: 30 * time.Millisecond,
 	})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	first, err := m.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !first.Refreshed {
 		t.Fatalf("first poll should refresh: %#v", first)
 	}
-	second, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	second, err := m.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +571,7 @@ func TestManagerThrottlesRepeatedPollsForSameAgent(t *testing.T) {
 	}
 
 	time.Sleep(90 * time.Millisecond)
-	third, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	third, err := m.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,18 +586,18 @@ func TestManagerThrottlesPollsAcrossDifferentAgents(t *testing.T) {
 		SameAgentPollInterval:      80 * time.Millisecond,
 		DifferentAgentPollInterval: 40 * time.Millisecond,
 	})
-	one, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	one, err := m.Create(context.Background(), CreateRequest{Name: "one", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "two", Instruction: "start"})
+	two, err := m.Create(context.Background(), CreateRequest{Name: "two", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Poll(context.Background(), "ws", one.Subagent.ID); err != nil {
+	if _, err := m.Poll(context.Background(), one.Subagent.ID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := m.Poll(context.Background(), "ws", two.Subagent.ID)
+	second, err := m.Poll(context.Background(), two.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +606,7 @@ func TestManagerThrottlesPollsAcrossDifferentAgents(t *testing.T) {
 	}
 
 	time.Sleep(50 * time.Millisecond)
-	third, err := m.Poll(context.Background(), "ws", two.Subagent.ID)
+	third, err := m.Poll(context.Background(), two.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,11 +622,11 @@ func TestManagerWaitSleepsUntilPollIntervalAllowsRefresh(t *testing.T) {
 		SameAgentPollInterval:      60 * time.Millisecond,
 		DifferentAgentPollInterval: 20 * time.Millisecond,
 	})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one", Instruction: "start"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one", Instruction: "start"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Poll(context.Background(), "ws", created.Subagent.ID); err != nil {
+	if _, err := m.Poll(context.Background(), created.Subagent.ID); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()
@@ -636,7 +634,7 @@ func TestManagerWaitSleepsUntilPollIntervalAllowsRefresh(t *testing.T) {
 	provider.mu.Unlock()
 
 	started := time.Now()
-	waited, err := m.Wait(context.Background(), "ws", created.Subagent.ID)
+	waited, err := m.Wait(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +658,7 @@ func TestManagerSerializesSameAgent(t *testing.T) {
 	provider.entered = make(chan string, 2)
 	provider.release = make(chan struct{})
 	m := newTestManager(t, provider, Options{MaxConcurrency: 4})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +666,7 @@ func TestManagerSerializesSameAgent(t *testing.T) {
 
 	done := make(chan error, 2)
 	go func() {
-		_, err := m.Send(context.Background(), "ws", created.Subagent.ID, "a")
+		_, err := m.Send(context.Background(), created.Subagent.ID, "a")
 		done <- err
 	}()
 	select {
@@ -677,7 +675,7 @@ func TestManagerSerializesSameAgent(t *testing.T) {
 		t.Fatal("first send did not enter provider")
 	}
 	go func() {
-		_, err := m.Send(context.Background(), "ws", created.Subagent.ID, "b")
+		_, err := m.Send(context.Background(), created.Subagent.ID, "b")
 		done <- err
 	}()
 	select {
@@ -705,19 +703,19 @@ func TestManagerAllowsDifferentAgentsToRunConcurrently(t *testing.T) {
 	provider.entered = make(chan string, 2)
 	provider.release = make(chan struct{})
 	m := newTestManager(t, provider, Options{MaxConcurrency: 2})
-	one, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	one, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "two"})
+	two, err := m.Create(context.Background(), CreateRequest{Name: "two"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	markReady(t, m, "ws", one.Subagent.ID)
 	markReady(t, m, "ws", two.Subagent.ID)
 	done := make(chan error, 2)
-	go func() { _, err := m.Send(context.Background(), "ws", one.Subagent.ID, "a"); done <- err }()
-	go func() { _, err := m.Send(context.Background(), "ws", two.Subagent.ID, "b"); done <- err }()
+	go func() { _, err := m.Send(context.Background(), one.Subagent.ID, "a"); done <- err }()
+	go func() { _, err := m.Send(context.Background(), two.Subagent.ID, "b"); done <- err }()
 	for range 2 {
 		select {
 		case <-provider.entered:
@@ -744,27 +742,27 @@ func TestManagerBoundsSameAgentQueueAndExposesBusy(t *testing.T) {
 	provider.entered = make(chan string, 3)
 	provider.release = make(chan struct{})
 	m := newTestManager(t, provider, Options{MaxConcurrency: 4, MaxPendingPerAgent: 1})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	markReady(t, m, "ws", created.Subagent.ID)
 	done := make(chan error, 2)
-	go func() { _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "first"); done <- err }()
+	go func() { _, err := m.Send(context.Background(), created.Subagent.ID, "first"); done <- err }()
 	select {
 	case <-provider.entered:
 	case <-time.After(time.Second):
 		t.Fatal("first send did not enter provider")
 	}
-	agent, err := m.Get("ws", created.Subagent.ID)
+	agent, err := m.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if agent.Status != StatusBusy {
 		t.Fatalf("status while sending = %q, want busy", agent.Status)
 	}
-	go func() { _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "second"); done <- err }()
-	entry, err := m.entry("ws", created.Subagent.ID)
+	go func() { _, err := m.Send(context.Background(), created.Subagent.ID, "second"); done <- err }()
+	entry, err := m.entry(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +773,7 @@ func TestManagerBoundsSameAgentQueueAndExposesBusy(t *testing.T) {
 	if len(entry.queue) != 2 {
 		t.Fatalf("queue occupancy = %d, want 2", len(entry.queue))
 	}
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "third"); !errors.Is(err, ErrQueueFull) {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "third"); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("third send error = %v, want queue full", err)
 	}
 	close(provider.release)
@@ -792,17 +790,17 @@ func TestManagerQueuedSendHonorsContextCancellation(t *testing.T) {
 	provider.entered = make(chan string, 1)
 	provider.release = make(chan struct{})
 	m := newTestManager(t, provider, Options{MaxConcurrency: 2, MaxPendingPerAgent: 2})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	markReady(t, m, "ws", created.Subagent.ID)
 	firstDone := make(chan error, 1)
-	go func() { _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "first"); firstDone <- err }()
+	go func() { _, err := m.Send(context.Background(), created.Subagent.ID, "first"); firstDone <- err }()
 	<-provider.entered
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if _, err := m.Send(ctx, "ws", created.Subagent.ID, "second"); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := m.Send(ctx, created.Subagent.ID, "second"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued send error = %v", err)
 	}
 	close(provider.release)
@@ -822,7 +820,7 @@ func TestManagerRecoversReloadedBusyAgentBeforePollThenSend(t *testing.T) {
 	if err := m.RegisterProvider("fake", provider); err != nil {
 		t.Fatal(err)
 	}
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +832,7 @@ func TestManagerRecoversReloadedBusyAgentBeforePollThenSend(t *testing.T) {
 	if err := reloaded.RegisterProvider("fake", reloadedProvider); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reloaded.Send(context.Background(), "ws", created.Subagent.ID, "must not replay"); !errors.Is(err, ErrBusy) {
+	if _, err := reloaded.Send(context.Background(), created.Subagent.ID, "must not replay"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("send before reconciling persisted busy state = %v, want busy", err)
 	}
 	reloadedProvider.mu.Lock()
@@ -842,14 +840,14 @@ func TestManagerRecoversReloadedBusyAgentBeforePollThenSend(t *testing.T) {
 		t.Fatalf("provider send count before poll = %d, want 0", reloadedProvider.sendCount)
 	}
 	reloadedProvider.mu.Unlock()
-	polled, err := reloaded.Poll(context.Background(), "ws", created.Subagent.ID)
+	polled, err := reloaded.Poll(context.Background(), created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if polled.Subagent.Status != StatusReady {
 		t.Fatalf("poll after restart status = %q, want ready", polled.Subagent.Status)
 	}
-	if _, err := reloaded.Send(context.Background(), "ws", created.Subagent.ID, "after restart"); err != nil {
+	if _, err := reloaded.Send(context.Background(), created.Subagent.ID, "after restart"); err != nil {
 		t.Fatal(err)
 	}
 	reloadedProvider.mu.Lock()
@@ -859,7 +857,7 @@ func TestManagerRecoversReloadedBusyAgentBeforePollThenSend(t *testing.T) {
 	if recoverCount != 1 || sendCount != 1 {
 		t.Fatalf("recover/send counts = %d/%d, want 1/1", recoverCount, sendCount)
 	}
-	agent, err := reloaded.Get("ws", created.Subagent.ID)
+	agent, err := reloaded.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -875,16 +873,16 @@ func TestManagerOutcomeUnknownMarksAgentDegradedWithoutChangingConversation(t *t
 	provider := newFakeProvider()
 	provider.sendErr = NewOutcomeUnknownError(errors.New("reply lost"))
 	m := newTestManager(t, provider, Options{})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	markReady(t, m, "ws", created.Subagent.ID)
-	_, err = m.Send(context.Background(), "ws", created.Subagent.ID, "hello")
+	_, err = m.Send(context.Background(), created.Subagent.ID, "hello")
 	if !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("send error = %v, want outcome unknown", err)
 	}
-	agent, err := m.Get("ws", created.Subagent.ID)
+	agent, err := m.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,16 +894,16 @@ func TestManagerOutcomeUnknownMarksAgentDegradedWithoutChangingConversation(t *t
 func TestManagerProviderErrorPreservesStateAndCanRecover(t *testing.T) {
 	provider := newFakeProvider()
 	m := newTestManager(t, provider, Options{})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	markReady(t, m, "ws", created.Subagent.ID)
 	provider.sendErr = errors.New("provider unavailable")
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "hello"); err == nil {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "hello"); err == nil {
 		t.Fatal("expected send error")
 	}
-	agent, err := m.Get("ws", created.Subagent.ID)
+	agent, err := m.Get(created.Subagent.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,36 +911,36 @@ func TestManagerProviderErrorPreservesStateAndCanRecover(t *testing.T) {
 		t.Fatalf("unexpected degraded agent: %#v", agent)
 	}
 	provider.sendErr = nil
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "retry"); !errors.Is(err, ErrNotReady) {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "retry"); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("send while degraded error = %v, want not ready", err)
 	}
 	markReady(t, m, "ws", created.Subagent.ID)
-	if _, err := m.Send(context.Background(), "ws", created.Subagent.ID, "retry"); err != nil {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "retry"); err != nil {
 		t.Fatal(err)
 	}
-	agent, _ = m.Get("ws", created.Subagent.ID)
+	agent, _ = m.Get(created.Subagent.ID)
 	if agent.Status != StatusBusy || agent.LastError != "" || agent.ProviderState.ConversationID != "conv-one" {
 		t.Fatalf("unexpected recovered agent: %#v", agent)
 	}
 }
 
-func TestManagerCloseIsIdempotentAndWorkspaceScoped(t *testing.T) {
+func TestManagerCloseIsIdempotent(t *testing.T) {
 	provider := newFakeProvider()
 	m := newTestManager(t, provider, Options{})
-	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws-a", Name: "one"})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Get("ws-b", created.Subagent.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-workspace get error = %v", err)
+	if _, err := m.Get(created.Subagent.ID); err != nil {
+		t.Fatalf("get created agent: %v", err)
 	}
-	if _, err := m.CloseAgent(context.Background(), "ws-a", created.Subagent.ID); err != nil {
+	if _, err := m.CloseAgent(context.Background(), created.Subagent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CloseAgent(context.Background(), "ws-a", created.Subagent.ID); err != nil {
+	if _, err := m.CloseAgent(context.Background(), created.Subagent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Send(context.Background(), "ws-a", created.Subagent.ID, "after close"); !errors.Is(err, ErrClosed) {
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "after close"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("send after close error = %v", err)
 	}
 	provider.mu.Lock()

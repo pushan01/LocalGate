@@ -21,7 +21,6 @@ type taskListItem struct {
 	SessionMode     string      `json:"session_mode,omitempty"`
 	SessionIDSource string      `json:"session_id_source,omitempty"`
 	RequestID       string      `json:"request_id,omitempty"`
-	WorkspaceID     string      `json:"workspace_id,omitempty"`
 	Requester       string      `json:"requester,omitempty"`
 	ApprovalID      string      `json:"approval_id,omitempty"`
 	CreatedAt       time.Time   `json:"created_at"`
@@ -51,7 +50,7 @@ func (a *API) handleTasks(w http.ResponseWriter, r *http.Request) {
 	page, err := a.App.Tasks.List(core.TaskFilter{
 		SessionID: r.URL.Query().Get("session_id"), Transport: r.URL.Query().Get("transport"),
 		Tool: r.URL.Query().Get("tool"), Status: core.Status(r.URL.Query().Get("status")),
-		WorkspaceID: r.URL.Query().Get("workspace_id"), Requester: r.URL.Query().Get("requester"),
+		Requester:  r.URL.Query().Get("requester"),
 		ApprovalID: r.URL.Query().Get("approval_id"), CreatedAfter: createdAfter, CreatedBefore: createdBefore,
 		Limit: parseLimit(r, 50), Cursor: r.URL.Query().Get("cursor"),
 	})
@@ -178,7 +177,7 @@ func summarizeTask(task core.Task) taskListItem {
 	return taskListItem{
 		ID: task.ID, Status: task.Status, Tool: task.Tool, Transport: task.Transport,
 		SessionID: task.MCPSessionID, SessionMode: task.SessionMode, SessionIDSource: task.SessionIDSource,
-		RequestID: task.RequestID, WorkspaceID: task.WorkspaceID, Requester: task.Requester,
+		RequestID: task.RequestID, Requester: task.Requester,
 		ApprovalID: task.ApprovalID, CreatedAt: task.CreatedAt, StartedAt: task.StartedAt,
 		EndedAt: task.EndedAt, DurationMS: duration, ErrorCode: task.ErrorCode, ErrorMessage: task.ErrorMsg,
 	}

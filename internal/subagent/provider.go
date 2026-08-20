@@ -3,7 +3,6 @@ package subagent
 import "context"
 
 type ProviderCreateRequest struct {
-	WorkspaceID string
 	Name        string
 	Instruction string
 	Options     map[string]string

@@ -18,11 +18,11 @@ const (
 )
 
 type ExecCommandTool struct {
-	WS       config.Workspace
+	WS       config.Root
 	Sessions *core.SessionManager
 }
 
-func NewExecCommandTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
+func NewExecCommandTool(ws config.Root, sessions *core.SessionManager) core.Tool {
 	return ExecCommandTool{WS: ws, Sessions: sessions}
 }
 
@@ -89,7 +89,7 @@ func (t ExecCommandTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 		case <-timer.C:
 		}
 	}
-	current, read, err := r.ReadSessionForWorkspace(session.ID, t.WS.ID, 0, maxItems)
+	current, read, err := r.ReadSessionAt(session.ID, 0, maxItems)
 	if err != nil {
 		return nil, err
 	}
@@ -98,11 +98,11 @@ func (t ExecCommandTool) Execute(ctx context.Context, ic core.InvokeContext, arg
 
 type WriteStdinTool struct {
 	Sessions *core.SessionManager
-	WSID     string
 }
 
-func NewWriteStdinTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
-	return WriteStdinTool{Sessions: sessions, WSID: ws.ID}
+func NewWriteStdinTool(ws config.Root, sessions *core.SessionManager) core.Tool {
+	_ = ws
+	return WriteStdinTool{Sessions: sessions}
 }
 
 func (t WriteStdinTool) Name() string { return "write_stdin" }
@@ -150,8 +150,8 @@ func (t WriteStdinTool) Execute(ctx context.Context, ic core.InvokeContext, args
 	if err != nil {
 		return nil, err
 	}
-	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
-	session, read, err := r.WriteStdinForWorkspace(ctx, sessionID, t.WSID, chars, cursor, time.Duration(yield)*time.Millisecond, maxItems)
+	r := SessionRunner{Sessions: t.Sessions}
+	session, read, err := r.WriteStdinContext(ctx, sessionID, chars, cursor, time.Duration(yield)*time.Millisecond, maxItems)
 	if err != nil {
 		return nil, err
 	}
@@ -160,16 +160,15 @@ func (t WriteStdinTool) Execute(ctx context.Context, ic core.InvokeContext, args
 
 type ReadThreadTerminalTool struct {
 	Sessions *core.SessionManager
-	WSID     string
 }
 
 type CloseSessionTool struct {
 	Sessions *core.SessionManager
-	WSID     string
 }
 
-func NewCloseSessionTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
-	return CloseSessionTool{Sessions: sessions, WSID: ws.ID}
+func NewCloseSessionTool(ws config.Root, sessions *core.SessionManager) core.Tool {
+	_ = ws
+	return CloseSessionTool{Sessions: sessions}
 }
 
 func (t CloseSessionTool) Name() string { return "close_session" }
@@ -196,7 +195,7 @@ func (t CloseSessionTool) Execute(ctx context.Context, ic core.InvokeContext, ar
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id required")
 	}
-	session, err := t.Sessions.CloseForWorkspace(sessionID, t.WSID)
+	session, err := t.Sessions.Close(sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -205,13 +204,13 @@ func (t CloseSessionTool) Execute(ctx context.Context, ic core.InvokeContext, ar
 		"status":       session.Status,
 		"running":      false,
 		"completed":    true,
-		"exit_code":    session.ExitCode,
-		"workspace_id": session.WorkspaceID,
+		"exit_code":  session.ExitCode,
 	}, nil
 }
 
-func NewReadThreadTerminalTool(ws config.Workspace, sessions *core.SessionManager) core.Tool {
-	return ReadThreadTerminalTool{Sessions: sessions, WSID: ws.ID}
+func NewReadThreadTerminalTool(ws config.Root, sessions *core.SessionManager) core.Tool {
+	_ = ws
+	return ReadThreadTerminalTool{Sessions: sessions}
 }
 
 func (t ReadThreadTerminalTool) Name() string { return "read_thread_terminal" }
@@ -254,8 +253,8 @@ func (t ReadThreadTerminalTool) Execute(ctx context.Context, ic core.InvokeConte
 	if err != nil {
 		return nil, err
 	}
-	r := SessionRunner{WS: config.Workspace{ID: t.WSID}, Sessions: t.Sessions}
-	session, read, err := r.WaitReadSessionForWorkspace(ctx, sessionID, t.WSID, cursor, maxItems, time.Duration(wait)*time.Millisecond)
+	r := SessionRunner{Sessions: t.Sessions}
+	session, read, err := r.WaitReadSession(ctx, sessionID, cursor, maxItems, time.Duration(wait)*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +279,6 @@ func sessionReadPayload(session core.Session, read core.SessionReadResult) map[s
 		"has_more":         read.HasMore,
 		"output_error":     read.OutputError,
 		"exit_code":        session.ExitCode,
-		"workspace_id":     session.WorkspaceID,
 	}
 }
 

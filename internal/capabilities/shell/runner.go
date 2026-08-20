@@ -20,7 +20,7 @@ import (
 )
 
 type Runner struct {
-	WS config.Workspace
+	WS config.Root
 }
 
 func (r Runner) Run(ctx context.Context, taskID string, command string, cwd string, env map[string]string, timeout time.Duration, sink *core.EventSink) (int, error) {

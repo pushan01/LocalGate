@@ -19,7 +19,7 @@ func NewGetToolSchemaTool(reg *core.Registry) core.Tool {
 func (t getToolSchemaTool) Name() string { return "get_tool_schema" }
 
 func (t getToolSchemaTool) Description() string {
-	return "Return the input schema for one HTTP-callable LocalGate tool by name."
+	return "Return the exact input schema for one available LocalGate Registry tool by name before invoking it through a progressive transport such as invoke_tool or Tool HTTP."
 }
 
 func (t getToolSchemaTool) Schema() any {
@@ -29,7 +29,7 @@ func (t getToolSchemaTool) Schema() any {
 		"properties": map[string]any{
 			"tool": map[string]any{
 				"type":        "string",
-				"description": "Visible LocalGate tool name, for example read_file.",
+				"description": "Available LocalGate Registry tool name, for example deploy_tool.",
 			},
 		},
 		"required": []string{"tool"},
@@ -47,10 +47,10 @@ func (t getToolSchemaTool) Execute(ctx context.Context, ic core.InvokeContext, a
 	if name == "" {
 		return nil, errors.New("tool is required")
 	}
-	if isBootstrapTool(name) {
-		return nil, errors.New("bootstrap tools do not have HTTP-callable schemas")
+	if IsBootstrapTool(name) {
+		return nil, errors.New("bootstrap tools do not have Registry invocation schemas")
 	}
-	tool, ok := t.reg.GetVisible(name)
+	tool, ok := t.reg.Get(name)
 	if !ok {
 		return nil, errors.New("tool not found")
 	}
@@ -59,13 +59,4 @@ func (t getToolSchemaTool) Execute(ctx context.Context, ic core.InvokeContext, a
 		"description": tool.Description(),
 		"schema":      tool.Schema(),
 	}, nil
-}
-
-func isBootstrapTool(name string) bool {
-	switch name {
-	case "get_startup_instructions", "get_skill", "get_temporary_access_token", "get_tool_schema":
-		return true
-	default:
-		return false
-	}
 }

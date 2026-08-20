@@ -108,7 +108,6 @@ func (t SpawnTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 		options = map[string]string{"project": project}
 	}
 	result, err := t.manager.Create(ctx, runtime.CreateRequest{
-		WorkspaceID:  ic.WorkspaceID,
 		Name:         name,
 		SubagentType: subagentType,
 		Provider:     provider,
@@ -171,7 +170,7 @@ func (t SendTool) Execute(ctx context.Context, ic core.InvokeContext, args map[s
 	if err := requireText("message", message, maxMessageBytes); err != nil {
 		return nil, err
 	}
-	agent, err := t.manager.Send(ctx, ic.WorkspaceID, id, message)
+	agent, err := t.manager.Send(ctx, id, message)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +203,7 @@ func (t PollTool) Execute(ctx context.Context, ic core.InvokeContext, args map[s
 	if err := requireText("subagent_id", id, 128); err != nil {
 		return nil, err
 	}
-	result, err := t.manager.Poll(ctx, ic.WorkspaceID, id)
+	result, err := t.manager.Poll(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +232,7 @@ func (t WaitTool) Execute(ctx context.Context, ic core.InvokeContext, args map[s
 	if err := requireText("subagent_id", id, 128); err != nil {
 		return nil, err
 	}
-	result, err := t.manager.Wait(ctx, ic.WorkspaceID, id)
+	result, err := t.manager.Wait(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +278,7 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 	if err := requireText("subagent_id", id, 128); err != nil {
 		return nil, err
 	}
-	agent, err := t.manager.Get(ic.WorkspaceID, id)
+	agent, err := t.manager.Get(id)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +294,7 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 	if !refresh || (agent.Status != runtime.StatusBusy && agent.Status != runtime.StatusDegraded) {
 		return result, nil
 	}
-	observed, refreshErr := t.manager.Poll(ctx, ic.WorkspaceID, id)
+	observed, refreshErr := t.manager.Poll(ctx, id)
 	if refreshErr == nil {
 		result["subagent"] = agentMap(observed.Subagent)
 		result["refreshed"] = observed.Refreshed
@@ -311,7 +310,7 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 	if errors.Is(refreshErr, context.Canceled) || errors.Is(refreshErr, context.DeadlineExceeded) {
 		return nil, refreshErr
 	}
-	latest, getErr := t.manager.Get(ic.WorkspaceID, id)
+	latest, getErr := t.manager.Get(id)
 	if getErr != nil {
 		return nil, refreshErr
 	}
@@ -343,7 +342,7 @@ func (t ListTool) Execute(_ context.Context, ic core.InvokeContext, _ map[string
 	if err := requireManager(t.manager); err != nil {
 		return nil, err
 	}
-	agents, err := t.manager.List(ic.WorkspaceID)
+	agents, err := t.manager.List()
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +396,7 @@ func (t ArchiveTool) Execute(ctx context.Context, ic core.InvokeContext, args ma
 	if err := requireText("subagent_id", id, 128); err != nil {
 		return nil, err
 	}
-	agent, err := t.manager.Archive(ctx, ic.WorkspaceID, id)
+	agent, err := t.manager.Archive(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +445,7 @@ func (t CloseTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 	if err := requireText("subagent_id", id, 128); err != nil {
 		return nil, err
 	}
-	agent, err := t.manager.CloseAgent(ctx, ic.WorkspaceID, id)
+	agent, err := t.manager.CloseAgent(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -460,7 +459,6 @@ func agentMap(agent runtime.Subagent) map[string]any {
 		"subagent_type":    agent.SubagentType,
 		"provider":         agent.Provider,
 		"status":           string(agent.Status),
-		"workspace_id":     agent.WorkspaceID,
 		"conversation_id":  agent.ProviderState.ConversationID,
 		"conversation_url": agent.ProviderState.ConversationURL,
 		"project_id":       agent.ProviderState.ProjectID,
@@ -482,7 +480,6 @@ func agentOutputSchema() map[string]any {
 		"subagent_type":    map[string]any{"type": "string"},
 		"provider":         map[string]any{"type": "string"},
 		"status":           map[string]any{"type": "string"},
-		"workspace_id":     map[string]any{"type": "string"},
 		"conversation_id":  map[string]any{"type": "string"},
 		"conversation_url": map[string]any{"type": "string"},
 		"project_id":       map[string]any{"type": "string"},
@@ -495,7 +492,7 @@ func agentOutputSchema() map[string]any {
 		"updated_at":       map[string]any{"type": "string"},
 		"last_observed_at": map[string]any{"type": "string"},
 	}
-	return objectSchema(properties, []string{"subagent_id", "provider", "status", "phase", "next_action", "workspace_id", "created_at", "updated_at", "last_observed_at"})
+	return objectSchema(properties, []string{"subagent_id", "provider", "status", "phase", "next_action", "created_at", "updated_at", "last_observed_at"})
 }
 
 func agentPhase(agent runtime.Subagent) string {

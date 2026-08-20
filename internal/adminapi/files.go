@@ -14,51 +14,26 @@ import (
 )
 
 type saveFileContentRequest struct {
-	WorkspaceID string `json:"workspace_id"`
-	RootID      string `json:"root_id"`
-	Path        string `json:"path"`
-	Content     string `json:"content"`
-	ETag        string `json:"etag"`
-	Create      bool   `json:"create"`
-	Overwrite   bool   `json:"overwrite"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	ETag      string `json:"etag"`
+	Create    bool   `json:"create"`
+	Overwrite bool   `json:"overwrite"`
 }
 
 type mkdirRequest struct {
-	WorkspaceID string `json:"workspace_id"`
-	RootID      string `json:"root_id"`
-	Path        string `json:"path"`
+	Path string `json:"path"`
 }
 
 type renameRequest struct {
-	WorkspaceID string `json:"workspace_id"`
-	RootID      string `json:"root_id"`
-	FromPath    string `json:"from_path"`
-	ToPath      string `json:"to_path"`
+	FromPath string `json:"from_path"`
+	ToPath   string `json:"to_path"`
 }
 
 type deleteRequest struct {
-	WorkspaceID  string `json:"workspace_id"`
-	RootID       string `json:"root_id"`
 	Path         string `json:"path"`
 	Recursive    bool   `json:"recursive"`
 	Confirmation string `json:"confirmation"`
-}
-
-func (a *API) handleFileBrowserWorkspaces(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
-		return
-	}
-	svc, ok := a.fileBrowserService(w)
-	if !ok {
-		return
-	}
-	items, err := svc.Workspaces()
-	if err != nil {
-		a.writeFileBrowserError(w, err)
-		return
-	}
-	server.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *API) handleFileList(w http.ResponseWriter, r *http.Request) {
@@ -95,28 +70,21 @@ func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		if req.WorkspaceID == "" {
-			req.WorkspaceID = a.DefaultWSID
-		}
 		result, err := svc.SaveContent(r.Context(), filebrowser.SaveContentRequest{
-			WorkspaceID: req.WorkspaceID,
-			RootID:      req.RootID,
-			Path:        req.Path,
-			Content:     req.Content,
-			ETag:        req.ETag,
-			Create:      req.Create,
-			Overwrite:   req.Overwrite,
+			Path:      req.Path,
+			Content:   req.Content,
+			ETag:      req.ETag,
+			Create:    req.Create,
+			Overwrite: req.Overwrite,
 		})
 		if err != nil {
 			if errors.Is(err, filebrowser.ErrApprovalRequired) {
 				submission, submitErr := a.App.SubmitFileBrowserSave("admin", filebrowser.SaveContentRequest{
-					WorkspaceID: req.WorkspaceID,
-					RootID:      req.RootID,
-					Path:        req.Path,
-					Content:     req.Content,
-					ETag:        req.ETag,
-					Create:      req.Create,
-					Overwrite:   req.Overwrite,
+					Path:      req.Path,
+					Content:   req.Content,
+					ETag:      req.ETag,
+					Create:    req.Create,
+					Overwrite: req.Overwrite,
 				})
 				if submitErr != nil {
 					a.writeFileBrowserError(w, submitErr)
@@ -191,11 +159,7 @@ func (a *API) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if value := r.FormValue("overwrite"); value != "" {
 		overwrite, _ = strconv.ParseBool(value)
 	}
-	wsid := r.FormValue("workspace_id")
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	req := filebrowser.UploadRequest{WorkspaceID: wsid, RootID: r.FormValue("root_id"), Path: targetPath, Content: content, ETag: r.FormValue("etag"), Create: create, Overwrite: overwrite}
+	req := filebrowser.UploadRequest{Path: targetPath, Content: content, ETag: r.FormValue("etag"), Create: create, Overwrite: overwrite}
 	result, err := svc.Upload(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, filebrowser.ErrApprovalRequired) {
@@ -322,17 +286,14 @@ func (a *API) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.WorkspaceID == "" {
-		req.WorkspaceID = a.DefaultWSID
-	}
 	if req.Recursive && req.Confirmation != "delete "+req.Path {
 		server.WriteError(w, http.StatusBadRequest, "confirmation_required", "recursive delete requires confirmation: delete "+req.Path, nil)
 		return
 	}
-	result, err := svc.Delete(r.Context(), filebrowser.DeleteRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path, Recursive: req.Recursive})
+	result, err := svc.Delete(r.Context(), filebrowser.DeleteRequest{Path: req.Path, Recursive: req.Recursive})
 	if err != nil {
 		if errors.Is(err, filebrowser.ErrApprovalRequired) {
-			submission, submitErr := a.App.SubmitFileBrowserDelete("admin", filebrowser.DeleteRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path, Recursive: req.Recursive})
+			submission, submitErr := a.App.SubmitFileBrowserDelete("admin", filebrowser.DeleteRequest{Path: req.Path, Recursive: req.Recursive})
 			if submitErr != nil {
 				a.writeFileBrowserError(w, submitErr)
 				return
@@ -362,13 +323,10 @@ func (a *API) handleFileRename(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.WorkspaceID == "" {
-		req.WorkspaceID = a.DefaultWSID
-	}
-	result, err := svc.Rename(r.Context(), filebrowser.RenameRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, FromPath: req.FromPath, ToPath: req.ToPath})
+	result, err := svc.Rename(r.Context(), filebrowser.RenameRequest{FromPath: req.FromPath, ToPath: req.ToPath})
 	if err != nil {
 		if errors.Is(err, filebrowser.ErrApprovalRequired) {
-			submission, submitErr := a.App.SubmitFileBrowserRename("admin", filebrowser.RenameRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, FromPath: req.FromPath, ToPath: req.ToPath})
+			submission, submitErr := a.App.SubmitFileBrowserRename("admin", filebrowser.RenameRequest{FromPath: req.FromPath, ToPath: req.ToPath})
 			if submitErr != nil {
 				a.writeFileBrowserError(w, submitErr)
 				return
@@ -398,13 +356,10 @@ func (a *API) handleFileMkdir(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.WorkspaceID == "" {
-		req.WorkspaceID = a.DefaultWSID
-	}
-	result, err := svc.Mkdir(r.Context(), filebrowser.MkdirRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path})
+	result, err := svc.Mkdir(r.Context(), filebrowser.MkdirRequest{Path: req.Path})
 	if err != nil {
 		if errors.Is(err, filebrowser.ErrApprovalRequired) {
-			submission, submitErr := a.App.SubmitFileBrowserMkdir("admin", filebrowser.MkdirRequest{WorkspaceID: req.WorkspaceID, RootID: req.RootID, Path: req.Path})
+			submission, submitErr := a.App.SubmitFileBrowserMkdir("admin", filebrowser.MkdirRequest{Path: req.Path})
 			if submitErr != nil {
 				a.writeFileBrowserError(w, submitErr)
 				return
@@ -419,15 +374,7 @@ func (a *API) handleFileMkdir(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) fileBrowserPathRequest(r *http.Request) filebrowser.PathRequest {
-	wsid := r.URL.Query().Get("workspace_id")
-	if wsid == "" {
-		wsid = a.DefaultWSID
-	}
-	return filebrowser.PathRequest{
-		WorkspaceID: wsid,
-		RootID:      r.URL.Query().Get("root_id"),
-		Path:        r.URL.Query().Get("path"),
-	}
+	return filebrowser.PathRequest{Path: r.URL.Query().Get("path")}
 }
 
 func (a *API) fileBrowserService(w http.ResponseWriter) (*filebrowser.Service, bool) {
@@ -442,10 +389,6 @@ func (a *API) writeFileBrowserError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, filebrowser.ErrDisabled):
 		server.WriteError(w, http.StatusNotFound, "file_browser_disabled", "file browser is not enabled", nil)
-	case errors.Is(err, filebrowser.ErrWorkspaceNotFound):
-		server.WriteError(w, http.StatusBadRequest, "workspace_not_found", "workspace not found", nil)
-	case errors.Is(err, filebrowser.ErrRootNotFound):
-		server.WriteError(w, http.StatusBadRequest, "workspace_root_not_found", "workspace root not found", nil)
 	case errors.Is(err, filebrowser.ErrFileNotFound):
 		server.WriteError(w, http.StatusNotFound, "file_not_found", "file not found", nil)
 	case errors.Is(err, filebrowser.ErrPathNotAllowed):

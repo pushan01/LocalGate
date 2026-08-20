@@ -1,5 +1,7 @@
 # MCP HTTP Execution Runtime
 
+> Historical note: references to a default workspace or workspace roots below describe the retired multi-workspace model. The current runtime is bound to one configured root per LocalGate instance.
+
 ## Status
 
 Implemented as a single dedicated runtime. There is no legacy or `/mcp/v2` compatibility route.

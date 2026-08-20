@@ -13,21 +13,20 @@ import (
 )
 
 type approvalManagementItem struct {
-	ID          string
-	Status      approval.Status
-	Summary     string
-	Tool        string
-	RiskLevel   string
-	WorkspaceID string
-	Requester   string
-	TaskID      string
-	CreatedAt   string
-	ExpiresAt   string
-	DecidedAt   string
-	DetailURL   string
-	ApproveURL  string
-	RejectURL   string
-	Pending     bool
+	ID         string
+	Status     approval.Status
+	Summary    string
+	Tool       string
+	RiskLevel  string
+	Requester  string
+	TaskID     string
+	CreatedAt  string
+	ExpiresAt  string
+	DecidedAt  string
+	DetailURL  string
+	ApproveURL string
+	RejectURL  string
+	Pending    bool
 }
 
 type approvalManagementView struct {
@@ -55,7 +54,7 @@ var approvalManagementTemplate = template.Must(template.New("approval-management
 <a href="{{index .FilterURLs "expired"}}" class="{{if eq .Status "expired"}}active{{end}}">Expired</a>
 </nav>
 {{if .Items}}<section class="cards">{{range .Items}}
-<article class="card"><div class="row"><div><p class="title">{{if .Summary}}{{.Summary}}{{else}}{{.Tool}}{{end}}</p><div class="meta"><span>Tool: <strong>{{.Tool}}</strong></span><span>Risk: <strong>{{.RiskLevel}}</strong></span><span>Workspace: <strong>{{.WorkspaceID}}</strong></span>{{if .Requester}}<span>Requester: <strong>{{.Requester}}</strong></span>{{end}}<span>Created: {{.CreatedAt}}</span>{{if .ExpiresAt}}<span>Expires: {{.ExpiresAt}}</span>{{end}}{{if .DecidedAt}}<span>Decided: {{.DecidedAt}}</span>{{end}}</div></div><span class="badge {{.Status}}">{{.Status}}</span></div>
+<article class="card"><div class="row"><div><p class="title">{{if .Summary}}{{.Summary}}{{else}}{{.Tool}}{{end}}</p><div class="meta"><span>Tool: <strong>{{.Tool}}</strong></span><span>Risk: <strong>{{.RiskLevel}}</strong></span>{{if .Requester}}<span>Requester: <strong>{{.Requester}}</strong></span>{{end}}<span>Created: {{.CreatedAt}}</span>{{if .ExpiresAt}}<span>Expires: {{.ExpiresAt}}</span>{{end}}{{if .DecidedAt}}<span>Decided: {{.DecidedAt}}</span>{{end}}</div></div><span class="badge {{.Status}}">{{.Status}}</span></div>
 <div class="id">Approval {{.ID}}{{if .TaskID}} · Task {{.TaskID}}{{end}}</div>
 <div class="actions"><a href="{{.DetailURL}}">View details</a>{{if .Pending}}<form method="post" action="{{.ApproveURL}}"><button class="approve" type="submit">Approve and execute</button></form><form method="post" action="{{.RejectURL}}"><button class="reject" type="submit">Reject</button></form>{{end}}</div></article>
 {{end}}</section>{{else}}<div class="empty"><strong>No approval requests found.</strong><p class="muted">Choose another status filter or wait for a new request.</p></div>{{end}}
@@ -103,7 +102,7 @@ func (a *API) handleApprovalManagementUI(w http.ResponseWriter, r *http.Request)
 		}
 		items = append(items, approvalManagementItem{
 			ID: request.ID, Status: request.Status, Summary: request.Summary, Tool: request.Tool,
-			RiskLevel: request.RiskLevel, WorkspaceID: request.WorkspaceID, Requester: request.Requester,
+			RiskLevel: request.RiskLevel, Requester: request.Requester,
 			TaskID: request.TaskID, CreatedAt: formatApprovalTime(request.CreatedAt),
 			ExpiresAt: formatApprovalTime(request.ExpiresAt), DecidedAt: formatApprovalTime(request.DecidedAt),
 			DetailURL:  detailURL,

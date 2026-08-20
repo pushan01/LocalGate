@@ -20,7 +20,7 @@ import (
 
 func TestReadWriteList(t *testing.T) {
 	dir := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	ws := config.Root{Path: dir}
 	tools := NewTools(ws)
 	var read, write, list core.Tool
 	for _, tl := range tools {
@@ -57,7 +57,7 @@ func TestReadWriteList(t *testing.T) {
 
 func TestReadFileDoesNotRejectUTF8RuneSplitAtSampleBoundary(t *testing.T) {
 	dir := t.TempDir()
-	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	contentBytes := append(bytes.Repeat([]byte("a"), 8191), []byte("中")...)
 	contentBytes = append(contentBytes, bytes.Repeat([]byte("文"), 100)...)
 	content := string(contentBytes)
@@ -75,7 +75,7 @@ func TestReadFileDoesNotRejectUTF8RuneSplitAtSampleBoundary(t *testing.T) {
 }
 
 func TestFilesystemToolDescriptionsExplainSelectionBoundaries(t *testing.T) {
-	ws := config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}
+	ws := config.Root{Path: t.TempDir()}
 	descriptions := map[string]string{}
 	for _, tool := range NewTools(ws) {
 		descriptions[tool.Name()] = tool.Description()
@@ -96,7 +96,7 @@ func TestWriteFilePreservesExistingMode(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old"), 0o751); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target, "content": "new"}); err != nil {
 		t.Fatalf("write_file: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestWriteFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip("symlink not supported")
 	}
-	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": link, "content": "mutated"}); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected final symlink rejection, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestWriteFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
 
 func TestWriteFileRejectsBinaryContent(t *testing.T) {
 	dir := t.TempDir()
-	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := writeFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path":    filepath.Join(dir, "binary.txt"),
 		"content": "a\x00b",
@@ -147,7 +147,7 @@ func TestUploadFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip("symlink not supported")
 	}
-	tool := uploadFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := uploadFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path": link,
 		"file": map[string]any{"download_url": "https://example.com/file"},
@@ -162,7 +162,7 @@ func TestUploadFileRejectsFinalSymlinkInsideWorkspace(t *testing.T) {
 
 func TestUploadFile(t *testing.T) {
 	dir := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	ws := config.Root{Path: dir}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, "payload")
 	}))
@@ -170,7 +170,7 @@ func TestUploadFile(t *testing.T) {
 	tool := uploadFileTool{fsToolBase: fsToolBase{ws: ws}, client: srv.Client()}
 
 	target := filepath.Join(dir, "nested", "target.bin")
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path": target,
 		"file": map[string]any{
 			"download_url": srv.URL + "/file",
@@ -196,9 +196,9 @@ func TestUploadFile(t *testing.T) {
 
 func TestUploadFileRejectsLoopbackDownload(t *testing.T) {
 	dir := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	ws := config.Root{Path: dir}
 	tool := uploadFileTool{fsToolBase: fsToolBase{ws: ws}}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path": filepath.Join(dir, "target.bin"),
 		"file": map[string]any{"download_url": "http://127.0.0.1/file"},
 	})
@@ -208,7 +208,7 @@ func TestUploadFileRejectsLoopbackDownload(t *testing.T) {
 }
 
 func TestUploadFileDescriptionAndSchema(t *testing.T) {
-	ws := config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}
+	ws := config.Root{Path: t.TempDir()}
 	var tool core.Tool
 	for _, candidate := range NewTools(ws) {
 		if candidate.Name() == "upload_file" {
@@ -223,7 +223,7 @@ func TestUploadFileDescriptionAndSchema(t *testing.T) {
 	description := tool.Description()
 	for _, want := range []string{
 		"Copy a host-provided file",
-		"absolute workspace path",
+		"configured root",
 		"parent directories are created",
 		"source is not modified",
 	} {
@@ -255,14 +255,14 @@ func TestUploadFileDescriptionAndSchema(t *testing.T) {
 func TestUploadFileRejectsOutsideRoots(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	var tool core.Tool
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "upload_file" {
 			tool = tl
 		}
 	}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path": filepath.Join(outside, "target.bin"),
 		"file": map[string]any{
 			"download_url": "https://example.com/file.bin",
@@ -275,14 +275,14 @@ func TestUploadFileRejectsOutsideRoots(t *testing.T) {
 
 func TestUploadFileRequiresHTTPURL(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	var tool core.Tool
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "upload_file" {
 			tool = tl
 		}
 	}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{
 		"path": filepath.Join(root, "target.bin"),
 		"file": map[string]any{
 			"download_url": "file:///tmp/input.bin",
@@ -297,7 +297,7 @@ func TestSearchFiles(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "app.go"), []byte("x"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "app_test.go"), []byte("x"), 0o644)
-	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	ws := config.Root{Path: dir}
 	var search core.Tool
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "search_files" {
@@ -315,7 +315,7 @@ func TestSearchFiles(t *testing.T) {
 
 func TestReadFileRejectsDirectoryBinaryAndOversize(t *testing.T) {
 	dir := t.TempDir()
-	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir}); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("expected directory rejection, got %v", err)
 	}
@@ -339,7 +339,7 @@ func TestReadFileHonorsCanceledContext(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "file.txt")
 	_ = os.WriteFile(target, []byte("content"), 0o644)
-	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := tool.Execute(ctx, core.InvokeContext{}, map[string]any{"path": target}); !errors.Is(err, context.Canceled) {
@@ -352,7 +352,7 @@ func TestListDirectoryReturnsExplicitTruncation(t *testing.T) {
 	for _, name := range []string{"a", "b", "c"} {
 		_ = os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
 	}
-	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir, "max_results": 2})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -366,7 +366,7 @@ func TestListDirectoryReturnsExplicitTruncation(t *testing.T) {
 func TestRecursiveListHonorsCanceledContext(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "a"), []byte("a"), 0o644)
-	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := listDirTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := tool.Execute(ctx, core.InvokeContext{}, map[string]any{"path": dir, "recursive": true}); !errors.Is(err, context.Canceled) {
@@ -387,7 +387,7 @@ func TestRecursiveTraversalPropagatesPermissionErrors(t *testing.T) {
 		t.Skipf("chmod unavailable: %v", err)
 	}
 	defer os.Chmod(blocked, 0o755)
-	ws := config.Workspace{ID: "ws", Roots: []string{dir}}
+	ws := config.Root{Path: dir}
 	list := listDirTool{fsToolBase: fsToolBase{ws: ws}}
 	search := searchFilesTool{fsToolBase: fsToolBase{ws: ws}}
 	_, listErr := list.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir, "recursive": true})
@@ -405,7 +405,7 @@ func TestSearchFilesRejectsInvalidGlobAndReportsTruncation(t *testing.T) {
 	for _, name := range []string{"a.go", "b.go", "c.go"} {
 		_ = os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644)
 	}
-	tool := searchFilesTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	tool := searchFilesTool{fsToolBase: fsToolBase{ws: config.Root{Path: dir}}}
 	if _, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"root": dir, "glob": "["}); err == nil || !strings.Contains(err.Error(), "invalid glob") {
 		t.Fatalf("expected invalid glob rejection, got %v", err)
 	}
@@ -428,7 +428,7 @@ func TestSymlinkEscapeDenied(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip("symlink not supported")
 	}
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	var read core.Tool
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "read_file" {
@@ -453,7 +453,7 @@ func TestReadFileAllowsSharedSkillsRoot(t *testing.T) {
 	if err := os.WriteFile(skillFile, []byte("name: demo"), 0o644); err != nil {
 		t.Fatalf("write skill file: %v", err)
 	}
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	var read, write core.Tool
 	for _, tl := range NewTools(ws) {
 		switch tl.Name() {
@@ -477,7 +477,7 @@ func TestReadFileAllowsSharedSkillsRoot(t *testing.T) {
 
 func TestReadFileRejectsRelativePath(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	var read core.Tool
 	for _, tl := range NewTools(ws) {
 		if tl.Name() == "read_file" {
@@ -491,12 +491,12 @@ func TestReadFileRejectsRelativePath(t *testing.T) {
 
 func TestCreateUploadTokenTool(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := upload.NewService()
 	tool := NewCreateUploadTokenTool(ws, "http://127.0.0.1:8000/", svc)
 
 	target := filepath.Join(root, "nested", "target.bin")
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": target})
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -522,11 +522,11 @@ func TestCreateUploadTokenTool(t *testing.T) {
 func TestCreateUploadTokenToolRejectsOutsideRoots(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := upload.NewService()
 	tool := NewCreateUploadTokenTool(ws, "http://127.0.0.1:8000", svc)
 
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": filepath.Join(outside, "target.bin")})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": filepath.Join(outside, "target.bin")})
 	if err == nil || !strings.Contains(err.Error(), "path not allowed") {
 		t.Fatalf("expected path rejection, got: %v", err)
 	}
@@ -534,11 +534,11 @@ func TestCreateUploadTokenToolRejectsOutsideRoots(t *testing.T) {
 
 func TestCreateUploadTokenToolRequiresBaseURL(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := upload.NewService()
 	tool := NewCreateUploadTokenTool(ws, "", svc)
 
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": filepath.Join(root, "target.bin")})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": filepath.Join(root, "target.bin")})
 	if err == nil || !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("expected base url error, got: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestCreateUploadTokenToolRequiresBaseURL(t *testing.T) {
 
 func TestCreateDownloadTokenTool(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := download.NewService()
 	tool := NewCreateDownloadTokenTool(ws, "http://127.0.0.1:8000/", svc)
 
@@ -558,7 +558,7 @@ func TestCreateDownloadTokenTool(t *testing.T) {
 		t.Fatalf("write target: %v", err)
 	}
 
-	res, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": target})
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestCreateDownloadTokenTool(t *testing.T) {
 func TestCreateDownloadTokenToolRejectsOutsideRoots(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := download.NewService()
 	tool := NewCreateDownloadTokenTool(ws, "http://127.0.0.1:8000", svc)
 
@@ -592,7 +592,7 @@ func TestCreateDownloadTokenToolRejectsOutsideRoots(t *testing.T) {
 	if err := os.WriteFile(target, []byte("payload"), 0o644); err != nil {
 		t.Fatalf("write target: %v", err)
 	}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": target})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target})
 	if err == nil || !strings.Contains(err.Error(), "path not allowed") {
 		t.Fatalf("expected path rejection, got: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestCreateDownloadTokenToolRejectsOutsideRoots(t *testing.T) {
 
 func TestCreateDownloadTokenToolRequiresBaseURL(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := download.NewService()
 	tool := NewCreateDownloadTokenTool(ws, "", svc)
 
@@ -608,7 +608,7 @@ func TestCreateDownloadTokenToolRequiresBaseURL(t *testing.T) {
 	if err := os.WriteFile(target, []byte("payload"), 0o644); err != nil {
 		t.Fatalf("write target: %v", err)
 	}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": target})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": target})
 	if err == nil || !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("expected base url error, got: %v", err)
 	}
@@ -616,11 +616,11 @@ func TestCreateDownloadTokenToolRequiresBaseURL(t *testing.T) {
 
 func TestCreateDownloadTokenToolRejectsMissingFile(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := download.NewService()
 	tool := NewCreateDownloadTokenTool(ws, "http://127.0.0.1:8000", svc)
 
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": filepath.Join(root, "missing.bin")})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": filepath.Join(root, "missing.bin")})
 	if err == nil {
 		t.Fatalf("expected missing file error")
 	}
@@ -628,7 +628,7 @@ func TestCreateDownloadTokenToolRejectsMissingFile(t *testing.T) {
 
 func TestCreateDownloadTokenToolRejectsDirectory(t *testing.T) {
 	root := t.TempDir()
-	ws := config.Workspace{ID: "ws", Roots: []string{root}}
+	ws := config.Root{Path: root}
 	svc := download.NewService()
 	tool := NewCreateDownloadTokenTool(ws, "http://127.0.0.1:8000", svc)
 
@@ -636,7 +636,7 @@ func TestCreateDownloadTokenToolRejectsDirectory(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir target: %v", err)
 	}
-	_, err := tool.Execute(context.Background(), core.InvokeContext{WorkspaceID: "ws"}, map[string]any{"path": dir})
+	_, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": dir})
 	if err == nil || !strings.Contains(err.Error(), "must be a file") {
 		t.Fatalf("expected directory rejection, got: %v", err)
 	}

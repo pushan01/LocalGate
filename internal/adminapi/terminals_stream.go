@@ -11,13 +11,13 @@ import (
 
 const terminalStreamHeartbeat = 15 * time.Second
 
-func (a *API) writeFileTerminalStream(w http.ResponseWriter, r *http.Request, sessionID, workspaceID string, cursor, maxItems int) {
+func (a *API) writeFileTerminalStream(w http.ResponseWriter, r *http.Request, sessionID string, cursor, maxItems int) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming is not supported", http.StatusInternalServerError)
 		return
 	}
-	updates, unsubscribe, err := a.App.Sessions.SubscribeForWorkspace(sessionID, workspaceID)
+	updates, unsubscribe, err := a.App.Sessions.Subscribe(sessionID)
 	if err != nil {
 		writeFileTerminalError(w, err)
 		return
@@ -33,7 +33,7 @@ func (a *API) writeFileTerminalStream(w http.ResponseWriter, r *http.Request, se
 	defer heartbeat.Stop()
 	forceEvent := true
 	for {
-		payload, readErr := a.readFileTerminal(sessionID, workspaceID, cursor, maxItems)
+		payload, readErr := a.readFileTerminal(sessionID, cursor, maxItems)
 		if readErr != nil {
 			_ = writeTerminalSSEError(w, readErr)
 			flusher.Flush()

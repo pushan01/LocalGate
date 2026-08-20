@@ -1,5 +1,5 @@
-export function fileTerminalContextKey(workspaceID, rootID, path) {
-  return `${workspaceID || ""}\u0000${rootID || ""}\u0000${path || ""}`;
+export function fileTerminalContextKey(path) {
+  return String(path || "");
 }
 
 export class FileTerminalState {
@@ -9,8 +9,6 @@ export class FileTerminalState {
 
   reset() {
     this.contextKey = "";
-    this.workspaceID = "";
-    this.rootID = "";
     this.path = "";
     this.taskID = "";
     this.task = null;
@@ -28,18 +26,16 @@ export class FileTerminalState {
     return this;
   }
 
-  setContext(workspaceID, rootID, path) {
-    const key = fileTerminalContextKey(workspaceID, rootID, path);
+  setContext(path) {
+    const key = fileTerminalContextKey(path);
     if (this.contextKey && this.contextKey !== key) this.reset();
     this.contextKey = key;
-    this.workspaceID = workspaceID || "";
-    this.rootID = rootID || "";
     this.path = path || "";
     return this;
   }
 
-  matchesWorkspaceRoot(workspaceID, rootID) {
-    return Boolean(this.contextKey && this.workspaceID === (workspaceID || "") && this.rootID === (rootID || ""));
+  matchesPath(path) {
+    return Boolean(this.contextKey && this.path === (path || ""));
   }
 
   attachTask(taskID, approval=null) {
