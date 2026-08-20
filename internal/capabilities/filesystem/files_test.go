@@ -55,6 +55,25 @@ func TestReadWriteList(t *testing.T) {
 	}
 }
 
+func TestReadFileDoesNotRejectUTF8RuneSplitAtSampleBoundary(t *testing.T) {
+	dir := t.TempDir()
+	tool := readFileTool{fsToolBase: fsToolBase{ws: config.Workspace{ID: "ws", Roots: []string{dir}}}}
+	contentBytes := append(bytes.Repeat([]byte("a"), 8191), []byte("中")...)
+	contentBytes = append(contentBytes, bytes.Repeat([]byte("文"), 100)...)
+	content := string(contentBytes)
+	path := filepath.Join(dir, "utf8-boundary.md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("read utf8 boundary file: %v", err)
+	}
+	if res["content"] != content {
+		t.Fatalf("unexpected content")
+	}
+}
+
 func TestFilesystemToolDescriptionsExplainSelectionBoundaries(t *testing.T) {
 	ws := config.Workspace{ID: "ws", Roots: []string{t.TempDir()}}
 	descriptions := map[string]string{}

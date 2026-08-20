@@ -475,11 +475,18 @@ func looksBinaryFile(content []byte) bool {
 	if len(content) == 0 {
 		return false
 	}
+	// Validate the complete byte sequence before sampling for binary markers.
+	// Checking UTF-8 on a truncated sample can split a multi-byte rune at the
+	// boundary and incorrectly classify normal UTF-8 text (especially Chinese,
+	// Japanese, and Korean markdown files) as binary.
+	if !utf8.Valid(content) {
+		return true
+	}
 	sample := content
 	if len(sample) > 8192 {
 		sample = sample[:8192]
 	}
-	return bytes.IndexByte(sample, 0) >= 0 || !utf8.Valid(sample)
+	return bytes.IndexByte(sample, 0) >= 0
 }
 
 func minInt(a, b int) int {
