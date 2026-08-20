@@ -458,7 +458,7 @@ file_exports:
   default_ttl_seconds: 300
   max_ttl_seconds: 600
   max_file_bytes: 104857600
-  require_approval: true
+  require_approval: false
 ```
 
 首版要求 `file_exports.base_url` 与 `http.base_url` 使用相同的 scheme 和 authority。`/system/exports/*` 不要求 LocalGate 固定 Bearer 请求头，而是由高强度短期签名授权；其他 HTTP 路由仍保持原有鉴权。
@@ -566,9 +566,10 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 
 - `subagent_spawn`：创建新的 `sg_*` 子 Agent 并提交首轮消息；拿到 conversation ID 后立即返回，不等待模型生成完成
 - `subagent_send`：向 `ready` 的 `sg_*` 提交下一轮消息并立即返回；若当前轮仍是 `busy`，会拒绝重入
-- `subagent_poll`：非阻塞检查当前轮生成状态；完成时返回最终 reply，生成中可返回已可见的部分 reply
-- `subagent_wait`：显式等待当前轮完成并返回最终 reply
+- `subagent_poll`：非阻塞检查当前轮生成状态；完成时返回最终 `reply`，生成中可返回已可见的部分 `reply`；如果 Provider 产出图片等本地 artifact，同时返回 `artifacts`
+- `subagent_wait`：显式等待当前轮完成并返回最终 `reply`；图片等非文本结果通过并列的 `artifacts` 数组返回，不会塞进 `reply` 文本
 - `subagent_get` / `subagent_list`：查看状态以及 provider conversation / Project 映射摘要；`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，`refresh=false` 可读取纯本地快照
+- `subagent_artifact_get`：把 `artifacts[].id` 对应的 LocalGate 内部 artifact 校验后签发成短期 HTTPS / MCP `resource_link`；不会向调用方暴露 LocalGate 本机 artifact 路径
 - `subagent_archive`：确认当前远端 turn 已结束后删除本地 `sg_*` 映射；若 Provider 配置了 `archive_project`，会先把 backing conversation 移过去并验证成功；未配置时远端 conversation 保持原位
 - `subagent_close`：逻辑关闭 subagent；不会删除 ChatGPT 中已有的 conversation 或 Project 历史
 
@@ -646,6 +647,10 @@ subagents:
 ChatGPT 的普通 `ask/send` 使用 upstream OpenCLI；状态 `inspect` 与 upstream 当前没有的 `project-move` 由同一个 LocalGate 内置 adapter runner 实现。`project-move` 通过通用 OpenCLI Browser Bridge 打开 conversation 的项目菜单，并读取 Browser Bridge 捕获到的 ChatGPT conversation/project network response 验证真实 Project membership；不会仅凭 project-looking URL 判断移动成功。因此 LocalGate 不要求安装包含私有 ChatGPT subagent 命令的 OpenCLI fork。
 
 Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go:embed` 发布。启动时 LocalGate 会把 runner 释放到 `log_store/runtime/adapters/<content-hash>/localgate-adapter.mjs`；runner 只依赖 OpenCLI 的通用 `browser open/eval/keys` Browser Bridge，因此不要求用户安装带 `gemini submit/inspect` 私有分叉的 OpenCLI。`browser_executable` 指向这个通用 browser backend；`executable` 仅保留为开发/兼容用的自定义 adapter runner override。Gemini 仍复用同一套 `spawn → busy → poll/wait → ready → send` 生命周期、持久化 `sg_*` 映射和状态查询节流。Gemini 没有 ChatGPT Project/`project-move` 对应语义，所以当前 `subagent_archive` 对 `opencli_gemini` 返回 archive unsupported；`subagent_close` 仍是逻辑关闭，不删除 Gemini 历史会话。
+
+Gemini 的图片生成结果会由内置 adapter 在生成结束后从已经渲染的 `<img>` 通过 canvas materialize 为 PNG，写入 `log_store/subagents/artifacts/<conversation_id>/turn-<n>/`。LocalGate 不持久化 Gemini 的 `blob:` URL；`subagent_poll` / `subagent_wait` 返回 provider-independent 的 artifact metadata（`id/type/mime_type/file_name/size/sha256/width/height/alt`），并把最新完成 turn 的 artifacts 持久化到对应 `sg_*` 记录，因此 subagent 已经 `ready` 后仍可通过 `subagent_get` / `subagent_list` 读取。artifact 的真实本机路径只保存在 LocalGate 内部持久化记录中，不通过 MCP artifact 列表暴露。开始下一次 `subagent_send` 时会清空上一轮 artifact 列表，避免把旧图片误认为新一轮结果。当前单张图片 materialize 上限为 16 MiB；artifact 抽取失败不会把一个已经完成的 Gemini turn 重新判成 `busy/degraded`。
+
+调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于该 workspace 下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`。内部 artifact 不要求位于用户 workspace root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 workspace path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
 
 ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect/project-move` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
 

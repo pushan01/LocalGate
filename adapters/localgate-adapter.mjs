@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 const GEMINI_APP_URL = 'https://gemini.google.com/app';
 const GEMINI_DOMAIN = 'gemini.google.com';
 const DEFAULT_SUBMISSION_TIMEOUT_SECONDS = 8;
+const MAX_ARTIFACT_BYTES = 16 << 20;
+const GENERATED_IMAGE_SELECTOR = '.generated-images img, single-image.generated-image img, .generated-image img.image.loaded, .generated-image img';
 const browserExecutable = (process.env.LOCALGATE_BROWSER_EXECUTABLE || 'opencli').trim() || 'opencli';
 let activeSite = 'gemini';
 
@@ -26,7 +31,7 @@ function sleep(ms) {
 function runBrowser(args, { parseJSON = true } = {}) {
   const result = spawnSync(browserExecutable, ['browser', browserSession(), ...args], {
     encoding: 'utf8',
-    maxBuffer: 8 << 20,
+    maxBuffer: 32 << 20,
     env: process.env,
   });
   if (result.error) {
@@ -172,6 +177,33 @@ const snapshotScript = String.raw`
     .replace(/^(?:Gemini said|Gemini|Assistant|Gemini 回答)\s*/i, '')
     .trim();
 
+  const generatedImages = Array.from(document.querySelectorAll(
+    '.generated-images img, single-image.generated-image img, .generated-image img.image.loaded, .generated-image img'
+  )).filter((node) => node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0 && node.naturalHeight > 0);
+  const imageDescriptors = (root) => {
+    if (!(root instanceof HTMLElement)) return [];
+    return Array.from(root.querySelectorAll(
+      '.generated-images img, single-image.generated-image img, .generated-image img.image.loaded, .generated-image img'
+    )).filter((node) => node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0 && node.naturalHeight > 0)
+      .map((node) => ({
+        Ordinal: generatedImages.indexOf(node),
+        Alt: clean(node.alt || '').slice(0, 1000),
+        Width: node.naturalWidth,
+        Height: node.naturalHeight,
+      }))
+      .filter((image) => image.Ordinal >= 0);
+  };
+  const mergeImages = (target, incoming) => {
+    const seen = new Set((target || []).map((image) => image.Ordinal));
+    const out = Array.isArray(target) ? target : [];
+    for (const image of incoming || []) {
+      if (seen.has(image.Ordinal)) continue;
+      seen.add(image.Ordinal);
+      out.push(image);
+    }
+    return out;
+  };
+
   const turns = [];
   for (const node of nodes) {
     const isUser = node.matches('.query-text');
@@ -191,9 +223,11 @@ const snapshotScript = String.raw`
     const hasGeneratedMedia = !!(responseRoot && responseRoot.querySelector(
       '.generated-images, single-image.generated-image, .generated-image img, img.image.loaded'
     ));
+    const images = !isUser ? imageDescriptors(responseRoot) : [];
     if (!text && !hasGeneratedMedia) continue;
     const previous = turns[turns.length - 1];
     if (previous && previous.Role === role) {
+      previous.Images = mergeImages(previous.Images, images);
       if (!text && hasGeneratedMedia) {
         // A text Assistant turn followed by generated media belongs to the same
         // model response. It already provides the completion anchor we need.
@@ -208,7 +242,7 @@ const snapshotScript = String.raw`
       previous.Text += '\n' + text;
       continue;
     }
-    turns.push({ Role: role, Text: text });
+    turns.push({ Role: role, Text: text, Images: images });
   }
 
   const generating = Array.from(document.querySelectorAll('button, [role="button"]')).some((node) => {
@@ -498,6 +532,88 @@ async function submitGemini(argv) {
   })}\n`);
 }
 
+function captureGeneratedImageScript(ordinal) {
+  return String.raw`
+((targetOrdinal) => {
+  /* LOCALGATE_GEMINI_CAPTURE_IMAGE */
+  const selector = '.generated-images img, single-image.generated-image img, .generated-image img.image.loaded, .generated-image img';
+  const images = Array.from(document.querySelectorAll(selector))
+    .filter((node) => node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0 && node.naturalHeight > 0);
+  const img = images[targetOrdinal];
+  if (!(img instanceof HTMLImageElement)) return { ok: false, reason: 'generated image not found' };
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { ok: false, reason: '2d canvas unavailable' };
+  try {
+    ctx.drawImage(img, 0, 0);
+    const dataURL = canvas.toDataURL('image/png');
+    return {
+      ok: true,
+      dataURL,
+      alt: String(img.alt || '').slice(0, 1000),
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    };
+  } catch (error) {
+    return { ok: false, reason: String(error && error.message ? error.message : error) };
+  }
+})(${JSON.stringify(ordinal)})
+`;
+}
+
+function materializeGeminiArtifacts(snapshot, conversationId) {
+  const artifactRoot = String(process.env.LOCALGATE_ARTIFACT_DIR || '').trim();
+  if (!artifactRoot || snapshot.generating) return new Map();
+  const root = path.resolve(artifactRoot);
+  const result = new Map();
+  for (const [turnOffset, turn] of snapshot.turns.entries()) {
+    if (turn?.Role !== 'Assistant' || !Array.isArray(turn.Images) || turn.Images.length === 0) continue;
+    const turnIndex = turnOffset + 1;
+    const artifacts = [];
+    for (const [imageOffset, descriptor] of turn.Images.entries()) {
+      try {
+        const captured = browserEval(captureGeneratedImageScript(Number(descriptor?.Ordinal)));
+        if (!captured || captured.ok !== true || typeof captured.dataURL !== 'string') continue;
+        const match = captured.dataURL.match(/^data:(image\/png);base64,([A-Za-z0-9+/=]+)$/);
+        if (!match) continue;
+        const bytes = Buffer.from(match[2], 'base64');
+        if (bytes.length <= 0 || bytes.length > MAX_ARTIFACT_BYTES) continue;
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const artifactKey = createHash('sha256')
+          .update(`${conversationId}:${turnIndex}:${imageOffset}:${sha256}`)
+          .digest('hex')
+          .slice(0, 24);
+        const dir = path.join(root, conversationId, `turn-${turnIndex}`);
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const fileName = `gemini-${conversationId}-turn-${turnIndex}-image-${imageOffset + 1}.png`;
+        const filePath = path.join(dir, `${artifactKey}.png`);
+        writeFileSync(filePath, bytes, { mode: 0o600 });
+        artifacts.push({
+          id: `art_${artifactKey}`,
+          type: 'image',
+          mime_type: 'image/png',
+          file_name: fileName,
+          path: filePath,
+          size: bytes.length,
+          sha256,
+          width: Number(captured.width || descriptor?.Width || 0),
+          height: Number(captured.height || descriptor?.Height || 0),
+          alt: String(captured.alt || descriptor?.Alt || '').slice(0, 1000),
+        });
+      } catch (error) {
+        // Artifact capture must never turn a completed Gemini response back into
+        // a stuck/degraded subagent. Preserve status reconciliation even when a
+        // browser cannot materialize one particular image.
+        process.stderr.write(`Gemini artifact capture skipped: ${String(error?.message || error)}\n`);
+      }
+    }
+    if (artifacts.length > 0) result.set(turnIndex, artifacts);
+  }
+  return result;
+}
+
 async function inspectGemini(argv) {
   const { positional } = parseArgs(argv);
   const target = conversationURL(positional[0]);
@@ -506,6 +622,7 @@ async function inspectGemini(argv) {
   if (observedID && observedID !== target.id) {
     throw new Error(`Gemini inspect conversation mismatch: expected ${target.id}, observed ${observedID}`);
   }
+  const artifactsByTurn = materializeGeminiArtifacts(snapshot, target.id);
   process.stdout.write(`${JSON.stringify({
     ConversationId: target.id,
     ConversationUrl: String(snapshot.url || target.url),
@@ -514,6 +631,7 @@ async function inspectGemini(argv) {
       Index: index + 1,
       Role: String(turn?.Role || 'System'),
       Text: String(turn?.Text || ''),
+      Artifacts: artifactsByTurn.get(index + 1) || [],
     })),
   })}\n`);
 }

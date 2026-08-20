@@ -308,7 +308,7 @@ func Default() Config {
 			DefaultTTLSeconds: 5 * 60,
 			MaxTTLSeconds:     10 * 60,
 			MaxFileBytes:      100 << 20,
-			RequireApproval:   true,
+			RequireApproval:   false,
 		},
 		FileBrowser: FileBrowserConfig{
 			Enabled:                  true,

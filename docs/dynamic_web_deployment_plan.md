@@ -1184,6 +1184,8 @@ https://deploys.<app-domain>/
 
 当前已完成蓝绿主流程、正确的 `on-failure`、指数退避、restart limit/reset、startup recovery、状态事务、日志轮转、release metadata/history/retention/rollback、启动 GC、cleanup pending 和退役进程重试。尚未完成硬崩溃后的跨进程 orphan 识别、SQLite 事务和完整 crash consistency 验证。
 
+开发/运维时还要注意 LocalGate **自重启** 本身的进程生命周期：不能在由当前 LocalGate 承载的同步 MCP/`run_command` 中先杀 daemon 再继续启动；应先安排脱离当前请求的延迟后台重启器，并在重启前记录旧 daemon 的直接子进程，避免 dynamic application 在父进程退出后变成 orphan、随后与 startup recovery 拉起的新实例重复运行。具体 runbook 和已发生的 SQLite/健康检查案例见根目录 `notes.md` 的“LocalGate 自重启：必须使用脱离当前请求的延迟重启器”。
+
 ### Phase 6：安全加固（部分完成）
 
 实现：

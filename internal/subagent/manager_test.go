@@ -12,22 +12,23 @@ import (
 )
 
 type fakeProvider struct {
-	mu           sync.Mutex
-	createCount  int
-	sendCount    int
-	pollCount    int
-	waitCount    int
-	recoverCount int
-	closeCount   int
-	sendErr      error
-	pollErr      error
-	pollBusy     bool
-	activeByID   map[string]int
-	maxByID      map[string]int
-	activeGlobal int
-	maxGlobal    int
-	entered      chan string
-	release      chan struct{}
+	mu            sync.Mutex
+	createCount   int
+	sendCount     int
+	pollCount     int
+	waitCount     int
+	recoverCount  int
+	closeCount    int
+	sendErr       error
+	pollErr       error
+	pollBusy      bool
+	pollArtifacts []Artifact
+	activeByID    map[string]int
+	maxByID       map[string]int
+	activeGlobal  int
+	maxGlobal     int
+	entered       chan string
+	release       chan struct{}
 }
 
 type archiveFakeProvider struct {
@@ -122,6 +123,7 @@ func (p *fakeProvider) Poll(_ context.Context, state ProviderState) (ProviderSta
 	p.pollCount++
 	err := p.pollErr
 	busy := p.pollBusy
+	artifacts := append([]Artifact(nil), p.pollArtifacts...)
 	p.mu.Unlock()
 	if err != nil {
 		return state, Observation{}, err
@@ -130,13 +132,14 @@ func (p *fakeProvider) Poll(_ context.Context, state ProviderState) (ProviderSta
 	if state.Hints["last_message"] != "" {
 		reply = "reply:" + state.Hints["last_message"]
 	}
-	return state, Observation{Generating: busy, Reply: Reply{Text: reply}}, nil
+	return state, Observation{Generating: busy, Reply: Reply{Text: reply, Artifacts: artifacts}}, nil
 }
 
 func (p *fakeProvider) Wait(_ context.Context, state ProviderState) (ProviderState, Observation, error) {
 	p.mu.Lock()
 	p.waitCount++
 	err := p.pollErr
+	artifacts := append([]Artifact(nil), p.pollArtifacts...)
 	p.mu.Unlock()
 	if err != nil {
 		return state, Observation{}, err
@@ -145,7 +148,7 @@ func (p *fakeProvider) Wait(_ context.Context, state ProviderState) (ProviderSta
 	if state.Hints["last_message"] != "" {
 		reply = "reply:" + state.Hints["last_message"]
 	}
-	return state, Observation{Reply: Reply{Text: reply}}, nil
+	return state, Observation{Reply: Reply{Text: reply, Artifacts: artifacts}}, nil
 }
 
 func (p *fakeProvider) Recover(_ context.Context, state ProviderState) (ProviderState, error) {
@@ -431,6 +434,63 @@ func TestManagerCreatePersistsAndReloads(t *testing.T) {
 	}
 	if agent.SubagentType != "reviewer" || agent.Instruction != "review code" || agent.ProviderState.ConversationID != "conv-reviewer" {
 		t.Fatalf("reloaded agent mismatch: %#v", agent)
+	}
+}
+
+func TestManagerPersistsLatestArtifactsAndClearsThemOnSend(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "subagents")
+	store := NewStore(base)
+	m, err := NewManager(store, Options{DefaultProvider: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := newFakeProvider()
+	provider.pollArtifacts = []Artifact{{
+		ID:       "art_0123456789abcdef01234567",
+		Type:     "image",
+		MIMEType: "image/png",
+		FileName: "generated.png",
+		Path:     "/tmp/generated.png",
+		Size:     123,
+		SHA256:   strings.Repeat("a", 64),
+		Width:    1024,
+		Height:   559,
+	}}
+	if err := m.RegisterProvider("fake", provider); err != nil {
+		t.Fatal(err)
+	}
+	created, err := m.Create(context.Background(), CreateRequest{WorkspaceID: "ws", Name: "image", Instruction: "draw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := m.Poll(context.Background(), "ws", created.Subagent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.Reply.Artifacts) != 1 || len(observed.Subagent.Artifacts) != 1 {
+		t.Fatalf("artifact was not exposed and persisted: %#v", observed)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Artifacts) != 1 || loaded[0].Artifacts[0].ID != provider.pollArtifacts[0].ID {
+		t.Fatalf("persisted artifact mismatch: %#v", loaded)
+	}
+	provider.pollArtifacts = nil
+	sent, err := m.Send(context.Background(), "ws", created.Subagent.ID, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Artifacts) != 0 {
+		t.Fatalf("new turn should clear prior artifacts: %#v", sent.Artifacts)
+	}
+	loaded, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Artifacts) != 0 {
+		t.Fatalf("cleared artifacts were not persisted: %#v", loaded)
 	}
 }
 

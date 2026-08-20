@@ -18,6 +18,19 @@ type ProviderState struct {
 	Hints           map[string]string `json:"hints,omitempty"`
 }
 
+type Artifact struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	MIMEType string `json:"mime_type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	SHA256   string `json:"sha256,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
+	Alt      string `json:"alt,omitempty"`
+}
+
 type Subagent struct {
 	ID             string        `json:"id"`
 	Name           string        `json:"name,omitempty"`
@@ -27,6 +40,7 @@ type Subagent struct {
 	WorkspaceID    string        `json:"workspace_id"`
 	Instruction    string        `json:"instruction,omitempty"`
 	ProviderState  ProviderState `json:"provider_state"`
+	Artifacts      []Artifact    `json:"artifacts,omitempty"`
 	LastError      string        `json:"last_error,omitempty"`
 	LastErrorCode  string        `json:"last_error_code,omitempty"`
 	CreatedAt      time.Time     `json:"created_at"`
@@ -35,7 +49,8 @@ type Subagent struct {
 }
 
 type Reply struct {
-	Text string `json:"text"`
+	Text      string     `json:"text"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 type Observation struct {

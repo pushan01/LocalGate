@@ -44,6 +44,13 @@ workspaces:
 	}
 }
 
+func TestFileExportsDefaultDoesNotRequireApproval(t *testing.T) {
+	cfg := Default()
+	if cfg.FileExports.RequireApproval {
+		t.Fatalf("file exports should not require approval by default: %#v", cfg.FileExports)
+	}
+}
+
 func TestLoadRejectsInvalidFileExportsConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "localgate.yaml")

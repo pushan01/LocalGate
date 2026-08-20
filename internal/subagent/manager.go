@@ -246,6 +246,7 @@ func (m *Manager) Send(ctx context.Context, workspaceID, id, message string) (Su
 
 	entry.mu.Lock()
 	entry.agent.Status = StatusBusy
+	entry.agent.Artifacts = nil
 	entry.agent.LastError = ""
 	entry.agent.LastErrorCode = ""
 	entry.agent.UpdatedAt = time.Now().UTC()
@@ -358,6 +359,7 @@ func (m *Manager) observe(ctx context.Context, workspaceID, id string, wait bool
 		observedAt := time.Now().UTC()
 		entry.mu.Lock()
 		entry.agent.ProviderState = cloneProviderState(nextState)
+		entry.agent.Artifacts = cloneArtifacts(observation.Reply.Artifacts)
 		if observation.Generating {
 			entry.agent.Status = StatusBusy
 		} else {
@@ -962,7 +964,17 @@ func (m *Manager) newID() string {
 
 func cloneSubagent(agent Subagent) Subagent {
 	agent.ProviderState = cloneProviderState(agent.ProviderState)
+	agent.Artifacts = cloneArtifacts(agent.Artifacts)
 	return agent
+}
+
+func cloneArtifacts(input []Artifact) []Artifact {
+	if input == nil {
+		return nil
+	}
+	out := make([]Artifact, len(input))
+	copy(out, input)
+	return out
 }
 
 func cloneProviderState(state ProviderState) ProviderState {

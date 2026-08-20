@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"localgate/internal/app"
 	"localgate/internal/config"
 	"localgate/internal/core"
+	"localgate/internal/fileexport"
 )
 
 func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
@@ -107,5 +111,76 @@ func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
 	w = request(http.MethodGet, "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected changed source 409, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestExportEndpointServesValidatedInternalSourceOutsideWorkspace(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	internalRoot := t.TempDir()
+	target := filepath.Join(internalRoot, "artifact.png")
+	payload := []byte("internal-artifact")
+	if err := os.WriteFile(target, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+
+	application, err := app.New(config.Config{
+		LogStore: t.TempDir(),
+		HTTP:     config.HTTP{BaseURL: "https://gate.example"},
+		FileExports: config.FileExports{
+			Enabled:           true,
+			BaseURL:           "https://gate.example",
+			DefaultTTLSeconds: 300,
+			MaxTTLSeconds:     600,
+			MaxFileBytes:      1 << 20,
+		},
+		Workspaces: []config.Workspace{{ID: "ws", Roots: []string{workspaceRoot}, CWD: workspaceRoot}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	grant, err := application.Exports.Issue(fileexport.Grant{
+		WorkspaceID:     "ws",
+		Path:            target,
+		FileName:        "artifact.png",
+		MIMEType:        "image/png",
+		Size:            info.Size(),
+		SHA256:          hex.EncodeToString(sum[:]),
+		ModTimeUnixNano: info.ModTime().UnixNano(),
+		InternalSource:  true,
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := application.Exports.Link(grant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(link.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &API{App: application, DefaultWSID: application.DefaultWSID}
+	mux := http.NewServeMux()
+	api.RegisterControl(mux)
+	req := httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != string(payload) {
+		t.Fatalf("unexpected internal export: status=%d body=%q", w.Code, w.Body.String())
+	}
+
+	if err := os.WriteFile(target, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected internal source mutation to fail, got %d", w.Code)
 	}
 }

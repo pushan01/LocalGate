@@ -38,6 +38,7 @@ type Grant struct {
 	Size            int64     `json:"size"`
 	SHA256          string    `json:"sha256"`
 	ModTimeUnixNano int64     `json:"mod_time_unix_nano"`
+	InternalSource  bool      `json:"internal_source,omitempty"`
 	ExpiresAt       time.Time `json:"expires_at"`
 }
 

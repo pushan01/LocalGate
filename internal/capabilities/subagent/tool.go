@@ -264,6 +264,7 @@ func (GetTool) OutputSchema() any {
 		"refreshed":      map[string]any{"type": "boolean"},
 		"retry_after_ms": map[string]any{"type": "integer"},
 		"reply":          map[string]any{"type": "string"},
+		"artifacts":      artifactArraySchema(),
 		"refresh_error":  map[string]any{"type": "string"},
 	}, []string{"subagent", "refreshed"})
 }
@@ -289,6 +290,7 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 	result := map[string]any{
 		"subagent":  agentMap(agent),
 		"refreshed": false,
+		"artifacts": artifactMaps(agent.Artifacts),
 	}
 	if !refresh || (agent.Status != runtime.StatusBusy && agent.Status != runtime.StatusDegraded) {
 		return result, nil
@@ -300,6 +302,7 @@ func (t GetTool) Execute(ctx context.Context, ic core.InvokeContext, args map[st
 		if observed.Refreshed {
 			result["reply"] = observed.Reply.Text
 		}
+		result["artifacts"] = artifactMaps(observed.Subagent.Artifacts)
 		if observed.RetryAfter > 0 {
 			result["retry_after_ms"] = observed.RetryAfter.Milliseconds()
 		}
@@ -372,6 +375,7 @@ func (ArchiveTool) OutputSchema() any {
 		"subagent_id":      map[string]any{"type": "string"},
 		"archived":         map[string]any{"type": "boolean"},
 		"project_id":       map[string]any{"type": "string"},
+		"artifacts":        artifactArraySchema(),
 		"conversation_url": map[string]any{"type": "string"},
 	}, []string{"subagent_id", "archived", "project_id", "conversation_url"})
 }
@@ -401,6 +405,7 @@ func (t ArchiveTool) Execute(ctx context.Context, ic core.InvokeContext, args ma
 		"subagent_id":      id,
 		"archived":         true,
 		"project_id":       agent.ProviderState.ProjectID,
+		"artifacts":        artifactMaps(agent.Artifacts),
 		"conversation_url": agent.ProviderState.ConversationURL,
 	}, nil
 }
@@ -459,6 +464,7 @@ func agentMap(agent runtime.Subagent) map[string]any {
 		"conversation_id":  agent.ProviderState.ConversationID,
 		"conversation_url": agent.ProviderState.ConversationURL,
 		"project_id":       agent.ProviderState.ProjectID,
+		"artifacts":        artifactMaps(agent.Artifacts),
 		"last_error":       agent.LastError,
 		"last_error_code":  agent.LastErrorCode,
 		"phase":            agentPhase(agent),
@@ -480,6 +486,7 @@ func agentOutputSchema() map[string]any {
 		"conversation_id":  map[string]any{"type": "string"},
 		"conversation_url": map[string]any{"type": "string"},
 		"project_id":       map[string]any{"type": "string"},
+		"artifacts":        artifactArraySchema(),
 		"last_error":       map[string]any{"type": "string"},
 		"last_error_code":  map[string]any{"type": "string"},
 		"phase":            map[string]any{"type": "string"},
@@ -571,20 +578,61 @@ func observeOutputSchema() any {
 		"subagent_id":    map[string]any{"type": "string"},
 		"status":         map[string]any{"type": "string"},
 		"reply":          map[string]any{"type": "string"},
+		"artifacts":      artifactArraySchema(),
 		"refreshed":      map[string]any{"type": "boolean"},
 		"retry_after_ms": map[string]any{"type": "integer"},
 	}, []string{"subagent_id", "status", "reply", "refreshed"})
 }
 
 func observeResultMap(id string, result runtime.ObserveResult) map[string]any {
+	artifacts := result.Reply.Artifacts
+	if len(artifacts) == 0 {
+		artifacts = result.Subagent.Artifacts
+	}
 	out := map[string]any{
 		"subagent_id": id,
 		"status":      string(result.Subagent.Status),
 		"reply":       result.Reply.Text,
+		"artifacts":   artifactMaps(artifacts),
 		"refreshed":   result.Refreshed,
 	}
 	if result.RetryAfter > 0 {
 		out["retry_after_ms"] = result.RetryAfter.Milliseconds()
+	}
+	return out
+}
+
+func artifactArraySchema() map[string]any {
+	return map[string]any{
+		"type": "array",
+		"items": objectSchema(map[string]any{
+			"id":        map[string]any{"type": "string"},
+			"type":      map[string]any{"type": "string"},
+			"mime_type": map[string]any{"type": "string"},
+			"file_name": map[string]any{"type": "string"},
+			"size":      map[string]any{"type": "integer"},
+			"sha256":    map[string]any{"type": "string"},
+			"width":     map[string]any{"type": "integer"},
+			"height":    map[string]any{"type": "integer"},
+			"alt":       map[string]any{"type": "string"},
+		}, []string{"id", "type"}),
+	}
+}
+
+func artifactMaps(artifacts []runtime.Artifact) []map[string]any {
+	out := make([]map[string]any, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		out = append(out, map[string]any{
+			"id":        artifact.ID,
+			"type":      artifact.Type,
+			"mime_type": artifact.MIMEType,
+			"file_name": artifact.FileName,
+			"size":      artifact.Size,
+			"sha256":    artifact.SHA256,
+			"width":     artifact.Width,
+			"height":    artifact.Height,
+			"alt":       artifact.Alt,
+		})
 	}
 	return out
 }

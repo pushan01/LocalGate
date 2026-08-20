@@ -1107,26 +1107,39 @@ func (a *API) handleExports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ws, ok := a.App.Workspaces[grant.WorkspaceID]
-	if !ok {
-		server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
-		return
+	exportPath := grant.Path
+	if grant.InternalSource {
+		if !filepath.IsAbs(exportPath) {
+			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+			return
+		}
+		if info, err := os.Lstat(exportPath); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+			return
+		}
+	} else {
+		ws, ok := a.App.Workspaces[grant.WorkspaceID]
+		if !ok {
+			server.WriteError(w, http.StatusNotFound, "export_not_found", "export not found", nil)
+			return
+		}
+		lexical := security.ValidatePath(grant.Path, ws, security.Options{})
+		if !lexical.Allowed {
+			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+			return
+		}
+		if info, err := os.Lstat(lexical.Path); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+			return
+		}
+		dec := security.ValidatePath(lexical.Path, ws, security.Options{FollowSymlink: true})
+		if !dec.Allowed {
+			server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
+			return
+		}
+		exportPath = dec.Path
 	}
-	lexical := security.ValidatePath(grant.Path, ws, security.Options{})
-	if !lexical.Allowed {
-		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
-		return
-	}
-	if info, err := os.Lstat(lexical.Path); err != nil || info.Mode()&os.ModeSymlink != 0 {
-		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
-		return
-	}
-	dec := security.ValidatePath(lexical.Path, ws, security.Options{FollowSymlink: true})
-	if !dec.Allowed {
-		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
-		return
-	}
-	f, err := os.Open(dec.Path)
+	f, err := os.Open(exportPath)
 	if err != nil {
 		server.WriteError(w, http.StatusConflict, "export_source_changed", "export source is no longer available", nil)
 		return

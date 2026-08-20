@@ -51,6 +51,29 @@ func (fakeProvider) Archive(_ context.Context, state runtime.ProviderState) (run
 	return state, nil
 }
 
+type artifactProvider struct{ fakeProvider }
+
+func (artifactProvider) Poll(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return state, runtime.Observation{Reply: runtime.Reply{
+		Text: "",
+		Artifacts: []runtime.Artifact{{
+			ID:       "art_0123456789abcdef01234567",
+			Type:     "image",
+			MIMEType: "image/png",
+			FileName: "generated.png",
+			Path:     "/tmp/generated.png",
+			Size:     123,
+			SHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Width:    1024,
+			Height:   559,
+		}},
+	}}, nil
+}
+
+func (p artifactProvider) Wait(ctx context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
+	return p.Poll(ctx, state)
+}
+
 type pollErrorProvider struct{ fakeProvider }
 
 func (pollErrorProvider) Poll(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, runtime.Observation, error) {
@@ -195,6 +218,41 @@ func TestSubagentToolsFlow(t *testing.T) {
 	}
 	if _, err := byName["subagent_get"].Execute(context.Background(), ic, map[string]any{"subagent_id": id}); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("archived subagent should be removed locally, got %v", err)
+	}
+}
+
+func TestSubagentToolsExposePersistedArtifacts(t *testing.T) {
+	m := newToolTestManagerWithProvider(t, artifactProvider{})
+	tools := NewTools(m)
+	byName := make(map[string]core.Tool, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name()] = tool
+	}
+	ic := core.InvokeContext{WorkspaceID: "ws"}
+	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{"instruction": "draw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := spawned["subagent_id"].(string)
+	polled, err := byName["subagent_poll"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, ok := polled["artifacts"].([]map[string]any)
+	if !ok || len(artifacts) != 1 || artifacts[0]["type"] != "image" || artifacts[0]["id"] == "" {
+		t.Fatalf("unexpected poll artifacts: %#v", polled)
+	}
+	if _, exposed := artifacts[0]["path"]; exposed {
+		t.Fatalf("artifact path should remain internal: %#v", artifacts[0])
+	}
+	got, err := byName["subagent_get"].Execute(context.Background(), ic, map[string]any{"subagent_id": id, "refresh": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := got["subagent"].(map[string]any)
+	persisted, ok := agent["artifacts"].([]map[string]any)
+	if !ok || len(persisted) != 1 || persisted[0]["id"] != "art_0123456789abcdef01234567" {
+		t.Fatalf("unexpected persisted artifacts: %#v", got)
 	}
 }
 

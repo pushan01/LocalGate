@@ -163,7 +163,7 @@ file_exports:
   default_ttl_seconds: 300
   max_ttl_seconds: 600
   max_file_bytes: 104857600
-  require_approval: true
+  require_approval: false
 
 # Admin Console 文件浏览器。首版只读浏览 API 已可用；写入能力后续接入审批和审计。
 file_browser:

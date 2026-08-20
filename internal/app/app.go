@@ -163,9 +163,14 @@ func New(cfg config.Config) (*App, error) {
 					return nil, fmt.Errorf("materialize %s adapter: %w", opencligemini.Name, subagentErr)
 				}
 			}
+			artifactDir, artifactDirErr := filepath.Abs(filepath.Join(storeBase, "subagents", "artifacts"))
+			if artifactDirErr != nil {
+				return nil, fmt.Errorf("resolve %s artifact directory: %w", opencligemini.Name, artifactDirErr)
+			}
 			provider, providerErr := opencligemini.New(opencligemini.Config{
 				Executable:        adapterExecutable,
 				BrowserExecutable: providerConfig.BrowserExecutable,
+				ArtifactDir:       artifactDir,
 				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
 				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
 			})
@@ -321,6 +326,9 @@ func New(cfg config.Config) (*App, error) {
 		if subagentManager != nil {
 			for _, tool := range subagentcap.NewTools(subagentManager) {
 				reg.Register(tool)
+			}
+			if exportSvc != nil {
+				reg.Register(subagentcap.NewArtifactGetTool(subagentManager, cfg.FileExports, exportSvc))
 			}
 		}
 		if notificationSvc.ToolEnabled() {
@@ -1091,7 +1099,7 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 					risk = "critical"
 				}
 			}
-		} else if tool == "export_file" && a.FileExports.RequireApproval {
+		} else if (tool == "export_file" || tool == "subagent_artifact_get") && a.FileExports.RequireApproval {
 			needApproval = true
 			reason = "approval.policy.file_export"
 			risk = "high"
@@ -1299,6 +1307,10 @@ func approvalSummary(tool string, args map[string]any) string {
 			return "Export local file " + path + " as " + fileName
 		}
 		return "Export local file " + path
+	case "subagent_artifact_get":
+		subagentID, _ := args["subagent_id"].(string)
+		artifactID, _ := args["artifact_id"].(string)
+		return "Export subagent artifact " + artifactID + " from " + subagentID
 	default:
 		return "Execute tool " + tool
 	}

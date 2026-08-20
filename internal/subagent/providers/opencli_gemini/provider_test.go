@@ -2,6 +2,7 @@ package opencli_gemini
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -184,6 +185,104 @@ printf '%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":
 	}
 	if next.Hints[pendingFingerprintHint] != "" {
 		t.Fatalf("pending marker was not cleared after generated-media completion: %#v", next)
+	}
+}
+
+func TestPollReturnsValidatedImageArtifact(t *testing.T) {
+	dir := t.TempDir()
+	artifactDir := filepath.Join(dir, "artifacts")
+	artifactPath := filepath.Join(artifactDir, "abc123def4567890", "turn-2", "image.png")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("\x89PNG\r\n\x1a\nlocalgate-test-image")
+	if err := os.WriteFile(artifactPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+printf '%%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":[{"Index":1,"Role":"User","Text":"draw an image"},{"Index":2,"Role":"Assistant","Text":"","Artifacts":[{"id":"art_0123456789abcdef01234567","type":"image","mime_type":"image/png","file_name":"gemini-image.png","path":"%s","size":%d,"sha256":"%x","width":1024,"height":559,"alt":"generated image"}]}]}]'
+`, artifactPath, len(payload), sum))
+	p, err := New(Config{Executable: executable, ArtifactDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID: "abc123def4567890",
+		Hints:          withPendingMarker(nil, "draw an image"),
+	}
+	next, observation, err := p.Poll(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Generating || len(observation.Reply.Artifacts) != 1 {
+		t.Fatalf("unexpected artifact observation: %#v", observation)
+	}
+	artifact := observation.Reply.Artifacts[0]
+	if artifact.Path != artifactPath || artifact.SHA256 != fmt.Sprintf("%x", sum) || artifact.Width != 1024 || artifact.Height != 559 {
+		t.Fatalf("unexpected artifact metadata: %#v", artifact)
+	}
+	if next.Hints[pendingFingerprintHint] != "" {
+		t.Fatalf("pending marker was not cleared: %#v", next)
+	}
+}
+
+func TestPollRejectsArtifactOutsideConfiguredDirectory(t *testing.T) {
+	dir := t.TempDir()
+	artifactDir := filepath.Join(dir, "artifacts")
+	outside := filepath.Join(dir, "outside.png")
+	payload := []byte("image")
+	if err := os.WriteFile(outside, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+printf '%%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":[{"Index":1,"Role":"User","Text":"draw"},{"Index":2,"Role":"Assistant","Text":"","Artifacts":[{"id":"art_0123456789abcdef01234567","type":"image","mime_type":"image/png","file_name":"image.png","path":"%s","size":%d,"sha256":"%x","width":1,"height":1}]}]}]'
+`, outside, len(payload), sum))
+	p, err := New(Config{Executable: executable, ArtifactDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = p.Poll(context.Background(), subagent.ProviderState{ConversationID: "abc123def4567890"})
+	if err == nil || !strings.Contains(err.Error(), "escapes artifact directory") {
+		t.Fatalf("expected artifact path rejection, got %v", err)
+	}
+}
+
+func TestPollRejectsArtifactEscapingThroughSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	artifactDir := filepath.Join(dir, "artifacts")
+	outsideDir := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("png-bytes")
+	outsidePath := filepath.Join(outsideDir, "image.png")
+	if err := os.WriteFile(outsidePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(artifactDir, "escape")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	artifactPath := filepath.Join(linkDir, "image.png")
+	sum := sha256.Sum256(payload)
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+printf '%%s\n' '[{"ConversationId":"abc123def4567890","Generating":false,"Turns":[{"Index":1,"Role":"User","Text":"draw"},{"Index":2,"Role":"Assistant","Text":"","Artifacts":[{"id":"art_0123456789abcdef01234567","type":"image","mime_type":"image/png","file_name":"image.png","path":"%s","size":%d,"sha256":"%x","width":1,"height":1}]}]}]'
+`, artifactPath, len(payload), sum))
+	p, err := New(Config{Executable: executable, ArtifactDir: artifactDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := subagent.ProviderState{
+		ConversationID: "abc123def4567890",
+		Hints:          withPendingMarker(nil, "draw"),
+	}
+	if _, _, err := p.Poll(context.Background(), state); err == nil || !strings.Contains(err.Error(), "escapes artifact directory") {
+		t.Fatalf("expected symlink-parent escape to fail, got %v", err)
 	}
 }
 

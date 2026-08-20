@@ -29,6 +29,7 @@ const (
 	lastObservedTurnCountHint = "opencli_gemini.last_observed_turn_count"
 	maxFingerprintSuffixRunes = 32
 	defaultSubmissionTimeout  = 8
+	maxArtifactBytes          = 16 << 20
 )
 
 type ErrorKind string
@@ -75,6 +76,7 @@ func (e *ProviderError) ErrorCode() string {
 type Config struct {
 	Executable        string
 	BrowserExecutable string
+	ArtifactDir       string
 	Timeout           time.Duration
 	SubmitInterval    time.Duration
 }
@@ -82,6 +84,7 @@ type Config struct {
 type Provider struct {
 	executable        string
 	browserExecutable string
+	artifactDir       string
 	timeout           time.Duration
 	submitInterval    time.Duration
 	surfaceSerial     chan struct{}
@@ -98,9 +101,20 @@ func New(cfg Config) (*Provider, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
+	artifactDir := strings.TrimSpace(cfg.ArtifactDir)
+	if artifactDir != "" {
+		artifactDir, err = filepath.Abs(artifactDir)
+		if err != nil {
+			return nil, &ProviderError{Kind: ErrorConfiguration, Message: "resolve Gemini artifact directory", Cause: err}
+		}
+		if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+			return nil, &ProviderError{Kind: ErrorConfiguration, Message: "create Gemini artifact directory", Cause: err}
+		}
+	}
 	return &Provider{
 		executable:        executable,
 		browserExecutable: strings.TrimSpace(cfg.BrowserExecutable),
+		artifactDir:       artifactDir,
 		timeout:           timeout,
 		submitInterval:    cfg.SubmitInterval,
 		surfaceSerial:     make(chan struct{}, 1),
@@ -166,6 +180,9 @@ func (p *Provider) Poll(ctx context.Context, state subagent.ProviderState) (suba
 	}
 	row, err := parseInspectRow(payload)
 	if err != nil {
+		return state, subagent.Observation{}, &ProviderError{Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err}
+	}
+	if err := p.validateArtifacts(row); err != nil {
 		return state, subagent.Observation{}, &ProviderError{Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err}
 	}
 	if strings.TrimSpace(row.ConversationID) != conversationID {
@@ -239,9 +256,10 @@ type submitRow struct {
 }
 
 type inspectTurn struct {
-	Index int    `json:"Index"`
-	Role  string `json:"Role"`
-	Text  string `json:"Text"`
+	Index     int                 `json:"Index"`
+	Role      string              `json:"Role"`
+	Text      string              `json:"Text"`
+	Artifacts []subagent.Artifact `json:"Artifacts,omitempty"`
 }
 
 type inspectRow struct {
@@ -374,7 +392,91 @@ func observationFromInspect(state subagent.ProviderState, row inspectRow) (subag
 	if len(next.Hints) == 0 {
 		next.Hints = nil
 	}
-	return next, subagent.Observation{Generating: pending, Reply: subagent.Reply{Text: latestAssistant}}, nil
+	artifacts := artifactsForTurn(row.Turns, latestAssistantIndex)
+	return next, subagent.Observation{
+		Generating: pending,
+		Reply: subagent.Reply{
+			Text:      latestAssistant,
+			Artifacts: artifacts,
+		},
+	}, nil
+}
+
+func artifactsForTurn(turns []inspectTurn, turnIndex int) []subagent.Artifact {
+	if turnIndex <= 0 {
+		return nil
+	}
+	for _, turn := range turns {
+		if turn.Index == turnIndex && turn.Role == "Assistant" {
+			if turn.Artifacts == nil {
+				return nil
+			}
+			out := make([]subagent.Artifact, len(turn.Artifacts))
+			copy(out, turn.Artifacts)
+			return out
+		}
+	}
+	return nil
+}
+
+func (p *Provider) validateArtifacts(row inspectRow) error {
+	for turnIndex := range row.Turns {
+		for artifactIndex := range row.Turns[turnIndex].Artifacts {
+			artifact := &row.Turns[turnIndex].Artifacts[artifactIndex]
+			if p.artifactDir == "" {
+				return errors.New("opencli Gemini inspect returned artifacts while artifact storage is disabled")
+			}
+			if !regexp.MustCompile(`^art_[a-f0-9]{24}$`).MatchString(strings.TrimSpace(artifact.ID)) {
+				return fmt.Errorf("opencli Gemini inspect artifact has invalid id %q", artifact.ID)
+			}
+			if artifact.Type != "image" || artifact.MIMEType != "image/png" {
+				return fmt.Errorf("opencli Gemini inspect artifact %s has unsupported type or MIME", artifact.ID)
+			}
+			if artifact.Size <= 0 || artifact.Size > maxArtifactBytes {
+				return fmt.Errorf("opencli Gemini inspect artifact %s has invalid size", artifact.ID)
+			}
+			if artifact.Width <= 0 || artifact.Height <= 0 {
+				return fmt.Errorf("opencli Gemini inspect artifact %s has invalid dimensions", artifact.ID)
+			}
+			if filepath.Base(artifact.FileName) != artifact.FileName || strings.TrimSpace(artifact.FileName) == "" {
+				return fmt.Errorf("opencli Gemini inspect artifact %s has invalid file name", artifact.ID)
+			}
+			artifactPath, err := filepath.Abs(strings.TrimSpace(artifact.Path))
+			if err != nil {
+				return fmt.Errorf("resolve opencli Gemini artifact %s path: %w", artifact.ID, err)
+			}
+			resolvedRoot, err := filepath.EvalSymlinks(p.artifactDir)
+			if err != nil {
+				return fmt.Errorf("resolve opencli Gemini artifact directory: %w", err)
+			}
+			resolvedPath, err := filepath.EvalSymlinks(artifactPath)
+			if err != nil {
+				return fmt.Errorf("resolve opencli Gemini artifact %s file path: %w", artifact.ID, err)
+			}
+			rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return fmt.Errorf("opencli Gemini inspect artifact %s path escapes artifact directory", artifact.ID)
+			}
+			info, err := os.Lstat(artifactPath)
+			if err != nil {
+				return fmt.Errorf("stat opencli Gemini artifact %s: %w", artifact.ID, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() != artifact.Size {
+				return fmt.Errorf("opencli Gemini inspect artifact %s file metadata mismatch", artifact.ID)
+			}
+			payload, err := os.ReadFile(artifactPath)
+			if err != nil {
+				return fmt.Errorf("read opencli Gemini artifact %s: %w", artifact.ID, err)
+			}
+			sum := sha256.Sum256(payload)
+			if fmt.Sprintf("%x", sum[:]) != strings.ToLower(strings.TrimSpace(artifact.SHA256)) {
+				return fmt.Errorf("opencli Gemini inspect artifact %s sha256 mismatch", artifact.ID)
+			}
+			artifact.Path = artifactPath
+			artifact.SHA256 = strings.ToLower(strings.TrimSpace(artifact.SHA256))
+		}
+	}
+	return nil
 }
 
 func assistantAfter(turns []inspectTurn, userIndex int) (string, int) {
@@ -473,8 +575,15 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 	stdout.max = maxCapturedBytes
 	stderr.max = 256 << 10
 	cmd := exec.CommandContext(runCtx, p.executable, args...)
-	if p.browserExecutable != "" {
-		cmd.Env = append(os.Environ(), "LOCALGATE_BROWSER_EXECUTABLE="+p.browserExecutable)
+	if p.browserExecutable != "" || p.artifactDir != "" {
+		env := os.Environ()
+		if p.browserExecutable != "" {
+			env = append(env, "LOCALGATE_BROWSER_EXECUTABLE="+p.browserExecutable)
+		}
+		if p.artifactDir != "" {
+			env = append(env, "LOCALGATE_ARTIFACT_DIR="+p.artifactDir)
+		}
+		cmd.Env = env
 	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
