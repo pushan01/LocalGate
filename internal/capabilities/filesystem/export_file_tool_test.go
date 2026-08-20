@@ -23,7 +23,7 @@ func TestExportFileToolDescriptionAndSchema(t *testing.T) {
 	for _, want := range []string{
 		"current conversation",
 		"short-lived downloadable MCP resource",
-		"regular file at an absolute workspace path",
+		"regular file at an absolute path inside the configured root",
 		"may require approval",
 		"does not modify the source file",
 	} {

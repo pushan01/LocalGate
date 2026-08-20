@@ -76,7 +76,7 @@ func TestStartupInstructionsToolReturnsPromptAndVisibleTools(t *testing.T) {
 	if !strings.Contains(prompt, "当前执行环境未检测到 `rg`") || !strings.Contains(prompt, "不要反复尝试 `rg`") {
 		t.Fatalf("missing rg fallback guidance in rendered prompt: %q", prompt)
 	}
-	if strings.Contains(prompt, "GPT-5") || !strings.Contains(prompt, "受控工作区") {
+	if strings.Contains(prompt, "GPT-5") || !strings.Contains(prompt, "受控根目录") {
 		t.Fatalf("prompt should be model-neutral: %q", prompt)
 	}
 	if !strings.Contains(prompt, "`alpha`") || !strings.Contains(prompt, "Alpha skill") {

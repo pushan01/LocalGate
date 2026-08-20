@@ -55,7 +55,7 @@ func loadAllSkills(cwd string) ([]string, []skill) {
 		addSkills(filepath.Join(homeDir, ".agents", "skills"), "global")
 	}
 	if strings.TrimSpace(cwd) != "" {
-		addSkills(filepath.Join(cwd, ".agents", "skills"), "workspace")
+		addSkills(filepath.Join(cwd, ".agents", "skills"), "root")
 	}
 
 	return roots, allSkills

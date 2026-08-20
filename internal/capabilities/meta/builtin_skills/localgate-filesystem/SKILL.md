@@ -14,8 +14,8 @@ In normal MCP mode, use `get_tool_schema` for the selected tool and then call it
 ## Tool choice
 
 - `write_file`: create or completely replace a text file. Prefer `apply_patch` for partial edits to existing files.
-- `list_directory`: list a workspace directory when shell listing is unavailable or structured entries are useful.
-- `search_files`: search workspace files when a structured LocalGate result is preferable to `rg`/shell search.
+- `list_directory`: list a directory under the configured root when shell listing is unavailable or structured entries are useful.
+- `search_files`: search files under the configured root when a structured LocalGate result is preferable to `rg`/shell search.
 - `run_argv`: execute an argv vector directly without shell parsing when exact argument boundaries matter.
 
-Keep paths inside allowed workspace roots and preserve existing project changes that are unrelated to the current task.
+Keep paths inside the configured root and preserve existing project changes that are unrelated to the current task.

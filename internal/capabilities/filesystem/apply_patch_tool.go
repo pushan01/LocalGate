@@ -49,7 +49,7 @@ func newApplyPatchTool(ws config.Root) core.Tool {
 
 func (t applyPatchTool) Name() string { return "apply_patch" }
 func (t applyPatchTool) Description() string {
-	return "Apply a validated patch to one or more files inside the workspace with in-process rollback on commit failure. This is not a crash-atomic or multi-process transaction."
+	return "Apply a validated patch to one or more files inside the configured root with in-process rollback on commit failure. This is not a crash-atomic or multi-process transaction."
 }
 func (t applyPatchTool) Schema() any {
 	return map[string]any{

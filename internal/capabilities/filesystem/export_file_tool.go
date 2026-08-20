@@ -33,7 +33,7 @@ func NewExportFileTool(ws config.Root, cfg config.FileExports, exports *fileexpo
 func (t exportFileTool) Name() string { return "export_file" }
 
 func (t exportFileTool) Description() string {
-	return "Export an existing workspace file to the current conversation as a short-lived downloadable MCP resource. The source must be a regular file at an absolute workspace path. This transfers data outside LocalGate, may require approval, and does not modify the source file."
+	return "Export an existing file from the configured root to the current conversation as a short-lived downloadable MCP resource. The source must be a regular file at an absolute path inside the configured root. This transfers data outside LocalGate, may require approval, and does not modify the source file."
 }
 
 func (t exportFileTool) Schema() any {
@@ -43,7 +43,7 @@ func (t exportFileTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute path of an existing regular file inside the workspace. Directories and symlinks are not allowed.",
+				"description": "Absolute path of an existing regular file inside the configured root. Directories and symlinks are not allowed.",
 			},
 			"file_name": map[string]any{
 				"type":        "string",

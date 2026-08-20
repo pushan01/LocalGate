@@ -35,7 +35,7 @@ func NewCreateUploadTokenTool(ws config.Root, baseURL string, uploads *upload.Se
 func (t createUploadTokenTool) Name() string { return "create_upload_token" }
 
 func (t createUploadTokenTool) Description() string {
-	return "Create a 10-minute HTTP upload credential for one absolute workspace path. Use this when files need to move across sandboxes or machines and the caller cannot write the LocalGate workspace path directly. External clients can upload or overwrite the file via the server upload endpoint."
+	return "Create a 10-minute HTTP upload credential for one absolute path inside the configured root. Use this when files need to move across sandboxes or machines and the caller cannot write the LocalGate root directly. External clients can upload or overwrite the file via the server upload endpoint."
 }
 
 func (t createUploadTokenTool) Schema() any {
@@ -45,7 +45,7 @@ func (t createUploadTokenTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute target path inside the workspace. Use this for cross-sandbox or cross-machine file transfer when the caller needs to push a file into the LocalGate workspace.",
+				"description": "Absolute target path inside the configured root. Use this for cross-sandbox or cross-machine file transfer when the caller needs to push a file into LocalGate.",
 			},
 		},
 		"required": []string{"path"},

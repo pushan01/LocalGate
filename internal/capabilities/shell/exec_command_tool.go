@@ -29,7 +29,7 @@ func NewExecCommandTool(ws config.Root, sessions *core.SessionManager) core.Tool
 func (t ExecCommandTool) Name() string { return "exec_command" }
 
 func (t ExecCommandTool) Description() string {
-	return "Start an interactive or long-running command session inside the workspace. Use run_command instead for one-shot commands that only need a final result."
+	return "Start an interactive or long-running command session inside the configured root. Use run_command instead for one-shot commands that only need a final result."
 }
 
 func (t ExecCommandTool) Schema() any {
@@ -38,7 +38,7 @@ func (t ExecCommandTool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"cmd":               map[string]any{"type": "string"},
-			"workdir":           map[string]any{"type": "string", "description": "Absolute path inside workspace"},
+			"workdir":           map[string]any{"type": "string", "description": "Absolute path inside the configured root"},
 			"yield_time_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": maxSessionWaitMS},
 			"max_output_items":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxSessionReadItems, "description": "Maximum buffered output items returned in this response."},
 			"max_output_tokens": map[string]any{"type": "integer", "minimum": 0, "description": "Deprecated compatibility alias for max_output_items; this value limits output items, not model tokens. Large legacy values are capped internally."},
@@ -174,7 +174,7 @@ func NewCloseSessionTool(ws config.Root, sessions *core.SessionManager) core.Too
 func (t CloseSessionTool) Name() string { return "close_session" }
 
 func (t CloseSessionTool) Description() string {
-	return "Terminate and close an existing interactive or long-running session in the current workspace."
+	return "Terminate and close an existing interactive or long-running session in the current LocalGate instance."
 }
 
 func (t CloseSessionTool) Schema() any {

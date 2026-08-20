@@ -20,7 +20,7 @@ func NewTool(ws config.Root, defaultTimeoutMs int64) core.Tool {
 
 func (t Tool) Name() string { return "run_command" }
 func (t Tool) Description() string {
-	return "Run a one-shot, non-interactive shell command inside the workspace. Use exec_command instead for interactive programs, dev servers, watch processes, or commands that need stdin after startup."
+	return "Run a one-shot, non-interactive shell command inside the configured root. Use exec_command instead for interactive programs, dev servers, watch processes, or commands that need stdin after startup."
 }
 func (t Tool) Schema() any {
 	return map[string]any{
@@ -28,7 +28,7 @@ func (t Tool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"command":    map[string]any{"type": "string"},
-			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside workspace"},
+			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside the configured root"},
 			"timeout_ms": map[string]any{"type": "integer", "minimum": 0},
 			"env": map[string]any{
 				"type":                 "object",

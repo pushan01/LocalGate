@@ -20,7 +20,7 @@ func NewArgvTool(ws config.Root, defaultTimeoutMs int64) core.Tool {
 
 func (t ArgvTool) Name() string { return "run_argv" }
 func (t ArgvTool) Description() string {
-	return "Run a command by argv without shell expansion, with an optional absolute cwd inside the workspace"
+	return "Run a command by argv without shell expansion, with an optional absolute cwd inside the configured root"
 }
 func (t ArgvTool) Schema() any {
 	return map[string]any{
@@ -28,7 +28,7 @@ func (t ArgvTool) Schema() any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"argv":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside workspace"},
+			"cwd":        map[string]any{"type": "string", "description": "Absolute path inside the configured root"},
 			"timeout_ms": map[string]any{"type": "integer", "minimum": 0},
 			"env": map[string]any{
 				"type":                 "object",

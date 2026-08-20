@@ -34,7 +34,7 @@ func NewCreateDownloadTokenTool(ws config.Root, baseURL string, downloads *downl
 func (t createDownloadTokenTool) Name() string { return "create_download_token" }
 
 func (t createDownloadTokenTool) Description() string {
-	return "Create a 10-minute HTTP download credential for one existing absolute workspace file. Use this when files need to move across sandboxes or machines and the caller cannot read the path directly. If global HTTP bearer auth is enabled, the download request still needs Authorization: Bearer."
+	return "Create a 10-minute HTTP download credential for one existing file inside the configured root. Use this when files need to move across sandboxes or machines and the caller cannot read the path directly. If global HTTP bearer auth is enabled, the download request still needs Authorization: Bearer."
 }
 
 func (t createDownloadTokenTool) Schema() any {
@@ -44,7 +44,7 @@ func (t createDownloadTokenTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute file path inside the workspace. Use this for cross-sandbox or cross-machine file transfer when the caller needs a temporary download URL.",
+				"description": "Absolute file path inside the configured root. Use this for cross-sandbox or cross-machine file transfer when the caller needs a temporary download URL.",
 			},
 		},
 		"required": []string{"path"},

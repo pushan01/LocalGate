@@ -325,7 +325,7 @@ type ListTool struct{ manager *runtime.Manager }
 func (ListTool) Name() string { return "subagent_list" }
 
 func (ListTool) Description() string {
-	return "List LocalGate subagents owned by the current workspace, including status and non-secret provider conversation mapping summaries."
+	return "List LocalGate subagents owned by the current LocalGate instance, including status and non-secret provider conversation mapping summaries."
 }
 
 func (ListTool) Schema() any { return objectSchema(map[string]any{}, nil) }

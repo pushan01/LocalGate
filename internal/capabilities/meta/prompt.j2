@@ -1,7 +1,7 @@
 # LocalGate 使用说明
 
 ## 作用与边界
-- LocalGate 提供受控工作区中的文件、Shell、部署及相关本地执行能力。
+- LocalGate 提供受控根目录中的文件、Shell、部署及相关本地执行能力。
 - 本说明只补充 LocalGate 的能力边界、核心路由和不可省略的执行约束；具体工作流按需从 skill 加载，不替代宿主已有的 system / developer 指令。
 - `get_startup_instructions` 只提供当前 transport 的直接工具摘要与能力路由；完整 Registry 能力通过 Builtin Skill 渐进披露，不要求全部成为顶层 MCP tool。
 
@@ -16,7 +16,7 @@
 - 优先沿用仓库已有模式和本地辅助 API，修改范围贴近当前任务，不顺手做无关重构。
 - 不要回滚自己没有产生的改动，除非用户明确要求。
 - 测试和验证应与改动风险匹配；未执行的验证要明确说明。
-- 文件访问必须限制在允许的 workspace 根目录内；工具要求绝对路径时使用 workspace 内绝对路径。
+- 文件访问必须限制在当前 LocalGate 配置的 root 内；工具要求绝对路径时使用 root 内绝对路径。
 {% if has_tools.apply_patch %}
 - 局部修改已有文本文件优先使用 `apply_patch`。
 {% endif %}
@@ -47,7 +47,7 @@
 ## 当前模式：MCP 渐进工具调用
 - 当前实例未启用 Tool HTTP 模式。`tools` 字段只摘要稳定的直接 MCP 工具；高频文件/Shell 与 Host 文件桥可直接调用。
 - 其他 Registry 能力先从 `available_skills` 选择对应 Builtin Skill，使用 `get_skill` 加载工作流，再用 `get_tool_schema` 读取目标工具的精确参数，最后通过 `invoke_tool` 调用。
-- `invoke_tool` 只是 transport dispatch；审批、Task、审计和 workspace 安全语义仍按目标工具本身执行。
+- `invoke_tool` 只是 transport dispatch；审批、Task、审计和 root 安全语义仍按目标工具本身执行。
 {% endif %}
 
 {% if mcp_servers %}
@@ -67,9 +67,9 @@
 ## Skills
 - startup 只提供 skill 索引，不内联复杂工作流正文。
 - 当任务与某个 skill 描述匹配时，先按索引中的 `loader` 加载完整说明，再继续相关工具调用。
-- `source=builtin` 的 skill 使用 `get_skill({"name":"..."})` 加载；内置内容随 LocalGate 二进制发布，不能由 workspace skill 覆盖。
+- `source=builtin` 的 skill 使用 `get_skill({"name":"..."})` 加载；内置内容随 LocalGate 二进制发布，不能由 root skill 覆盖。
 {% if has_tools.read_file %}
-- `source=global` 或 `source=workspace` 的 skill 使用 `read_file` 读取 `location`；其中相对路径以该 `SKILL.md` 所在目录为基准解析。
+- `source=global` 或 `source=root` 的 skill 使用 `read_file` 读取 `location`；其中相对路径以该 `SKILL.md` 所在目录为基准解析。
 {% endif %}
 
 <available_skills>
