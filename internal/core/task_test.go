@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -28,6 +29,38 @@ func TestCreateAndFinishTask(t *testing.T) {
 	if got.Status != StatusSucceeded {
 		t.Fatalf("expected succeeded, got %s", got.Status)
 	}
+}
+
+func TestIsolatedTasksDoNotStarveDefaultTasks(t *testing.T) {
+	m := NewManagerWithOptions(nil, 1)
+	release := make(chan struct{})
+	isolatedStarted := make(chan struct{})
+	m.CreateTask(Task{Tool: "subagent_wait", ConcurrencyClass: TaskConcurrencyIsolated}, func(ctx context.Context, _ string) (int, error) {
+		close(isolatedStarted)
+		select {
+		case <-release:
+			return 0, nil
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		}
+	})
+	select {
+	case <-isolatedStarted:
+	case <-time.After(time.Second):
+		t.Fatal("isolated task did not start")
+	}
+
+	defaultStarted := make(chan struct{})
+	m.CreateTask(Task{Tool: "read_file"}, func(context.Context, string) (int, error) {
+		close(defaultStarted)
+		return 0, nil
+	})
+	select {
+	case <-defaultStarted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("default task was starved by isolated task")
+	}
+	close(release)
 }
 
 func TestCancelTask(t *testing.T) {

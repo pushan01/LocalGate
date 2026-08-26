@@ -23,6 +23,8 @@ type fakeProvider struct {
 	pollErr       error
 	pollBusy      bool
 	pollArtifacts []Artifact
+	pollEntered   chan struct{}
+	pollRelease   chan struct{}
 	activeByID    map[string]int
 	maxByID       map[string]int
 	activeGlobal  int
@@ -118,13 +120,28 @@ func (p *fakeProvider) Send(ctx context.Context, state ProviderState, message st
 	return state, nil
 }
 
-func (p *fakeProvider) Poll(_ context.Context, state ProviderState) (ProviderState, Observation, error) {
+func (p *fakeProvider) Poll(ctx context.Context, state ProviderState) (ProviderState, Observation, error) {
 	p.mu.Lock()
 	p.pollCount++
 	err := p.pollErr
 	busy := p.pollBusy
 	artifacts := append([]Artifact(nil), p.pollArtifacts...)
+	entered := p.pollEntered
+	release := p.pollRelease
 	p.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return state, Observation{}, ctx.Err()
+		}
+	}
 	if err != nil {
 		return state, Observation{}, err
 	}
@@ -650,6 +667,56 @@ func TestManagerWaitSleepsUntilPollIntervalAllowsRefresh(t *testing.T) {
 	provider.mu.Unlock()
 	if pollCount != 2 || waitCount != 0 {
 		t.Fatalf("provider poll/wait counts = %d/%d, want 2/0", pollCount, waitCount)
+	}
+}
+
+func TestManagerPollDoesNotQueueBehindBlockedWait(t *testing.T) {
+	provider := newFakeProvider()
+	provider.pollBusy = true
+	provider.pollEntered = make(chan struct{}, 1)
+	provider.pollRelease = make(chan struct{})
+	m := newTestManager(t, provider, Options{MaxConcurrency: 4})
+	created, err := m.Create(context.Background(), CreateRequest{Name: "one", Instruction: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := m.Wait(context.Background(), created.Subagent.ID)
+		waitDone <- waitErr
+	}()
+	select {
+	case <-provider.pollEntered:
+	case <-time.After(time.Second):
+		t.Fatal("wait did not enter provider poll")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	polled, err := m.Poll(ctx, created.Subagent.ID)
+	if err != nil {
+		t.Fatalf("poll queued behind blocked wait: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("poll took %s while another observation owned the provider", elapsed)
+	}
+	if polled.Refreshed || polled.Subagent.Status != StatusBusy || polled.RetryAfter <= 0 {
+		t.Fatalf("blocked poll should return cached busy state: %#v", polled)
+	}
+
+	provider.mu.Lock()
+	provider.pollBusy = false
+	provider.mu.Unlock()
+	close(provider.pollRelease)
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait did not finish after provider was released")
 	}
 }
 

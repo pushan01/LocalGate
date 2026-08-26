@@ -11,6 +11,8 @@ import (
 
 type Status string
 
+type TaskConcurrencyClass string
+
 const (
 	StatusAwaitingApproval Status = "awaiting_approval"
 	StatusQueued           Status = "queued"
@@ -19,6 +21,11 @@ const (
 	StatusFailed           Status = "failed"
 	StatusCanceled         Status = "canceled"
 	StatusTimeout          Status = "timeout"
+
+	// TaskConcurrencyIsolated uses a separate execution semaphore from ordinary
+	// gateway work. It is intended for subsystems that already enforce their own
+	// concurrency and depend on failure-prone external runtimes.
+	TaskConcurrencyIsolated TaskConcurrencyClass = "isolated"
 )
 
 type Task struct {
@@ -34,12 +41,13 @@ type Task struct {
 	SessionIDSource string `json:"session_id_source,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
 
-	Requester   string    `json:"requester,omitempty"`
-	Tool        string    `json:"tool,omitempty"`
-	ArgsDigest  string    `json:"args_digest,omitempty"`
-	ApprovalID  string    `json:"approval_id,omitempty"`
-	ApprovalURL string    `json:"approval_url,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	Requester        string               `json:"requester,omitempty"`
+	Tool             string               `json:"tool,omitempty"`
+	ConcurrencyClass TaskConcurrencyClass `json:"concurrency_class,omitempty"`
+	ArgsDigest       string               `json:"args_digest,omitempty"`
+	ApprovalID       string               `json:"approval_id,omitempty"`
+	ApprovalURL      string               `json:"approval_url,omitempty"`
+	ExpiresAt        time.Time            `json:"expires_at,omitempty"`
 
 	ExitCode  int            `json:"exit_code,omitempty"`
 	ErrorCode string         `json:"error_code,omitempty"`
@@ -57,6 +65,7 @@ type Manager struct {
 	running      map[string]struct{}
 	sink         *EventSink
 	sem          chan struct{}
+	isolatedSem  chan struct{}
 	tw           TaskWriter
 }
 
@@ -89,6 +98,7 @@ func NewManagerWithOptions(sink *EventSink, maxConcurrency int) *Manager {
 	m := NewManagerWithSink(sink)
 	if maxConcurrency > 0 {
 		m.sem = make(chan struct{}, maxConcurrency)
+		m.isolatedSem = make(chan struct{}, maxConcurrency)
 	}
 	return m
 }
@@ -483,10 +493,14 @@ func (m *Manager) createTask(t Task, gate <-chan struct{}, run RunFunc) *Task {
 				return
 			}
 		}
-		if m.sem != nil {
+		sem := m.sem
+		if t.ConcurrencyClass == TaskConcurrencyIsolated {
+			sem = m.isolatedSem
+		}
+		if sem != nil {
 			select {
-			case m.sem <- struct{}{}:
-				defer func() { <-m.sem }()
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
 			case <-ctx.Done():
 				code, message := m.cancellationReasonFor(id, "", "")
 				m.finishTask(id, StatusCanceled, -1, code, message)

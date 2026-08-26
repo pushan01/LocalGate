@@ -297,19 +297,57 @@ func (m *Manager) observe(ctx context.Context, id string, wait bool) (ObserveRes
 	if err := m.ensureConversationOwner(id, entry); err != nil {
 		return ObserveResult{}, err
 	}
-	if err := entry.reserveQueue(); err != nil {
-		return ObserveResult{}, err
-	}
-	defer entry.releaseQueue()
-	if err := entry.acquireSerial(ctx); err != nil {
-		return ObserveResult{}, err
-	}
-	defer entry.releaseSerial()
 
+	for {
+		// Observation requests are deliberately non-queuing at both the global
+		// poll gate and the per-agent serial gate. A long-running send/wait must
+		// not accumulate poll/get callers that consume upstream task workers.
+		retryAfter, acquired, slotErr := m.acquirePollSlot(ctx, id, false)
+		if slotErr != nil {
+			return ObserveResult{}, slotErr
+		}
+		if !acquired {
+			if retryAfter <= 0 {
+				retryAfter = m.observationContentionRetryAfter()
+			}
+			if !wait {
+				return cachedObserveResult(entry, retryAfter), nil
+			}
+			if err := waitContext(ctx, retryAfter); err != nil {
+				return ObserveResult{}, err
+			}
+			continue
+		}
+
+		if !entry.tryAcquireSerial() {
+			m.releasePollSlot(id, false)
+			retryAfter = m.observationContentionRetryAfter()
+			if !wait {
+				return cachedObserveResult(entry, retryAfter), nil
+			}
+			if err := waitContext(ctx, retryAfter); err != nil {
+				return ObserveResult{}, err
+			}
+			continue
+		}
+
+		result, attempted, refreshErr := m.refreshEntry(ctx, entry)
+		entry.releaseSerial()
+		m.releasePollSlot(id, attempted)
+		if refreshErr != nil {
+			return ObserveResult{}, refreshErr
+		}
+		if !wait || result.Subagent.Status != StatusBusy {
+			return result, nil
+		}
+	}
+}
+
+func (m *Manager) refreshEntry(ctx context.Context, entry *agentEntry) (ObserveResult, bool, error) {
 	entry.mu.Lock()
 	if entry.agent.Status == StatusClosed {
 		entry.mu.Unlock()
-		return ObserveResult{}, ErrClosed
+		return ObserveResult{}, false, ErrClosed
 	}
 	providerName := entry.agent.Provider
 	state := cloneProviderState(entry.agent.ProviderState)
@@ -319,61 +357,57 @@ func (m *Manager) observe(ctx context.Context, id string, wait bool) (ObserveRes
 	provider, err := m.provider(providerName)
 	if err != nil {
 		m.markEntryFailure(entry, err)
-		return ObserveResult{}, err
+		return ObserveResult{}, false, err
 	}
 	state, err = m.recoverEntry(ctx, entry, provider, state, needsRecovery)
 	if err != nil {
-		return ObserveResult{}, err
+		return ObserveResult{}, false, err
 	}
 
-	for {
-		retryAfter, acquired, slotErr := m.acquirePollSlot(ctx, id, wait)
-		if slotErr != nil {
-			return ObserveResult{}, slotErr
-		}
-		if !acquired {
-			entry.mu.Lock()
-			snapshot := cloneSubagent(entry.agent)
-			entry.mu.Unlock()
-			return ObserveResult{Subagent: snapshot, Refreshed: false, RetryAfter: retryAfter}, nil
-		}
-
-		if err := m.acquire(ctx); err != nil {
-			m.releasePollSlot(id, false)
-			return ObserveResult{}, err
-		}
-		nextState, observation, pollErr := provider.Poll(ctx, state)
-		m.release()
-		m.releasePollSlot(id, true)
-		if pollErr != nil {
-			m.markEntryFailure(entry, pollErr)
-			return ObserveResult{}, pollErr
-		}
-
-		observedAt := time.Now().UTC()
-		entry.mu.Lock()
-		entry.agent.ProviderState = cloneProviderState(nextState)
-		entry.agent.Artifacts = cloneArtifacts(observation.Reply.Artifacts)
-		if observation.Generating {
-			entry.agent.Status = StatusBusy
-		} else {
-			entry.agent.Status = StatusReady
-		}
-		entry.agent.LastError = ""
-		entry.agent.LastErrorCode = ""
-		entry.agent.UpdatedAt = observedAt
-		entry.agent.LastObservedAt = observedAt
-		snapshot := cloneSubagent(entry.agent)
-		entry.mu.Unlock()
-		if err := m.store.Save(snapshot); err != nil {
-			return ObserveResult{}, fmt.Errorf("persist subagent observation: %w", err)
-		}
-		result := ObserveResult{Subagent: snapshot, Reply: observation.Reply, Refreshed: true}
-		if !wait || !observation.Generating {
-			return result, nil
-		}
-		state = cloneProviderState(nextState)
+	if err := m.acquire(ctx); err != nil {
+		return ObserveResult{}, false, err
 	}
+	nextState, observation, pollErr := provider.Poll(ctx, state)
+	m.release()
+	if pollErr != nil {
+		m.markEntryFailure(entry, pollErr)
+		return ObserveResult{}, true, pollErr
+	}
+
+	observedAt := time.Now().UTC()
+	entry.mu.Lock()
+	entry.agent.ProviderState = cloneProviderState(nextState)
+	entry.agent.Artifacts = cloneArtifacts(observation.Reply.Artifacts)
+	if observation.Generating {
+		entry.agent.Status = StatusBusy
+	} else {
+		entry.agent.Status = StatusReady
+	}
+	entry.agent.LastError = ""
+	entry.agent.LastErrorCode = ""
+	entry.agent.UpdatedAt = observedAt
+	entry.agent.LastObservedAt = observedAt
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	if err := m.store.Save(snapshot); err != nil {
+		return ObserveResult{}, true, fmt.Errorf("persist subagent observation: %w", err)
+	}
+	return ObserveResult{Subagent: snapshot, Reply: observation.Reply, Refreshed: true}, true, nil
+}
+
+func cachedObserveResult(entry *agentEntry, retryAfter time.Duration) ObserveResult {
+	entry.mu.Lock()
+	snapshot := cloneSubagent(entry.agent)
+	entry.mu.Unlock()
+	return ObserveResult{Subagent: snapshot, Refreshed: false, RetryAfter: retryAfter}
+}
+
+func (m *Manager) observationContentionRetryAfter() time.Duration {
+	retryAfter := m.concurrentPollRetryAfter()
+	if retryAfter <= 0 || retryAfter > 250*time.Millisecond {
+		return 100 * time.Millisecond
+	}
+	return retryAfter
 }
 
 func (m *Manager) Get(id string) (Subagent, error) {
@@ -861,6 +895,15 @@ func (e *agentEntry) acquireSerial(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (e *agentEntry) tryAcquireSerial() bool {
+	select {
+	case e.serial <- struct{}{}:
+		return true
+	default:
+		return false
 	}
 }
 

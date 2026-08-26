@@ -987,7 +987,7 @@ func (a *App) createToolTask(meta invocation.Meta, tool string, args map[string]
 	task := a.Tasks.CreateTask(core.Task{
 		Transport: meta.Transport, MCPSessionID: meta.MCPSessionID,
 		SessionMode: meta.SessionMode, SessionIDSource: meta.SessionIDSource, RequestID: meta.RequestID,
-		Requester: requester, Tool: tool, ArgsDigest: approval.Digest(tool, requester, args), ApprovalID: approvalID,
+		Requester: requester, Tool: tool, ConcurrencyClass: toolTaskConcurrencyClass(tool), ArgsDigest: approval.Digest(tool, requester, args), ApprovalID: approvalID,
 	}, run)
 	return task, nil
 }
@@ -1079,7 +1079,7 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 			task, release := a.Tasks.CreateGatedTask(core.Task{
 				Transport: meta.Transport, MCPSessionID: meta.MCPSessionID,
 				SessionMode: meta.SessionMode, SessionIDSource: meta.SessionIDSource, RequestID: meta.RequestID,
-				Requester: requester, Tool: tool, ArgsDigest: req.ArgsDigest,
+				Requester: requester, Tool: tool, ConcurrencyClass: toolTaskConcurrencyClass(tool), ArgsDigest: req.ArgsDigest,
 				ApprovalID: req.ID, ApprovalURL: req.ApprovalURL, ExpiresAt: req.ExpiresAt,
 			}, run)
 			bound, err := a.Approvals.BindTask(req.ID, task.ID)
@@ -1099,6 +1099,13 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 		return Submission{}, err
 	}
 	return Submission{Task: task}, nil
+}
+
+func toolTaskConcurrencyClass(tool string) core.TaskConcurrencyClass {
+	if strings.HasPrefix(strings.TrimSpace(tool), "subagent_") {
+		return core.TaskConcurrencyIsolated
+	}
+	return ""
 }
 
 func (a *App) matchApprovalRule(tool string) (effect, ruleID, risk string, matched bool) {

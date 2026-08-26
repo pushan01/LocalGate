@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"localgate/internal/subagent"
+	"localgate/internal/subagent/providers/processutil"
 )
 
 const (
@@ -508,23 +509,29 @@ type detailRow struct {
 }
 
 func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]byte, error) {
-	// All ChatGPT adapter commands use OpenCLI's persistent site session and can
-	// navigate the same browser tab, including nominally read-only `detail`.
-	// Serialize browser driving at the provider boundary so create/send/poll
-	// cannot navigate that shared surface out from under one another. Remote
-	// ChatGPT generations still overlap because create/send return after submit.
-	select {
-	case p.surfaceSerial <- struct{}{}:
-		defer func() { <-p.surfaceSerial }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 	runCtx := ctx
 	cancel := func() {}
 	if p.timeout > 0 {
 		runCtx, cancel = context.WithTimeout(ctx, p.timeout)
 	}
 	defer cancel()
+
+	// All ChatGPT adapter commands use OpenCLI's persistent site session and can
+	// navigate the same browser tab, including nominally read-only `detail`.
+	// Serialize browser driving at the provider boundary so create/send/poll
+	// cannot navigate that shared surface out from under one another. Remote
+	// ChatGPT generations still overlap because create/send return after submit.
+	// The operation deadline starts before this acquisition so callers cannot
+	// wait forever behind a wedged OpenCLI process.
+	select {
+	case p.surfaceSerial <- struct{}{}:
+		defer func() { <-p.surfaceSerial }()
+	case <-runCtx.Done():
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return nil, &ProviderError{Kind: ErrorTimeout, Message: "opencli ChatGPT command timed out waiting for provider surface", Cause: runCtx.Err()}
+		}
+		return nil, &ProviderError{Kind: ErrorCanceled, Message: "opencli ChatGPT command canceled while waiting for provider surface", Cause: runCtx.Err()}
+	}
 
 	var stdout, stderr limitedBuffer
 	stdout.max = maxCapturedBytes
@@ -535,6 +542,7 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 		executable = p.adapterExecutable
 	}
 	cmd := exec.CommandContext(runCtx, executable, args...)
+	processutil.ConfigureCommand(cmd)
 	if useBundledAdapter {
 		cmd.Env = append(os.Environ(), "LOCALGATE_BROWSER_EXECUTABLE="+p.executable)
 	}

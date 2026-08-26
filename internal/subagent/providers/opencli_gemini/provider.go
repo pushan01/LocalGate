@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"localgate/internal/subagent"
+	"localgate/internal/subagent/providers/processutil"
 )
 
 const (
@@ -557,13 +558,6 @@ func normalizeFingerprintText(message string) string {
 }
 
 func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]byte, error) {
-	select {
-	case p.surfaceSerial <- struct{}{}:
-		defer func() { <-p.surfaceSerial }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
 	runCtx := ctx
 	cancel := func() {}
 	if p.timeout > 0 {
@@ -571,10 +565,21 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 	}
 	defer cancel()
 
+	select {
+	case p.surfaceSerial <- struct{}{}:
+		defer func() { <-p.surfaceSerial }()
+	case <-runCtx.Done():
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return nil, &ProviderError{Kind: ErrorTimeout, Message: "opencli Gemini command timed out waiting for provider surface", Cause: runCtx.Err()}
+		}
+		return nil, &ProviderError{Kind: ErrorCanceled, Message: "opencli Gemini command canceled while waiting for provider surface", Cause: runCtx.Err()}
+	}
+
 	var stdout, stderr limitedBuffer
 	stdout.max = maxCapturedBytes
 	stderr.max = 256 << 10
 	cmd := exec.CommandContext(runCtx, p.executable, args...)
+	processutil.ConfigureCommand(cmd)
 	if p.browserExecutable != "" || p.artifactDir != "" {
 		env := os.Environ()
 		if p.browserExecutable != "" {
