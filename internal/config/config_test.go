@@ -74,6 +74,35 @@ root: /tmp
 	}
 }
 
+func TestLoadSkillsGlobalRootsNormalizesAndDeduplicates(t *testing.T) {
+	root := t.TempDir()
+	globalRoot := filepath.Join(t.TempDir(), "shared-skills")
+	if err := os.MkdirAll(globalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir global skills root: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := fmt.Sprintf("root: %q\nskills:\n  global_roots:\n    - %q\n    - %q\n", root, globalRoot, globalRoot+string(filepath.Separator))
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{Path: cfgPath, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.Skills.GlobalRoots, []string{globalRoot}) {
+		t.Fatalf("unexpected global skill roots: %#v", cfg.Skills.GlobalRoots)
+	}
+
+	badPath := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("root: /tmp\nskills:\n  global_roots: [relative/skills]\n"), 0o600); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	if _, err := Load(LoadOptions{Path: badPath, PathProvided: true}); err == nil || !strings.Contains(err.Error(), "skills.global_roots[0] must be absolute") {
+		t.Fatalf("expected absolute global root validation error, got %v", err)
+	}
+}
+
 func TestLoadHTTPAuthConfig(t *testing.T) {
 	withEnv(t, "LOCALGATE_HTTP_BEARER_TOKEN", "")
 	dir := t.TempDir()
@@ -1262,11 +1291,11 @@ subagents:
       timeout_seconds: 45
       submit_interval_seconds: 3
       default_project: deadbeef
-      archive_project: cafebabe
     opencli_gemini:
       enabled: true
       executable: /opt/local/bin/opencli-gemini
       browser_executable: /opt/local/bin/opencli-browser
+      default_model: Flash
       timeout_seconds: 55
       submit_interval_seconds: 7
 root: /tmp
@@ -1281,10 +1310,10 @@ root: /tmp
 	if !cfg.Subagents.Enabled || cfg.Subagents.DefaultProvider != "fake" || cfg.Subagents.MaxAgents != 7 || cfg.Subagents.MaxConcurrency != 2 || cfg.Subagents.MaxPendingPerAgent != 3 || cfg.Subagents.SameAgentPollIntervalSeconds != 13 || cfg.Subagents.DifferentAgentPollIntervalSeconds != 7 {
 		t.Fatalf("unexpected subagent config: %#v", cfg.Subagents)
 	}
-	if !cfg.Subagents.Providers.OpenCLIChatGPT.Enabled || cfg.Subagents.Providers.OpenCLIChatGPT.Executable != "/opt/local/bin/opencli" || cfg.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds != 45 || cfg.Subagents.Providers.OpenCLIChatGPT.SubmitIntervalSeconds != 3 || cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject != "deadbeef" || cfg.Subagents.Providers.OpenCLIChatGPT.ArchiveProject != "cafebabe" {
+	if !cfg.Subagents.Providers.OpenCLIChatGPT.Enabled || cfg.Subagents.Providers.OpenCLIChatGPT.Executable != "/opt/local/bin/opencli" || cfg.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds != 45 || cfg.Subagents.Providers.OpenCLIChatGPT.SubmitIntervalSeconds != 3 || cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject != "deadbeef" {
 		t.Fatalf("unexpected opencli provider config: %#v", cfg.Subagents.Providers.OpenCLIChatGPT)
 	}
-	if !cfg.Subagents.Providers.OpenCLIGemini.Enabled || cfg.Subagents.Providers.OpenCLIGemini.Executable != "/opt/local/bin/opencli-gemini" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "/opt/local/bin/opencli-browser" || cfg.Subagents.Providers.OpenCLIGemini.TimeoutSeconds != 55 || cfg.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds != 7 {
+	if !cfg.Subagents.Providers.OpenCLIGemini.Enabled || cfg.Subagents.Providers.OpenCLIGemini.Executable != "/opt/local/bin/opencli-gemini" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "/opt/local/bin/opencli-browser" || cfg.Subagents.Providers.OpenCLIGemini.DefaultModel != "Flash" || cfg.Subagents.Providers.OpenCLIGemini.TimeoutSeconds != 55 || cfg.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds != 7 {
 		t.Fatalf("unexpected Gemini provider config: %#v", cfg.Subagents.Providers.OpenCLIGemini)
 	}
 	summary := cfg.SafeSummary()["subagents"].(map[string]any)
@@ -1293,11 +1322,11 @@ root: /tmp
 	}
 	providers := summary["providers"].(map[string]any)
 	opencliSummary := providers["opencli_chatgpt"].(map[string]any)
-	if opencliSummary["enabled"] != true || opencliSummary["executable"] != "/opt/local/bin/opencli" || opencliSummary["timeout_seconds"] != 45 || opencliSummary["submit_interval_seconds"] != 3 || opencliSummary["default_project"] != "deadbeef" || opencliSummary["archive_project"] != "cafebabe" {
+	if opencliSummary["enabled"] != true || opencliSummary["executable"] != "/opt/local/bin/opencli" || opencliSummary["timeout_seconds"] != 45 || opencliSummary["submit_interval_seconds"] != 3 || opencliSummary["default_project"] != "deadbeef" {
 		t.Fatalf("unexpected opencli provider summary: %#v", opencliSummary)
 	}
 	geminiSummary := providers["opencli_gemini"].(map[string]any)
-	if geminiSummary["enabled"] != true || geminiSummary["executable"] != "/opt/local/bin/opencli-gemini" || geminiSummary["browser_executable"] != "/opt/local/bin/opencli-browser" || geminiSummary["timeout_seconds"] != 55 || geminiSummary["submit_interval_seconds"] != 7 {
+	if geminiSummary["enabled"] != true || geminiSummary["executable"] != "/opt/local/bin/opencli-gemini" || geminiSummary["browser_executable"] != "/opt/local/bin/opencli-browser" || geminiSummary["default_model"] != "Flash" || geminiSummary["timeout_seconds"] != 55 || geminiSummary["submit_interval_seconds"] != 7 {
 		t.Fatalf("unexpected Gemini provider summary: %#v", geminiSummary)
 	}
 }
@@ -1334,7 +1363,7 @@ root: /tmp
 	if err != nil {
 		t.Fatalf("load bundled Gemini config: %v", err)
 	}
-	if cfg.Subagents.Providers.OpenCLIGemini.Executable != "" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "opencli" {
+	if cfg.Subagents.Providers.OpenCLIGemini.Executable != "" || cfg.Subagents.Providers.OpenCLIGemini.BrowserExecutable != "opencli" || cfg.Subagents.Providers.OpenCLIGemini.DefaultModel != "Pro" {
 		t.Fatalf("unexpected bundled Gemini config: %#v", cfg.Subagents.Providers.OpenCLIGemini)
 	}
 }

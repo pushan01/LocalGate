@@ -460,9 +460,12 @@ func (m *Manager) CloseAgent(ctx context.Context, id string) (Subagent, error) {
 	defer entry.releaseSerial()
 	entry.mu.Lock()
 	if entry.agent.Status == StatusClosed {
-		agent := cloneSubagent(entry.agent)
+		snapshot := cloneSubagent(entry.agent)
 		entry.mu.Unlock()
-		return agent, nil
+		if err := m.deleteAgentRecord(id, entry, snapshot); err != nil {
+			return snapshot, err
+		}
+		return snapshot, nil
 	}
 	providerName := entry.agent.Provider
 	state := cloneProviderState(entry.agent.ProviderState)
@@ -493,133 +496,26 @@ func (m *Manager) CloseAgent(ctx context.Context, id string) (Subagent, error) {
 	entry.needsRecovery = false
 	snapshot := cloneSubagent(entry.agent)
 	entry.mu.Unlock()
-	if err := m.store.Save(snapshot); err != nil {
-		return Subagent{}, fmt.Errorf("persist subagent: %w", err)
+	if err := m.deleteAgentRecord(id, entry, snapshot); err != nil {
+		return snapshot, err
 	}
 	return snapshot, nil
 }
 
-// Archive lets the provider perform its configured archival step and only then
-// removes the LocalGate sg_* record. A provider may intentionally leave the
-// remote conversation in place when no archive destination is configured. Any
-// remote or verification failure preserves the local mapping so the operation
-// can be inspected or retried safely.
-func (m *Manager) Archive(ctx context.Context, id string) (Subagent, error) {
-	entry, err := m.entry(id)
-	if err != nil {
-		return Subagent{}, err
-	}
-	if err := m.ensureConversationOwner(id, entry); err != nil {
-		return Subagent{}, err
-	}
-	if err := entry.reserveQueue(); err != nil {
-		return Subagent{}, err
-	}
-	defer entry.releaseQueue()
-	if err := entry.acquireSerial(ctx); err != nil {
-		return Subagent{}, err
-	}
-	defer entry.releaseSerial()
-
-	entry.mu.Lock()
-	providerName := entry.agent.Provider
-	state := cloneProviderState(entry.agent.ProviderState)
-	needsRecovery := entry.needsRecovery
-	entry.mu.Unlock()
-
-	provider, err := m.provider(providerName)
-	if err != nil {
-		m.markEntryFailure(entry, err)
-		return Subagent{}, err
-	}
-	archiver, ok := provider.(Archiver)
-	if !ok {
-		return Subagent{}, ErrArchiveUnsupported
-	}
-	state, err = m.recoverEntry(ctx, entry, provider, state, needsRecovery)
-	if err != nil {
-		return Subagent{}, err
-	}
-
-	// A logical close does not stop an already-running remote generation. Poll
-	// immediately before the move so archive never knowingly relocates a turn
-	// whose outcome is still in flight.
-	if _, _, err := m.acquirePollSlot(ctx, id, true); err != nil {
-		return Subagent{}, err
-	}
-	if err := m.acquire(ctx); err != nil {
-		m.releasePollSlot(id, false)
-		return Subagent{}, err
-	}
-	polledState, observation, pollErr := provider.Poll(ctx, state)
-	m.release()
-	m.releasePollSlot(id, true)
-	if pollErr != nil {
-		m.markEntryFailure(entry, pollErr)
-		return Subagent{}, pollErr
-	}
-	state = cloneProviderState(polledState)
-	entry.mu.Lock()
-	entry.agent.ProviderState = cloneProviderState(state)
-	entry.agent.LastError = ""
-	entry.agent.LastErrorCode = ""
-	entry.agent.UpdatedAt = time.Now().UTC()
-	if entry.agent.Status != StatusClosed {
-		if observation.Generating {
-			entry.agent.Status = StatusBusy
-		} else {
-			entry.agent.Status = StatusReady
-		}
-	}
-	preArchive := cloneSubagent(entry.agent)
-	entry.mu.Unlock()
-	if err := m.store.Save(preArchive); err != nil {
-		return Subagent{}, fmt.Errorf("persist subagent before archive: %w", err)
-	}
-	if observation.Generating {
-		return preArchive, ErrArchiveBusy
-	}
-
-	if err := m.acquire(ctx); err != nil {
-		return Subagent{}, err
-	}
-	archivedState, archiveErr := archiver.Archive(ctx, state)
-	m.release()
-	if archiveErr != nil {
-		m.markEntryFailure(entry, archiveErr)
-		return Subagent{}, archiveErr
-	}
-
-	entry.mu.Lock()
-	entry.agent.ProviderState = cloneProviderState(archivedState)
-	entry.agent.Status = StatusClosed
-	entry.agent.LastError = ""
-	entry.agent.LastErrorCode = ""
-	entry.agent.UpdatedAt = time.Now().UTC()
-	entry.needsRecovery = false
-	archived := cloneSubagent(entry.agent)
-	entry.mu.Unlock()
-
-	// Persist the provider's final archive state before deletion. If deletion
-	// itself fails, the retained record is safe to retry because providers are
-	// required to make Archive idempotent, including the no-move case.
-	if err := m.store.Save(archived); err != nil {
-		return archived, fmt.Errorf("persist archived subagent: %w", err)
-	}
+func (m *Manager) deleteAgentRecord(id string, entry *agentEntry, snapshot Subagent) error {
 	if err := m.store.Delete(id); err != nil {
-		return archived, fmt.Errorf("delete archived subagent: %w", err)
+		return fmt.Errorf("delete closed subagent: %w", err)
 	}
-
 	m.mu.Lock()
 	if current := m.agents[id]; current == entry {
 		delete(m.agents, id)
-		key := conversationKey(archived.Provider, archived.ProviderState.ConversationID)
+		key := conversationKey(snapshot.Provider, snapshot.ProviderState.ConversationID)
 		if key != "" && m.conversationOwners[key] == id {
 			delete(m.conversationOwners, key)
 		}
 	}
 	m.mu.Unlock()
-	return archived, nil
+	return nil
 }
 
 func (m *Manager) Close() error {

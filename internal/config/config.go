@@ -29,6 +29,7 @@ type Root struct {
 
 type Config struct {
 	Root             Root                `yaml:",inline"`
+	Skills           SkillsConfig        `yaml:"skills"`
 	Bind             string              `yaml:"bind"`
 	MaxConcurrency   int                 `yaml:"max_concurrency"`
 	DefaultTimeoutMs int64               `yaml:"default_timeout_ms"`
@@ -49,6 +50,10 @@ type Config struct {
 	MCPServers       []MCPServer         `yaml:"mcp_servers"`
 	Upgrade          Upgrade             `yaml:"-"`
 	Runtime          Runtime             `yaml:"-"`
+}
+
+type SkillsConfig struct {
+	GlobalRoots []string `yaml:"global_roots"`
 }
 
 type LoadOptions struct {
@@ -116,13 +121,13 @@ type OpenCLIChatGPTProviderConfig struct {
 	TimeoutSeconds        int    `yaml:"timeout_seconds"`
 	SubmitIntervalSeconds int    `yaml:"submit_interval_seconds"`
 	DefaultProject        string `yaml:"default_project"`
-	ArchiveProject        string `yaml:"archive_project"`
 }
 
 type OpenCLIGeminiProviderConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Executable            string `yaml:"executable"`
 	BrowserExecutable     string `yaml:"browser_executable"`
+	DefaultModel          string `yaml:"default_model"`
 	TimeoutSeconds        int    `yaml:"timeout_seconds"`
 	SubmitIntervalSeconds int    `yaml:"submit_interval_seconds"`
 }
@@ -295,6 +300,7 @@ func Default() Config {
 				},
 				OpenCLIGemini: OpenCLIGeminiProviderConfig{
 					BrowserExecutable: "opencli",
+					DefaultModel:      "Pro",
 					TimeoutSeconds:    120,
 				},
 			},
@@ -814,6 +820,11 @@ func Load(opts LoadOptions) (Config, error) {
 	for i := range cfg.Root.PathDenylist {
 		cfg.Root.PathDenylist[i] = absPath(cfg.Root.PathDenylist[i])
 	}
+	globalSkillRoots, err := normalizeSkillGlobalRoots(cfg.Skills.GlobalRoots)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Skills.GlobalRoots = globalSkillRoots
 	for i := range cfg.MCPServers {
 		srv := &cfg.MCPServers[i]
 		if srv.CWD != "" {
@@ -958,7 +969,10 @@ func (c Config) SafeSummary() map[string]any {
 		})
 	}
 	return map[string]any{
-		"root":               c.Root.Path,
+		"root": c.Root.Path,
+		"skills": map[string]any{
+			"global_roots": append([]string(nil), c.Skills.GlobalRoots...),
+		},
 		"bind":               c.Bind,
 		"max_concurrency":    c.MaxConcurrency,
 		"default_timeout_ms": c.DefaultTimeoutMs,
@@ -996,12 +1010,12 @@ func (c Config) SafeSummary() map[string]any {
 					"timeout_seconds":         c.Subagents.Providers.OpenCLIChatGPT.TimeoutSeconds,
 					"submit_interval_seconds": c.Subagents.Providers.OpenCLIChatGPT.SubmitIntervalSeconds,
 					"default_project":         c.Subagents.Providers.OpenCLIChatGPT.DefaultProject,
-					"archive_project":         c.Subagents.Providers.OpenCLIChatGPT.ArchiveProject,
 				},
 				"opencli_gemini": map[string]any{
 					"enabled":                 c.Subagents.Providers.OpenCLIGemini.Enabled,
 					"executable":              c.Subagents.Providers.OpenCLIGemini.Executable,
 					"browser_executable":      c.Subagents.Providers.OpenCLIGemini.BrowserExecutable,
+					"default_model":           c.Subagents.Providers.OpenCLIGemini.DefaultModel,
 					"timeout_seconds":         c.Subagents.Providers.OpenCLIGemini.TimeoutSeconds,
 					"submit_interval_seconds": c.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds,
 				},
@@ -1104,6 +1118,27 @@ func (c Config) SafeSummary() map[string]any {
 		"mcp_servers":      mcpServers,
 		"mcp_server_count": len(c.MCPServers),
 	}
+}
+
+func normalizeSkillGlobalRoots(roots []string) ([]string, error) {
+	out := make([]string, 0, len(roots))
+	seen := make(map[string]struct{}, len(roots))
+	for i, raw := range roots {
+		root := strings.TrimSpace(raw)
+		if root == "" {
+			continue
+		}
+		if !filepath.IsAbs(root) {
+			return nil, fmt.Errorf("skills.global_roots[%d] must be absolute", i)
+		}
+		root = filepath.Clean(root)
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	return out, nil
 }
 
 func validateApprovalConfig(cfg ApprovalConfig) error {

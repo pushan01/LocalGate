@@ -22,10 +22,11 @@ type StartupInstructionsTool struct {
 }
 
 type StartupPromptOptions struct {
-	BaseURL      string
-	ToolHTTPMode bool
-	EnableBase64 bool
-	MCPServers   []config.MCPServer
+	BaseURL          string
+	ToolHTTPMode     bool
+	EnableBase64     bool
+	GlobalSkillRoots []string
+	MCPServers       []config.MCPServer
 }
 
 func NewStartupInstructionsTool(ws config.Root, reg *core.Registry, opts StartupPromptOptions) core.Tool {
@@ -47,6 +48,10 @@ func (t StartupInstructionsTool) Schema() any {
 	}
 }
 
+func (t StartupInstructionsTool) ToolAnnotations() map[string]any {
+	return map[string]any{"readOnlyHint": true}
+}
+
 func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	_ = ctx
 	_ = args
@@ -65,7 +70,7 @@ func (t StartupInstructionsTool) Execute(ctx context.Context, ic core.InvokeCont
 	shell := os.Getenv("SHELL")
 	date := now.Format("2006-01-02")
 	timezone := displayTimezone(now)
-	skillRoots, externalSkills := visibleSkillsForPrompt(t.WS.Path)
+	skillRoots, externalSkills := visibleSkillsForPrompt(t.WS.Path, t.Options.GlobalSkillRoots)
 	builtinSkills := visibleBuiltinSkillsForPrompt(skillCapabilities, t.Options)
 	skills := mergeSkillIndexes(builtinSkills, externalSkills)
 	mcpServers := safeMCPServersForPrompt(t.Options.MCPServers)

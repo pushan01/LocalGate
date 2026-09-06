@@ -33,12 +33,6 @@ type fakeProvider struct {
 	release       chan struct{}
 }
 
-type archiveFakeProvider struct {
-	*fakeProvider
-	archiveCount int
-	archiveErr   error
-}
-
 type collidingFakeProvider struct {
 	*fakeProvider
 }
@@ -51,19 +45,6 @@ func (p *collidingFakeProvider) Create(_ context.Context, req ProviderCreateRequ
 		ConversationID:  "shared-conversation",
 		ConversationURL: "https://example.test/c/shared-conversation",
 	}, nil
-}
-
-func (p *archiveFakeProvider) Archive(_ context.Context, state ProviderState) (ProviderState, error) {
-	p.mu.Lock()
-	p.archiveCount++
-	err := p.archiveErr
-	p.mu.Unlock()
-	if err != nil {
-		return state, err
-	}
-	state.ProjectID = "cafebabe"
-	state.ConversationURL = "https://example.test/g/g-p-cafebabe/c/" + state.ConversationID
-	return state, nil
 }
 
 func newFakeProvider() *fakeProvider {
@@ -210,19 +191,6 @@ func markReady(t *testing.T, m *Manager, workspaceID, id string) {
 	}
 }
 
-func newArchiveTestManager(t *testing.T, provider *archiveFakeProvider) (*Manager, *Store) {
-	t.Helper()
-	store := NewStore(filepath.Join(t.TempDir(), "subagents"))
-	m, err := NewManager(store, Options{DefaultProvider: "fake"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.RegisterProvider("fake", provider); err != nil {
-		t.Fatal(err)
-	}
-	return m, store
-}
-
 func TestStoreLoadsLegacySubagentWithoutType(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "subagents")
 	if err := os.MkdirAll(base, 0o700); err != nil {
@@ -238,37 +206,6 @@ func TestStoreLoadsLegacySubagentWithoutType(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].SubagentType != "" || loaded[0].Name != "legacy" {
 		t.Fatalf("unexpected legacy subagent: %#v", loaded)
-	}
-}
-
-func TestManagerArchiveMovesBeforeDeletingLocalRecord(t *testing.T) {
-	provider := &archiveFakeProvider{fakeProvider: newFakeProvider()}
-	m, store := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{Name: "archive", Instruction: "start"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider.pollBusy = false
-
-	archived, err := m.Archive(context.Background(), created.Subagent.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if archived.ProviderState.ProjectID != "cafebabe" || archived.Status != StatusClosed {
-		t.Fatalf("unexpected archived snapshot: %#v", archived)
-	}
-	if _, err := m.Get(created.Subagent.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("archived subagent should be removed from manager, got %v", err)
-	}
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded) != 0 {
-		t.Fatalf("archived subagent should be removed from store: %#v", loaded)
-	}
-	if provider.archiveCount != 1 || provider.pollCount != 1 {
-		t.Fatalf("archive calls=%d poll calls=%d, want 1/1", provider.archiveCount, provider.pollCount)
 	}
 }
 
@@ -361,49 +298,6 @@ func TestManagerQuarantinesLoadedDuplicateConversationMapping(t *testing.T) {
 	}
 	if _, err := m.Poll(context.Background(), second.ID); !errors.Is(err, ErrConversationConflict) {
 		t.Fatalf("duplicate poll error = %v, want conversation conflict", err)
-	}
-}
-
-func TestManagerArchiveRefusesGeneratingConversationAndKeepsMapping(t *testing.T) {
-	provider := &archiveFakeProvider{fakeProvider: newFakeProvider()}
-	provider.pollBusy = true
-	m, _ := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{Name: "busy", Instruction: "start"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = m.Archive(context.Background(), created.Subagent.ID)
-	if !errors.Is(err, ErrArchiveBusy) {
-		t.Fatalf("archive busy error = %v", err)
-	}
-	if provider.archiveCount != 0 {
-		t.Fatalf("archive provider called while generating: %d", provider.archiveCount)
-	}
-	if _, err := m.Get(created.Subagent.ID); err != nil {
-		t.Fatalf("busy archive must preserve mapping: %v", err)
-	}
-}
-
-func TestManagerArchiveOutcomeUnknownKeepsDegradedMapping(t *testing.T) {
-	provider := &archiveFakeProvider{fakeProvider: newFakeProvider(), archiveErr: NewOutcomeUnknownError(errors.New("lost response"))}
-	m, _ := newArchiveTestManager(t, provider)
-	created, err := m.Create(context.Background(), CreateRequest{Name: "unknown", Instruction: "start"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider.pollBusy = false
-
-	_, err = m.Archive(context.Background(), created.Subagent.ID)
-	if !errors.Is(err, ErrOutcomeUnknown) {
-		t.Fatalf("archive error = %v, want outcome unknown", err)
-	}
-	agent, getErr := m.Get(created.Subagent.ID)
-	if getErr != nil {
-		t.Fatalf("uncertain archive must preserve mapping: %v", getErr)
-	}
-	if agent.Status != StatusDegraded || agent.ProviderState.ConversationID != created.Subagent.ProviderState.ConversationID {
-		t.Fatalf("unexpected preserved agent after uncertain archive: %#v", agent)
 	}
 }
 
@@ -991,9 +885,16 @@ func TestManagerProviderErrorPreservesStateAndCanRecover(t *testing.T) {
 	}
 }
 
-func TestManagerCloseIsIdempotent(t *testing.T) {
+func TestManagerCloseDeletesLocalRecord(t *testing.T) {
 	provider := newFakeProvider()
-	m := newTestManager(t, provider, Options{})
+	store := NewStore(filepath.Join(t.TempDir(), "subagents"))
+	m, err := NewManager(store, Options{DefaultProvider: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RegisterProvider("fake", provider); err != nil {
+		t.Fatal(err)
+	}
 	created, err := m.Create(context.Background(), CreateRequest{Name: "one"})
 	if err != nil {
 		t.Fatal(err)
@@ -1004,17 +905,68 @@ func TestManagerCloseIsIdempotent(t *testing.T) {
 	if _, err := m.CloseAgent(context.Background(), created.Subagent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CloseAgent(context.Background(), created.Subagent.ID); err != nil {
+	if _, err := m.Get(created.Subagent.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("closed agent should be removed from manager, got %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Send(context.Background(), created.Subagent.ID, "after close"); !errors.Is(err, ErrClosed) {
-		t.Fatalf("send after close error = %v", err)
+	if len(loaded) != 0 {
+		t.Fatalf("closed agent should be removed from store: %#v", loaded)
+	}
+	if _, err := m.CloseAgent(context.Background(), created.Subagent.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second close error = %v, want not found", err)
+	}
+	if _, err := m.Send(context.Background(), created.Subagent.ID, "after close"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("send after close error = %v, want not found", err)
 	}
 	provider.mu.Lock()
 	closeCount := provider.closeCount
 	provider.mu.Unlock()
 	if closeCount != 1 {
 		t.Fatalf("provider close count = %d, want 1", closeCount)
+	}
+}
+
+func TestManagerCloseDeletesLegacyClosedRecordAndFreesSlot(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "subagents"))
+	legacy := Subagent{
+		ID:       "sg_closed0000000000000000000",
+		Name:     "legacy-closed",
+		Provider: "fake",
+		Status:   StatusClosed,
+		ProviderState: ProviderState{
+			ConversationID: "conv-legacy-closed",
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	provider := newFakeProvider()
+	m, err := NewManager(store, Options{DefaultProvider: "fake", MaxAgents: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RegisterProvider("fake", provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Create(context.Background(), CreateRequest{Name: "blocked"}); !errors.Is(err, ErrMaxAgents) {
+		t.Fatalf("create before cleanup error = %v, want max agents", err)
+	}
+	if _, err := m.CloseAgent(context.Background(), legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Create(context.Background(), CreateRequest{Name: "replacement"}); err != nil {
+		t.Fatalf("create after legacy close cleanup: %v", err)
+	}
+	provider.mu.Lock()
+	closeCount := provider.closeCount
+	provider.mu.Unlock()
+	if closeCount != 0 {
+		t.Fatalf("provider close count = %d, want 0 for already-closed record", closeCount)
 	}
 }
 

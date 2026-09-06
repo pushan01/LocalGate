@@ -386,7 +386,7 @@ func TestLoadAllSkillsSupportsGlobalAndLocalLayouts(t *testing.T) {
 	writeFile(t, filepath.Join(workspace, ".agents", "skills", "nested", "SKILL.md"), "---\nname: nested\ndescription: Nested local skill\n---\n")
 	writeFile(t, filepath.Join(workspace, ".agents", "skills", "dupe", "SKILL.md"), "---\nname: global-dir\ndescription: Local duplicate\n---\n")
 
-	roots, skills := loadAllSkills(workspace)
+	roots, skills := loadAllSkills(workspace, nil)
 	if len(roots) != 2 {
 		t.Fatalf("unexpected roots: %#v", roots)
 	}
@@ -394,7 +394,7 @@ func TestLoadAllSkillsSupportsGlobalAndLocalLayouts(t *testing.T) {
 		t.Fatalf("unexpected loaded skills: %#v", skills)
 	}
 
-	_, visible := visibleSkillsForPrompt(workspace)
+	_, visible := visibleSkillsForPrompt(workspace, nil)
 	if len(visible) != 3 {
 		t.Fatalf("unexpected visible skills: %#v", visible)
 	}
@@ -403,6 +403,33 @@ func TestLoadAllSkillsSupportsGlobalAndLocalLayouts(t *testing.T) {
 	}
 	if visible[1]["description"] != "From global dir" {
 		t.Fatalf("global skill should win on duplicate names: %#v", visible)
+	}
+}
+
+func TestLoadAllSkillsUsesConfiguredGlobalRootsWithoutHomeAndDeduplicates(t *testing.T) {
+	t.Setenv("HOME", "")
+	workspace := t.TempDir()
+	configuredRoot := filepath.Join(t.TempDir(), "configured-skills")
+	writeFile(t, filepath.Join(configuredRoot, "shared", "SKILL.md"), "---\nname: shared\ndescription: Configured global skill\n---\n")
+	writeFile(t, filepath.Join(workspace, ".agents", "skills", "shared", "SKILL.md"), "---\nname: shared\ndescription: Local duplicate\n---\n")
+
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "skills-link")
+	if err := os.Symlink(configuredRoot, alias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	roots, skills := loadAllSkills(workspace, []string{configuredRoot, configuredRoot, alias})
+	if len(roots) != 2 {
+		t.Fatalf("expected configured root and workspace root after dedupe, got %#v", roots)
+	}
+	if len(skills) != 1 || skills[0].Name != "shared" || skills[0].Description != "Configured global skill" {
+		t.Fatalf("configured global skill should win duplicate name: %#v", skills)
+	}
+
+	_, visible := visibleSkillsForPrompt(workspace, []string{configuredRoot, alias})
+	if len(visible) != 1 || visible[0]["description"] != "Configured global skill" || visible[0]["source"] != "global" {
+		t.Fatalf("unexpected configured global visible skills: %#v", visible)
 	}
 }
 
@@ -452,12 +479,12 @@ func TestLoadAllSkillsFollowsSkillSymlinks(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	_, skills := loadAllSkills(workspace)
+	_, skills := loadAllSkills(workspace, nil)
 	if len(skills) != 2 {
 		t.Fatalf("unexpected skills loaded through symlink: %#v", skills)
 	}
 
-	_, visible := visibleSkillsForPrompt(workspace)
+	_, visible := visibleSkillsForPrompt(workspace, nil)
 	if len(visible) != 2 {
 		t.Fatalf("unexpected visible skills loaded through symlink: %#v", visible)
 	}

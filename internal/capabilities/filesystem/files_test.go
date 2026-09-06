@@ -475,6 +475,40 @@ func TestReadFileAllowsSharedSkillsRoot(t *testing.T) {
 	}
 }
 
+func TestReadFileAllowsConfiguredGlobalSkillRootWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	root := t.TempDir()
+	globalRoot := filepath.Join(t.TempDir(), "shared-skills")
+	skillFile := filepath.Join(globalRoot, "demo", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillFile), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillFile, []byte("name: configured"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	ws := config.Root{Path: root}
+	var read, write core.Tool
+	for _, tl := range NewTools(ws, []string{globalRoot, globalRoot}) {
+		switch tl.Name() {
+		case "read_file":
+			read = tl
+		case "write_file":
+			write = tl
+		}
+	}
+	res, err := read.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": skillFile})
+	if err != nil {
+		t.Fatalf("read configured global skill file: %v", err)
+	}
+	if res["content"] != "name: configured" {
+		t.Fatalf("unexpected content: %v", res["content"])
+	}
+	if _, err := write.Execute(context.Background(), core.InvokeContext{}, map[string]any{"path": skillFile, "content": "mutated"}); err == nil {
+		t.Fatalf("write_file should still reject configured global skill root")
+	}
+}
+
 func TestReadFileRejectsRelativePath(t *testing.T) {
 	root := t.TempDir()
 	ws := config.Root{Path: root}

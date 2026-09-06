@@ -22,11 +22,16 @@ import (
 )
 
 type fsToolBase struct {
-	ws config.Root
+	ws               config.Root
+	globalSkillRoots []string
 }
 
-func NewTools(ws config.Root) []core.Tool {
-	b := fsToolBase{ws: ws}
+func NewTools(ws config.Root, configuredGlobalSkillRoots ...[]string) []core.Tool {
+	var globalSkillRoots []string
+	if len(configuredGlobalSkillRoots) > 0 {
+		globalSkillRoots = append([]string(nil), configuredGlobalSkillRoots[0]...)
+	}
+	b := fsToolBase{ws: ws, globalSkillRoots: globalSkillRoots}
 	return []core.Tool{
 		readFileTool{fsToolBase: b},
 		writeFileTool{fsToolBase: b},
@@ -54,7 +59,7 @@ type readFileTool struct{ fsToolBase }
 
 func (t readFileTool) Name() string { return "read_file" }
 func (t readFileTool) Description() string {
-	return "Read a regular text file by absolute path from the configured root or shared ~/.agents/skills directory. Binary files and files over the read limit are rejected."
+	return "Read a regular text file by absolute path from the configured root or configured/shared skill roots. Binary files and files over the read limit are rejected."
 }
 func (t readFileTool) Schema() any {
 	return map[string]any{
@@ -66,9 +71,12 @@ func (t readFileTool) Schema() any {
 		"required": []string{"path"},
 	}
 }
+func (t readFileTool) ToolAnnotations() map[string]any {
+	return map[string]any{"readOnlyHint": true}
+}
 func (t readFileTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	p, _ := args["path"].(string)
-	dec := validateReadPath(p, t.ws)
+	dec := validateReadPath(p, t.ws, t.globalSkillRoots)
 	if !dec.Allowed {
 		return nil, errors.New("path not allowed: " + dec.Reason)
 	}
@@ -496,12 +504,12 @@ func minInt(a, b int) int {
 	return b
 }
 
-func validateReadPath(p string, root config.Root) security.Decision {
+func validateReadPath(p string, root config.Root, configuredGlobalSkillRoots []string) security.Decision {
 	dec := security.ValidatePath(p, root, security.Options{FollowSymlink: true})
 	if dec.Allowed {
 		return dec
 	}
-	for _, sharedRoot := range sharedSkillRoots() {
+	for _, sharedRoot := range sharedSkillRoots(configuredGlobalSkillRoots) {
 		shared := config.Root{Path: sharedRoot}
 		if sharedDecision := security.ValidatePath(p, shared, security.Options{FollowSymlink: true}); sharedDecision.Allowed {
 			return sharedDecision
@@ -510,12 +518,34 @@ func validateReadPath(p string, root config.Root) security.Decision {
 	return dec
 }
 
-func sharedSkillRoots() []string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return nil
+func sharedSkillRoots(configuredGlobalSkillRoots []string) []string {
+	roots := make([]string, 0, len(configuredGlobalSkillRoots)+1)
+	seen := make(map[string]struct{}, len(configuredGlobalSkillRoots)+1)
+	add := func(root string) {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			return
+		}
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return
+		}
+		abs = filepath.Clean(abs)
+		key := abs
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			key = filepath.Clean(resolved)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		roots = append(roots, abs)
 	}
-	return []string{
-		filepath.Join(home, ".agents", "skills"),
+	for _, root := range configuredGlobalSkillRoots {
+		add(root)
 	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		add(filepath.Join(home, ".agents", "skills"))
+	}
+	return roots
 }

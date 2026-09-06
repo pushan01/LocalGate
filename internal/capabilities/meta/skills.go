@@ -32,25 +32,34 @@ type skill struct {
 	DisableModelInvocation bool
 }
 
-func loadAllSkills(cwd string) ([]string, []skill) {
+func loadAllSkills(cwd string, configuredGlobalRoots []string) ([]string, []skill) {
 	var allSkills []skill
-	seen := make(map[string]bool)
+	seenSkills := make(map[string]bool)
+	seenRoots := make(map[string]bool)
 	var roots []string
 
 	addSkills := func(dir, source string) {
 		if strings.TrimSpace(dir) == "" {
 			return
 		}
+		dir, rootKey := normalizeSkillRoot(dir)
+		if dir == "" || seenRoots[rootKey] {
+			return
+		}
+		seenRoots[rootKey] = true
 		roots = append(roots, dir)
 		for _, s := range loadSkills(dir) {
 			s.Source = source
-			if !seen[s.Name] {
-				seen[s.Name] = true
+			if !seenSkills[s.Name] {
+				seenSkills[s.Name] = true
 				allSkills = append(allSkills, s)
 			}
 		}
 	}
 
+	for _, root := range configuredGlobalRoots {
+		addSkills(root, "global")
+	}
 	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
 		addSkills(filepath.Join(homeDir, ".agents", "skills"), "global")
 	}
@@ -59,6 +68,23 @@ func loadAllSkills(cwd string) ([]string, []skill) {
 	}
 
 	return roots, allSkills
+}
+
+func normalizeSkillRoot(dir string) (string, string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", ""
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", ""
+	}
+	abs = filepath.Clean(abs)
+	key := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		key = filepath.Clean(resolved)
+	}
+	return abs, key
 }
 
 func loadSkills(dir string) []skill {
@@ -150,8 +176,8 @@ func parseSkillContent(content []byte, fallbackName, path string) *skill {
 	}
 }
 
-func visibleSkillsForPrompt(cwd string) ([]string, []map[string]any) {
-	roots, loaded := loadAllSkills(cwd)
+func visibleSkillsForPrompt(cwd string, configuredGlobalRoots []string) ([]string, []map[string]any) {
+	roots, loaded := loadAllSkills(cwd, configuredGlobalRoots)
 	visible := make([]map[string]any, 0, len(loaded))
 	reserved := builtinSkillNames()
 	for _, s := range loaded {
@@ -254,7 +280,7 @@ func builtinSkillRelevant(name string, hasTools map[string]any, opts StartupProm
 			"task_status", "task_logs", "task_cancel", "task_result", "wait_task_finish",
 		) || !opts.ToolHTTPMode
 	case "localgate-subagents":
-		return hasAnyVisibleTool(hasTools, "subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_close", "subagent_archive", "subagent_artifact_get")
+		return hasAnyVisibleTool(hasTools, "subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_close", "subagent_artifact_get")
 	case "localgate-notification":
 		return hasAnyVisibleTool(hasTools, "send_notification")
 	case "localgate-tool-http":

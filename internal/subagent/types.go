@@ -15,6 +15,7 @@ type ProviderState struct {
 	ConversationID  string            `json:"conversation_id,omitempty"`
 	ConversationURL string            `json:"conversation_url,omitempty"`
 	ProjectID       string            `json:"project_id,omitempty"`
+	Model           string            `json:"model,omitempty"`
 	Hints           map[string]string `json:"hints,omitempty"`
 }
 

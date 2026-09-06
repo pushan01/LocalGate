@@ -36,6 +36,10 @@ func (t getToolSchemaTool) Schema() any {
 	}
 }
 
+func (t getToolSchemaTool) ToolAnnotations() map[string]any {
+	return map[string]any{"readOnlyHint": true}
+}
+
 func (t getToolSchemaTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	_ = ctx
 	_ = ic

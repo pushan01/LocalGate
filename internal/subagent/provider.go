@@ -16,11 +16,3 @@ type Provider interface {
 	Recover(context.Context, ProviderState) (ProviderState, error)
 	Close(context.Context, ProviderState) error
 }
-
-// Archiver is an optional provider capability. Archive must only return
-// success after any configured remote archival step has completed and been
-// verified. Providers may return the state unchanged when remote movement is
-// intentionally disabled by configuration.
-type Archiver interface {
-	Archive(context.Context, ProviderState) (ProviderState, error)
-}

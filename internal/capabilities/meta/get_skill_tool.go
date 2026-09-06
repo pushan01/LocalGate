@@ -43,6 +43,10 @@ func (GetSkillTool) Schema() any {
 	}
 }
 
+func (GetSkillTool) ToolAnnotations() map[string]any {
+	return map[string]any{"readOnlyHint": true}
+}
+
 func (t GetSkillTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	_ = ctx
 	_ = ic

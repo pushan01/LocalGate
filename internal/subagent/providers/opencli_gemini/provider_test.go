@@ -19,7 +19,7 @@ func TestCreateUsesAsyncGeminiSubmit(t *testing.T) {
 	capture := filepath.Join(dir, "args.bin")
 	executable := writeFakeExecutable(t, fmt.Sprintf(`
 for arg in "$@"; do printf '%%s\0' "$arg"; done > %q
-printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Generating":true}]'
+printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Model":"3.1 Pro","Generating":true}]'
 `, capture))
 	p, err := New(Config{Executable: executable})
 	if err != nil {
@@ -29,11 +29,67 @@ printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","Conv
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ConversationID != "abc123def4567890" || state.ConversationURL == "" || state.Hints[pendingFingerprintHint] == "" {
+	if state.ConversationID != "abc123def4567890" || state.ConversationURL == "" || state.Model != "3.1 Pro" || state.Hints[pendingFingerprintHint] == "" {
 		t.Fatalf("unexpected create state: %#v", state)
 	}
 	args := readCapturedArgs(t, capture)
-	want := []string{"gemini", "submit", "hello", "--new", "true", "--submission-timeout", "8", "--format", "json"}
+	want := []string{"gemini", "submit", "hello", "--new", "true", "--model", "Pro", "--submission-timeout", "8", "--format", "json"}
+	if fmt.Sprint(args) != fmt.Sprint(want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestCreateExplicitModelOverridesDefaultModel(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args.bin")
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+for arg in "$@"; do printf '%%s\0' "$arg"; done > %q
+printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Model":"3.7 Flash","Generating":true}]'
+`, capture))
+	p, err := New(Config{Executable: executable, DefaultModel: "Pro"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := p.Create(context.Background(), subagent.ProviderCreateRequest{
+		Instruction: "hello",
+		Options:     map[string]string{"model": "Flash"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Model != "3.7 Flash" {
+		t.Fatalf("selected model = %q, want 3.7 Flash", state.Model)
+	}
+	args := readCapturedArgs(t, capture)
+	want := []string{"gemini", "submit", "hello", "--new", "true", "--model", "Flash", "--submission-timeout", "8", "--format", "json"}
+	if fmt.Sprint(args) != fmt.Sprint(want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestCreatePassesRequestedModelAndPersistsSelectedModel(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args.bin")
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+for arg in "$@"; do printf '%%s\0' "$arg"; done > %q
+printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","ConversationUrl":"https://gemini.google.com/app/abc123def4567890","Model":"3.1 Pro","Generating":true}]'
+`, capture))
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := p.Create(context.Background(), subagent.ProviderCreateRequest{
+		Instruction: "hello",
+		Options:     map[string]string{"model": "Pro"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Model != "3.1 Pro" {
+		t.Fatalf("selected model = %q, want 3.1 Pro", state.Model)
+	}
+	args := readCapturedArgs(t, capture)
+	want := []string{"gemini", "submit", "hello", "--new", "true", "--model", "Pro", "--submission-timeout", "8", "--format", "json"}
 	if fmt.Sprint(args) != fmt.Sprint(want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -50,13 +106,16 @@ printf '%%s\n' '[{"Status":"Submitted","ConversationId":"abc123def4567890","Conv
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := subagent.ProviderState{ConversationID: "abc123def4567890", ConversationURL: "https://gemini.google.com/app/abc123def4567890"}
+	state := subagent.ProviderState{ConversationID: "abc123def4567890", ConversationURL: "https://gemini.google.com/app/abc123def4567890", Model: "3.1 Pro"}
 	next, err := p.Send(context.Background(), state, "continue")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if next.Hints[pendingFingerprintHint] == "" {
 		t.Fatalf("send did not preserve pending marker: %#v", next)
+	}
+	if next.Model != "3.1 Pro" {
+		t.Fatalf("send changed selected model: %#v", next)
 	}
 	args := readCapturedArgs(t, capture)
 	want := []string{"gemini", "submit", "continue", "--conversation", "abc123def4567890", "--submission-timeout", "8", "--format", "json"}

@@ -93,17 +93,28 @@ LocalGate 不要求在线 Agent 必须原生支持某一种固定协议：
 
 除了仓库内置的 LocalGate 使用 Skills，LocalGate 还原生支持标准 `SKILL.md` 目录结构。你可以安装任意面向 Agent 的通用 Skill，用它补充领域知识、操作流程、工具选择规则和任务执行规范，而不需要修改 LocalGate 本身。
 
-LocalGate 会扫描两个标准位置：
+LocalGate 会扫描显式配置的共享 Skill 根目录，以及两个标准位置：
 
 ```text
+skills.global_roots[]
 ~/.agents/skills/<skill-name>/SKILL.md
 <root>/.agents/skills/<skill-name>/SKILL.md
 ```
 
+可以在配置中显式指定共享 Skill 根目录；路径必须是绝对路径：
+
+```yaml
+skills:
+  global_roots:
+    - "/absolute/path/to/shared-skills"
+```
+
+扫描优先级为 `skills.global_roots` → `~/.agents/skills` → `<root>/.agents/skills`。重复路径会按规范化路径去重；如果 symlink 能解析到同一真实目录，也只扫描一次。同名 Skill 同样去重，并保留优先级更高、最先命中的版本。因此即使服务进程没有 `HOME`，显式 `global_roots` 仍可稳定提供全局 Skills。
+
 这套机制具备：
 
 - **动态安装**：把 Skill 目录复制、解压、克隆或软链接到上述目录后，下一次调用 `get_startup_instructions` 时即可被发现，通常无需重新编译或重启 LocalGate。
-- **全局与项目级作用域**：全局 Skills 可以被多个 LocalGate 实例共用，项目级 Skills 只服务于当前 root。
+- **全局与项目级作用域**：`skills.global_roots` 和 `~/.agents/skills` 中的全局 Skills 可以被多个 LocalGate 实例共用，项目级 Skills 只服务于当前 root。
 - **标准 Frontmatter**：读取 `name`、`description` 和 `disable-model-invocation` 等字段。
 - **渐进式披露**：启动阶段只向模型披露 Skill 的名称、简介和文件位置；只有任务与描述匹配时，模型才使用 `read_file` 读取完整 `SKILL.md` 及其引用内容。
 - **上下文节省**：不会在每次请求中把所有 Skill 正文全部塞进提示词，减少无关上下文和 Token 消耗。
@@ -582,8 +593,7 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 - `subagent_wait`：显式等待当前轮完成并返回最终 `reply`；图片等非文本结果通过并列的 `artifacts` 数组返回，不会塞进 `reply` 文本
 - `subagent_get` / `subagent_list`：查看状态以及 provider conversation / Project 映射摘要；`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，`refresh=false` 可读取纯本地快照
 - `subagent_artifact_get`：把 `artifacts[].id` 对应的 LocalGate 内部 artifact 校验后签发成短期 HTTPS / MCP `resource_link`；不会向调用方暴露 LocalGate 本机 artifact 路径
-- `subagent_archive`：确认当前远端 turn 已结束后删除本地 `sg_*` 映射；若 Provider 配置了 `archive_project`，会先把 backing conversation 移过去并验证成功；未配置时远端 conversation 保持原位
-- `subagent_close`：逻辑关闭 subagent；不会删除 ChatGPT 中已有的 conversation 或 Project 历史
+- `subagent_close`：结束 subagent 并删除本地 `sg_*` 映射，立即释放 LocalGate agent 名额；不会删除 Provider 中已有的 conversation 或 Project 历史
 
 调用方应把 `subagent_id` 当成稳定身份并持续复用。ChatGPT `conversation_id`、conversation URL 和 Project ID 只是 Provider 诊断信息；LocalGate 重启后的恢复也以持久化的 provider state 为基础，而不是依赖浏览器 tab ID。`subagent_get` 的 `refreshed=true` 表示这次 get 实际尝试了远端对账；远端读取失败时仍会返回本地诊断映射，并通过 `refresh_error` 暴露失败原因。
 
@@ -632,6 +642,8 @@ Browser-backed Provider 使用 OpenCLI 驱动已经登录的 ChatGPT Web 或 Gem
 
 `subagent_spawn` 还支持可选的 `subagent_type`，用于标记 Provider 无关的逻辑角色，例如 `coder`、`reviewer`、`researcher`。它和 `name`、`provider` 是独立概念：`name` 是实例显示名，`subagent_type` 是角色分类，`provider` 是实际承载该会话的后端。`subagent_type` 会随 `sg_*` 映射持久化，并在 `subagent_get` / `subagent_list` 中返回；旧记录没有该字段时仍可正常加载。
 
+`subagent_spawn` 还支持可选的 `model`。当前 `opencli_gemini` 会在创建新 conversation 前打开 Gemini mode picker，并按“完整可见标签”或“去掉版本号后的名称”精确匹配，例如 `3.1 Pro` / `Pro`、`3.7 Flash` / `Flash`、`3.5 Flash-Lite` / `Flash-Lite`、`Extended thinking`。切换后会再次读取 picker 验证成功，再提交首轮消息；选中的规范化标签会持久化到 `sg_*` provider state，并通过 `subagent_spawn` / `subagent_get` / `subagent_list` 返回。当前 ChatGPT Provider 不支持 `model`，传入时会明确返回配置错误，不会静默忽略。
+
 ```yaml
 subagents:
   enabled: true
@@ -648,25 +660,27 @@ subagents:
       timeout_seconds: 120
       submit_interval_seconds: 0
       default_project: deadbeef
-      archive_project: cafebabe
     opencli_gemini:
       enabled: true
       browser_executable: opencli
+      default_model: Pro
       timeout_seconds: 120
       submit_interval_seconds: 5
 ```
 
+Gemini 默认使用 `default_model`；默认值是 `Pro`。`subagent_spawn.model` 可为单个新 subagent 覆盖该值，例如 `Flash` 或 `Extended thinking`。
+
 创建时有 Project 就调用 upstream `opencli chatgpt ask --project ... --wait false`，只等 conversation ID/URL 建立；后续消息通过 upstream `opencli chatgpt send --conversation ...` 注入同一对话，不等待 assistant 回复。`subagent_poll` / `subagent_wait` 则使用 LocalGate 内置的 ChatGPT `inspect` DOM adapter，通过通用 OpenCLI Browser Bridge 非阻塞读取远端 turns 与 generating 状态，避免依赖 upstream `chatgpt detail` 的页面加载等待行为。LocalGate 不把 OpenCLI browser session 或 tab target 当作持久身份。
 
-ChatGPT 的普通 `ask/send` 使用 upstream OpenCLI；状态 `inspect` 与 upstream 当前没有的 `project-move` 由同一个 LocalGate 内置 adapter runner 实现。`project-move` 通过通用 OpenCLI Browser Bridge 打开 conversation 的项目菜单，并读取 Browser Bridge 捕获到的 ChatGPT conversation/project network response 验证真实 Project membership；不会仅凭 project-looking URL 判断移动成功。因此 LocalGate 不要求安装包含私有 ChatGPT subagent 命令的 OpenCLI fork。
+ChatGPT 的普通 `ask/send` 使用 upstream OpenCLI；状态 `inspect` 由 LocalGate 内置 adapter runner 实现，因此 LocalGate 不要求安装包含私有 ChatGPT subagent 命令的 OpenCLI fork。
 
-Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go:embed` 发布。启动时 LocalGate 会把 runner 释放到 `log_store/runtime/adapters/<content-hash>/localgate-adapter.mjs`；runner 只依赖 OpenCLI 的通用 `browser open/eval/keys` Browser Bridge，因此不要求用户安装带 `gemini submit/inspect` 私有分叉的 OpenCLI。`browser_executable` 指向这个通用 browser backend；`executable` 仅保留为开发/兼容用的自定义 adapter runner override。Gemini 仍复用同一套 `spawn → busy → poll/wait → ready → send` 生命周期、持久化 `sg_*` 映射和状态查询节流。Gemini 没有 ChatGPT Project/`project-move` 对应语义，所以当前 `subagent_archive` 对 `opencli_gemini` 返回 archive unsupported；`subagent_close` 仍是逻辑关闭，不删除 Gemini 历史会话。
+Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go:embed` 发布。启动时 LocalGate 会把 runner 释放到 `log_store/runtime/adapters/<content-hash>/localgate-adapter.mjs`；runner 只依赖 OpenCLI 的通用 `browser open/eval/keys` Browser Bridge，因此不要求用户安装带 `gemini submit/inspect` 私有分叉的 OpenCLI。`browser_executable` 指向这个通用 browser backend；`executable` 仅保留为开发/兼容用的自定义 adapter runner override。Gemini 仍复用同一套 `spawn → busy → poll/wait → ready → send` 生命周期、持久化 `sg_*` 映射和状态查询节流。spawn 指定 `model` 时，模型切换和首轮提交在同一个 Provider browser-surface 串行区间内完成，避免其他 subagent 在中间改变当前 mode。`subagent_close` 删除 LocalGate 本地映射，但不会删除 Gemini 历史会话。
 
 Gemini 的图片生成结果会由内置 adapter 在生成结束后从已经渲染的 `<img>` 通过 canvas materialize 为 PNG，写入 `log_store/subagents/artifacts/<conversation_id>/turn-<n>/`。LocalGate 不持久化 Gemini 的 `blob:` URL；`subagent_poll` / `subagent_wait` 返回 provider-independent 的 artifact metadata（`id/type/mime_type/file_name/size/sha256/width/height/alt`），并把最新完成 turn 的 artifacts 持久化到对应 `sg_*` 记录，因此 subagent 已经 `ready` 后仍可通过 `subagent_get` / `subagent_list` 读取。artifact 的真实本机路径只保存在 LocalGate 内部持久化记录中，不通过 MCP artifact 列表暴露。开始下一次 `subagent_send` 时会清空上一轮 artifact 列表，避免把旧图片误认为新一轮结果。当前单张图片 materialize 上限为 16 MiB；artifact 抽取失败不会把一个已经完成的 Gemini turn 重新判成 `busy/degraded`。
 
 调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于当前实例下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`。内部 artifact 不要求位于用户配置 root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 root path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
 
-ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect/project-move` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
+ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
 
 每个 `(provider, conversation_id)` 在 Manager 中只能有一个 `sg_*` owner。若 Provider 异常返回一个已经被其他 `sg_*` 使用的 conversation，新的 spawn 会失败并返回 `subagent_conversation_conflict`，不会静默制造两个角色共享同一 ChatGPT 会话。Pending turn 对账使用“提交前最后观察到的 message index + 规范化展示文本 fingerprint”；因此 ChatGPT DOM 去掉 Markdown 反引号、粗体等展示符后仍能识别原 User turn，同时发送后短暂读到旧 DOM 时也不会过早变成 ready。
 
@@ -678,9 +692,9 @@ ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect/project-mo
 
 状态查询默认做两层节流：同一个 subagent 的远端状态刷新至少间隔 `same_agent_poll_interval_seconds`（默认 10 秒）；切换到不同 subagent 时，两次远端状态刷新至少间隔 `different_agent_poll_interval_seconds`（默认 5 秒）。`subagent_poll` 和 `subagent_get(refresh=true)` 在间隔未到时直接返回最近一次本地状态，并返回 `refreshed=false` 与 `retry_after_ms`，不会继续请求 ChatGPT；`subagent_wait` 会等待到允许的时间点再继续检查。两项设为 `0` 可关闭对应节流。
 
-消息提交节流是 provider 级配置：`subagents.providers.<provider>.submit_interval_seconds` 控制该 provider 下所有 `subagent_spawn` / `subagent_send` 的最小冷却时间，`0` 表示关闭。冷却从上一条提交命令完成后开始计算；如果下一次提交来得太早，Provider 会等待到允许的时间再执行，而不是返回 rate-limit 错误。ChatGPT 与 Gemini 各自维护独立的提交节流状态，`poll/inspect/archive` 不受这个配置影响。
+消息提交节流是 provider 级配置：`subagents.providers.<provider>.submit_interval_seconds` 控制该 provider 下所有 `subagent_spawn` / `subagent_send` 的最小冷却时间，`0` 表示关闭。冷却从上一条提交命令完成后开始计算；如果下一次提交来得太早，Provider 会等待到允许的时间再执行，而不是返回 rate-limit 错误。ChatGPT 与 Gemini 各自维护独立的提交节流状态，`poll/inspect` 不受这个配置影响。
 
-`subagent_archive` 归档前始终先 Poll；若 conversation 仍在生成则返回 `subagent_archive_busy` 并保留映射。配置了 `archive_project` 时，它会使用 LocalGate 内置的 ChatGPT `project-move` adapter，成功路径是“确认不再生成 → 移动到 `archive_project` → 通过 network response 确认真实 Project membership → 删除本地 `sg_*`”。未配置 `archive_project` 时则跳过远端 move，conversation 保持在原来的 Project/位置，只删除本地 `sg_*`。远端 move 或结果确认失败时不会删除本地记录；如果 move 已发生但响应丢失，会返回 `subagent_outcome_unknown`，后续显式重试会先确认 conversation 是否已经在目标 Project，从而避免盲目重复移动。
+`subagent_close` 是唯一的 subagent 结束入口。Provider close 成功后，LocalGate 会删除对应持久化记录与内存映射、释放 conversation ownership 和 `max_agents` 名额；后续再使用这个 `subagent_id` 会返回 not found。旧版本遗留的 `closed` 记录也可以通过 `subagent_close` 清理并释放名额。
 
 ### HTTP 鉴权
 
@@ -946,9 +960,10 @@ skills/                   面向 Agent 的 LocalGate 使用说明
 web/admin/                管理后台前端
 ```
 
-运行时标准 Skills 默认从以下位置发现：
+运行时标准 Skills 从显式共享根目录和以下默认位置发现：
 
 ```text
+skills.global_roots[]
 ~/.agents/skills/
 <root>/.agents/skills/
 ```
@@ -960,7 +975,7 @@ LocalGate 还内置一组随二进制发布的工作流 Skills。`get_startup_in
 - [`api-command-collection.md`](./api-command-collection.md)：HTTP 和命令调用示例
 - [`skills/localgate-http-api/SKILL.md`](./skills/localgate-http-api/SKILL.md)：HTTP API 使用指南
 - [`skills/localgate-mcp-tools/SKILL.md`](./skills/localgate-mcp-tools/SKILL.md)：MCP 工具选择指南
-- 标准 Skills：安装到 `~/.agents/skills/` 或 `<root>/.agents/skills/`，由 `get_startup_instructions` 动态发现并渐进式披露
+- 标准 Skills：可安装到 `skills.global_roots`、`~/.agents/skills/` 或 `<root>/.agents/skills/`，由 `get_startup_instructions` 动态发现并渐进式披露
 - [`docs/`](./docs/)：部署、管理后台和执行系统设计文档
 - [`docs/file_browser_plan.md`](./docs/file_browser_plan.md)：文件浏览器 / 在线 IDE 能力规划
 - [`todo.md`](./todo.md)：当前待办与已知的工程改进项

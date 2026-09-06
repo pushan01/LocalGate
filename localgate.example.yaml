@@ -97,18 +97,24 @@ subagents:
       submit_interval_seconds: 0
       # 建议填写一个专用 ChatGPT Project ID 或 /g/g-p-... URL，避免 subagent 会话散落在普通聊天列表。
       default_project: ""
-      # 可选：配置后 subagent_archive 会先把 conversation 移到这里并验证成功；留空则不移动远端 conversation，只删除本地 sg_* 映射。
-      archive_project: ""
     # 可同时启用 Gemini；保持 default_provider=opencli_chatgpt 时，可在 subagent_spawn 中显式 provider=opencli_gemini。
     opencli_gemini:
       enabled: false
       # Gemini 的 DOM adapter 随 LocalGate 内置；这里只配置它调用的通用 OpenCLI browser backend。
       browser_executable: "opencli"
+      # 未在 subagent_spawn.model 显式覆盖时使用的 Gemini 模型/模式。
+      default_model: "Pro"
       # 可选：仅用于开发/兼容场景，覆盖 LocalGate 内置的 Gemini adapter runner。
       # executable: "/path/to/custom-adapter"
       timeout_seconds: 120
       # 同一 Gemini provider 的所有 spawn/send 至少间隔这么多秒；0 表示关闭。
       submit_interval_seconds: 0
+
+# 可选：显式配置共享 Skill 根目录。每项必须是绝对路径。
+# 这些目录会先于自动发现的 ~/.agents/skills 和 <root>/.agents/skills 扫描；
+# 重复路径（包括解析后指向同一目录的 symlink）只扫描一次，同名 Skill 只保留第一次命中的版本。
+skills:
+  global_roots: []
 
 # 一个 LocalGate 实例只允许访问一个 root。建议替换为明确的绝对路径。
 root: "."

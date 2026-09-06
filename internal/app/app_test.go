@@ -868,7 +868,7 @@ esac
 	if result.Subagent.Provider != "opencli_chatgpt" || result.Subagent.ProviderState.ConversationID != "conversation123" || result.Subagent.ProviderState.ProjectID != "deadbeef" {
 		t.Fatalf("unexpected subagent: %#v", result.Subagent)
 	}
-	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_archive", "subagent_close"} {
+	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_close"} {
 		if !a.Registry.IsVisible(name) {
 			t.Fatalf("subagent tool %s is not visible", name)
 		}

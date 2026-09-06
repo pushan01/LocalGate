@@ -146,7 +146,6 @@ func New(cfg config.Config) (*App, error) {
 				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
 				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
 				DefaultProject:    providerConfig.DefaultProject,
-				ArchiveProject:    providerConfig.ArchiveProject,
 			})
 			if providerErr != nil {
 				return nil, fmt.Errorf("init %s provider: %w", opencligpt.Name, providerErr)
@@ -172,6 +171,7 @@ func New(cfg config.Config) (*App, error) {
 				Executable:        adapterExecutable,
 				BrowserExecutable: providerConfig.BrowserExecutable,
 				ArtifactDir:       artifactDir,
+				DefaultModel:      providerConfig.DefaultModel,
 				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
 				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
 			})
@@ -291,13 +291,14 @@ func New(cfg config.Config) (*App, error) {
 	deploymentManager.ConfigureAppRouting(cfg.HTTP.BaseURL, dynamicRoutingConfig.ReservedNames)
 	reg := core.NewRegistry(sink)
 	reg.Register(meta.NewStartupInstructionsTool(cfg.Root, reg, meta.StartupPromptOptions{
-		BaseURL:      cfg.HTTP.BaseURL,
-		ToolHTTPMode: cfg.ToolHTTPMode.Enabled,
-		EnableBase64: cfg.ToolArguments.EnableBase64,
-		MCPServers:   cfg.MCPServers,
+		BaseURL:          cfg.HTTP.BaseURL,
+		ToolHTTPMode:     cfg.ToolHTTPMode.Enabled,
+		EnableBase64:     cfg.ToolArguments.EnableBase64,
+		GlobalSkillRoots: cfg.Skills.GlobalRoots,
+		MCPServers:       cfg.MCPServers,
 	}))
 	reg.Register(meta.NewGetSkillTool(dynamicRoutingConfig))
-	for _, t := range filesystem.NewTools(cfg.Root) {
+	for _, t := range filesystem.NewTools(cfg.Root, cfg.Skills.GlobalRoots) {
 		reg.Register(t)
 	}
 	reg.Register(filesystem.NewCreateDownloadTokenTool(cfg.Root, cfg.HTTP.BaseURL, downloadSvc))
@@ -1186,14 +1187,14 @@ func (a *App) ApproveApproval(approvalID string, actor approval.Actor) (approval
 	if err := a.ReleaseApproval(approvalID); err != nil {
 		_ = a.CancelApprovalTaskWithReason(approvalID, task.ID, "approval_release_failed", "approval was granted but the task gate could not be released")
 		_, _ = a.Approvals.RecordAudit(approval.AuditRecord{
-			ApprovalID:  approvalID,
-			TaskID:      task.ID,
-			Action:      "approval_release_failed",
-			Actor:       actor.ID,
-			AuthMethod:  actor.AuthMethod,
-			Tool:      req.Tool,
-			Requester: req.Requester,
-			Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
+			ApprovalID: approvalID,
+			TaskID:     task.ID,
+			Action:     "approval_release_failed",
+			Actor:      actor.ID,
+			AuthMethod: actor.AuthMethod,
+			Tool:       req.Tool,
+			Requester:  req.Requester,
+			Transport:  req.Transport, MCPSessionID: req.MCPSessionID,
 			SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
 			Reason: req.Reason,
 			Error:  err.Error(),

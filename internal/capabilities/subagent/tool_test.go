@@ -22,6 +22,7 @@ func (fakeProvider) Create(_ context.Context, req runtime.ProviderCreateRequest)
 		ConversationID:  conversationID,
 		ConversationURL: "https://chatgpt.com/g/g-p-deadbeef/c/" + conversationID,
 		ProjectID:       req.Options["project"],
+		Model:           req.Options["model"],
 		Hints:           map[string]string{"reply": "created:" + req.Instruction},
 	}, nil
 }
@@ -44,12 +45,6 @@ func (fakeProvider) Recover(_ context.Context, state runtime.ProviderState) (run
 }
 
 func (fakeProvider) Close(context.Context, runtime.ProviderState) error { return nil }
-
-func (fakeProvider) Archive(_ context.Context, state runtime.ProviderState) (runtime.ProviderState, error) {
-	state.ProjectID = "cafebabe"
-	state.ConversationURL = "https://chatgpt.com/g/g-p-cafebabe/c/" + state.ConversationID
-	return state, nil
-}
 
 type artifactProvider struct{ fakeProvider }
 
@@ -132,7 +127,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 	for _, tool := range tools {
 		byName[tool.Name()] = tool
 	}
-	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_archive", "subagent_close"} {
+	for _, name := range []string{"subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_close"} {
 		if byName[name] == nil {
 			t.Fatalf("missing tool %s", name)
 		}
@@ -144,6 +139,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 	spawned, err := byName["subagent_spawn"].Execute(context.Background(), ic, map[string]any{
 		"name":          "reviewer",
 		"subagent_type": "reviewer",
+		"model":         "Pro",
 		"instruction":   "review code",
 		"project":       "deadbeef",
 	})
@@ -151,7 +147,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := spawned["subagent_id"].(string)
-	if id == "" || spawned["subagent_type"] != "reviewer" || spawned["provider"] != "fake" || spawned["accepted"] != true || spawned["status"] != string(runtime.StatusBusy) {
+	if id == "" || spawned["subagent_type"] != "reviewer" || spawned["provider"] != "fake" || spawned["model"] != "Pro" || spawned["accepted"] != true || spawned["status"] != string(runtime.StatusBusy) {
 		t.Fatalf("unexpected spawn result: %#v", spawned)
 	}
 	polled, err := byName["subagent_poll"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
@@ -186,7 +182,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 	}
 	agent, ok := got["subagent"].(map[string]any)
 	conversationID, _ := agent["conversation_id"].(string)
-	if !ok || conversationID == "" || agent["subagent_type"] != "reviewer" || agent["project_id"] != "deadbeef" {
+	if !ok || conversationID == "" || agent["subagent_type"] != "reviewer" || agent["project_id"] != "deadbeef" || agent["model"] != "Pro" {
 		t.Fatalf("unexpected get result: %#v", got)
 	}
 
@@ -195,7 +191,7 @@ func TestSubagentToolsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, ok := listed["subagents"].([]map[string]any)
-	if !ok || len(items) != 1 || items[0]["subagent_id"] != id || items[0]["subagent_type"] != "reviewer" {
+	if !ok || len(items) != 1 || items[0]["subagent_id"] != id || items[0]["subagent_type"] != "reviewer" || items[0]["model"] != "Pro" {
 		t.Fatalf("unexpected list result: %#v", listed)
 	}
 
@@ -206,18 +202,11 @@ func TestSubagentToolsFlow(t *testing.T) {
 	if closed["status"] != string(runtime.StatusClosed) {
 		t.Fatalf("unexpected close result: %#v", closed)
 	}
-	if _, err := byName["subagent_send"].Execute(context.Background(), ic, map[string]any{"subagent_id": id, "message": "after"}); !errors.Is(err, runtime.ErrClosed) {
-		t.Fatalf("send after close error = %v", err)
-	}
-	archived, err := byName["subagent_archive"].Execute(context.Background(), ic, map[string]any{"subagent_id": id})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if archived["archived"] != true || archived["project_id"] != "cafebabe" {
-		t.Fatalf("unexpected archive result: %#v", archived)
+	if _, err := byName["subagent_send"].Execute(context.Background(), ic, map[string]any{"subagent_id": id, "message": "after"}); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("send after close error = %v, want not found", err)
 	}
 	if _, err := byName["subagent_get"].Execute(context.Background(), ic, map[string]any{"subagent_id": id}); !errors.Is(err, runtime.ErrNotFound) {
-		t.Fatalf("archived subagent should be removed locally, got %v", err)
+		t.Fatalf("closed subagent should be removed locally, got %v", err)
 	}
 }
 

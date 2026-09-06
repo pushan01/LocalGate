@@ -67,6 +67,22 @@ printf '%%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://
 	}
 }
 
+func TestCreateRejectsModelSelection(t *testing.T) {
+	executable := writeFakeExecutable(t, "exit 99\n")
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Create(context.Background(), subagent.ProviderCreateRequest{
+		Instruction: "hello",
+		Options:     map[string]string{"model": "Pro"},
+	})
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorConfiguration || !strings.Contains(providerErr.Message, "model selection is not supported") {
+		t.Fatalf("unexpected model selection error: %#v", err)
+	}
+}
+
 func TestCreateSerializesConcurrentChatGPTConversationCreation(t *testing.T) {
 	dir := t.TempDir()
 	guard := filepath.Join(dir, "guard")
@@ -168,148 +184,6 @@ esac
 	}
 	if elapsed := time.Since(started); elapsed < 60*time.Millisecond {
 		t.Fatalf("send was not provider-paced: elapsed=%s", elapsed)
-	}
-}
-
-func TestArchiveMovesConversationToConfiguredProject(t *testing.T) {
-	dir := t.TempDir()
-	capture := filepath.Join(dir, "args.bin")
-	executable := writeFakeExecutable(t, fmt.Sprintf(`
-for arg in "$@"; do printf '%%s\0' "$arg"; done > %q
-printf '%%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","membershipProjectId":"g-p-cafebabe","verified":true,"url":"https://chatgpt.com/g/g-p-cafebabe-archive/c/conversation123","status":"Moved"}]'
-`, capture))
-	p, err := New(Config{Executable: executable, ArchiveProject: "g-p-cafebabe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := subagent.ProviderState{
-		ConversationID:  "conversation123",
-		ConversationURL: "https://chatgpt.com/g/g-p-deadbeef/c/conversation123",
-		ProjectID:       "deadbeef",
-		Hints:           map[string]string{"keep": "yes"},
-	}
-	next, err := p.Archive(context.Background(), state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.ConversationID != "conversation123" || next.ProjectID != "cafebabe" || next.Hints["keep"] != "yes" {
-		t.Fatalf("unexpected archive state: %#v", next)
-	}
-	if next.ConversationURL != "https://chatgpt.com/g/g-p-cafebabe-archive/c/conversation123" {
-		t.Fatalf("unexpected archive url: %q", next.ConversationURL)
-	}
-	args := readCapturedArgs(t, capture)
-	want := []string{"chatgpt", "project-move", "conversation123", "--project", "cafebabe", "--format", "json"}
-	if fmt.Sprint(args) != fmt.Sprint(want) {
-		t.Fatalf("args = %#v, want %#v", args, want)
-	}
-}
-
-func TestArchiveUsesBundledAdapterWithOpenCLIAsBrowserBackend(t *testing.T) {
-	mainExecutable := writeFakeExecutable(t, `
-printf '%s\n' 'main OpenCLI should not receive project-move' >&2
-exit 9
-`)
-	resolvedMain, err := resolveExecutable(mainExecutable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapterExecutable := writeFakeExecutable(t, fmt.Sprintf(`
-if [ "${LOCALGATE_BROWSER_EXECUTABLE:-}" != %q ]; then
-  printf 'unexpected browser backend: %%s\n' "${LOCALGATE_BROWSER_EXECUTABLE:-}" >&2
-  exit 8
-fi
-printf '%%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","membershipProjectId":"cafebabe","verified":true,"url":"https://chatgpt.com/g/g-p-cafebabe/c/conversation123","status":"Moved"}]'
-`, resolvedMain))
-	p, err := New(Config{
-		Executable:        mainExecutable,
-		AdapterExecutable: adapterExecutable,
-		ArchiveProject:    "cafebabe",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := p.Archive(context.Background(), subagent.ProviderState{
-		ConversationID: "conversation123",
-		ProjectID:      "deadbeef",
-	})
-	if err != nil {
-		var unknown *subagent.OutcomeUnknownError
-		if errors.As(err, &unknown) {
-			if providerErr, ok := unknown.Cause.(*ProviderError); ok {
-				t.Fatalf("archive via bundled adapter: %v stderr=%q", err, providerErr.Stderr)
-			}
-		}
-		t.Fatal(err)
-	}
-	if next.ProjectID != "cafebabe" {
-		t.Fatalf("unexpected archived state: %#v", next)
-	}
-}
-
-func TestArchiveWithoutConfiguredProjectSkipsMoveAndConfiguredMoveTreatsUncertainOutputAsOutcomeUnknown(t *testing.T) {
-	executable := writeFakeExecutable(t, `printf '%s\n' 'not-json'`)
-	p, err := New(Config{Executable: executable})
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := subagent.ProviderState{
-		ConversationID:  "conversation123",
-		ConversationURL: "https://chatgpt.com/g/g-p-deadbeef/c/conversation123",
-		ProjectID:       "deadbeef",
-		Hints:           map[string]string{"keep": "yes"},
-	}
-	unchanged, err := p.Archive(context.Background(), state)
-	if err != nil {
-		t.Fatalf("archive without archive_project should skip remote move: %v", err)
-	}
-	if unchanged.ConversationID != state.ConversationID || unchanged.ConversationURL != state.ConversationURL || unchanged.ProjectID != state.ProjectID || unchanged.Hints["keep"] != "yes" {
-		t.Fatalf("archive without archive_project changed provider state: %#v", unchanged)
-	}
-
-	p, err = New(Config{Executable: executable, ArchiveProject: "cafebabe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	next, err := p.Archive(context.Background(), state)
-	if !errors.Is(err, subagent.ErrOutcomeUnknown) {
-		t.Fatalf("malformed archive output should be outcome unknown, got %v", err)
-	}
-	if next.ConversationID != state.ConversationID || next.ProjectID != state.ProjectID {
-		t.Fatalf("uncertain archive should preserve prior mapping: %#v", next)
-	}
-}
-
-func TestArchiveRejectsUnverifiedProjectMove(t *testing.T) {
-	executable := writeFakeExecutable(t, `
-printf '%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","membershipProjectId":"deadbeef","verified":false,"url":"https://chatgpt.com/g/g-p-cafebabe-archive/c/conversation123","status":"Moved"}]'
-`)
-	p, err := New(Config{Executable: executable, ArchiveProject: "cafebabe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := subagent.ProviderState{ConversationID: "conversation123", ConversationURL: "https://chatgpt.com/c/conversation123", ProjectID: "deadbeef"}
-	next, err := p.Archive(context.Background(), state)
-	if !errors.Is(err, subagent.ErrOutcomeUnknown) {
-		t.Fatalf("Archive error = %v, want outcome unknown", err)
-	}
-	if next.ConversationID != state.ConversationID || next.ProjectID != state.ProjectID {
-		t.Fatalf("unverified archive changed provider state: %#v", next)
-	}
-}
-
-func TestArchiveRejectsVerifiedWrongMembership(t *testing.T) {
-	executable := writeFakeExecutable(t, `
-printf '%s\n' '[{"conversationId":"conversation123","projectId":"cafebabe","membershipProjectId":"deadbeef","verified":true,"url":"https://chatgpt.com/g/g-p-cafebabe-archive/c/conversation123","status":"Moved"}]'
-`)
-	p, err := New(Config{Executable: executable, ArchiveProject: "cafebabe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := subagent.ProviderState{ConversationID: "conversation123", ProjectID: "deadbeef"}
-	_, err = p.Archive(context.Background(), state)
-	if !errors.Is(err, subagent.ErrOutcomeUnknown) {
-		t.Fatalf("Archive error = %v, want outcome unknown", err)
 	}
 }
 

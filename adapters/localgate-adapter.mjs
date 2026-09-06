@@ -160,6 +160,12 @@ const snapshotScript = String.raw`
     .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
     .find((node) => node instanceof HTMLElement && isVisible(node)) || null;
 
+  const modelPicker = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .find((node) => node instanceof HTMLElement
+      && isVisible(node)
+      && /(?:open )?mode picker/i.test(clean(node.getAttribute('aria-label')))) || null;
+  const model = clean(modelPicker?.innerText || modelPicker?.textContent || '');
+
   const nodes = Array.from(document.querySelectorAll('.query-text, .model-response-text'))
     .filter((node) => node instanceof HTMLElement && isVisible(node))
     .sort((left, right) => {
@@ -281,6 +287,7 @@ const snapshotScript = String.raw`
     turns,
     composerHasText: !!(composer && clean(composer.innerText || composer.textContent || '')),
     canSend: !!composer,
+    model,
     generating,
     blocker,
   };
@@ -452,6 +459,104 @@ async function ensureGemini(url) {
   return snapshot;
 }
 
+function normalizeGeminiModelLabel(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[‐‑‒–—-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function stripGeminiModelVersion(value) {
+  return normalizeGeminiModelLabel(value).replace(/^\d+(?:\.\d+)*\s+/, '');
+}
+
+function geminiModelMatches(label, target) {
+  const normalizedTarget = normalizeGeminiModelLabel(target);
+  if (!normalizedTarget) return false;
+  const normalizedLabel = normalizeGeminiModelLabel(label);
+  return normalizedLabel === normalizedTarget || stripGeminiModelVersion(label) === normalizedTarget;
+}
+
+const openGeminiModelPickerScript = String.raw`
+(() => {
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const picker = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .find((node) => visible(node) && /(?:open )?mode picker/i.test(String(node.getAttribute('aria-label') || '').trim()));
+  if (!(picker instanceof HTMLElement)) return { ok: false, reason: 'Gemini model picker not found' };
+  picker.click();
+  return { ok: true };
+})()
+`;
+
+function chooseGeminiModelScript(targetModel) {
+  return String.raw`
+((requestedModel) => {
+  const visible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const clean = (value) => String(value || '').replace(/\u00a0/g, ' ').trim();
+  const normalize = (value) => clean(value).toLowerCase().replace(/[‐‑‒–—-]+/g, ' ').replace(/\s+/g, ' ');
+  const stripVersion = (value) => normalize(value).replace(/^\d+(?:\.\d+)*\s+/, '');
+  const target = normalize(requestedModel);
+  const rows = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"]'))
+    .filter(visible)
+    .map((node) => ({
+      node,
+      label: clean((node.innerText || node.textContent || '').split(/\n/)[0]),
+    }))
+    .filter((row) => row.label);
+  const matches = rows.filter((row) => normalize(row.label) === target || stripVersion(row.label) === target);
+  if (matches.length !== 1) {
+    return {
+      ok: false,
+      reason: matches.length === 0 ? 'Gemini model was not found in the mode picker' : 'Gemini model selector is ambiguous',
+      available: rows.map((row) => row.label),
+    };
+  }
+  matches[0].node.click();
+  return { ok: true, selected: matches[0].label };
+})(${JSON.stringify(targetModel)})
+`;
+}
+
+async function selectGeminiModel(model, currentModel) {
+  const requested = String(model || '').trim();
+  if (!requested) return String(currentModel || '').trim();
+  if (geminiModelMatches(currentModel, requested)) return String(currentModel || '').trim();
+
+  const opened = browserEval(openGeminiModelPickerScript);
+  if (!opened || opened.ok !== true) {
+    throw new Error(opened?.reason || 'failed to open Gemini model picker');
+  }
+  await sleep(250);
+
+  const selected = browserEval(chooseGeminiModelScript(requested));
+  if (!selected || selected.ok !== true) {
+    const available = Array.isArray(selected?.available) && selected.available.length > 0
+      ? `; available models: ${selected.available.join(', ')}`
+      : '';
+    throw new Error(`${selected?.reason || 'failed to choose Gemini model'}${available}`);
+  }
+  await sleep(300);
+
+  const verified = readSnapshot();
+  if (!geminiModelMatches(verified.model, requested)) {
+    throw new Error(`Gemini model selection could not be verified: requested ${requested}, observed ${verified.model || '<unknown>'}`);
+  }
+  return String(verified.model || selected.selected || '').trim();
+}
+
 async function submitGemini(argv) {
   const { positional, flags } = parseArgs(argv);
   const prompt = String(positional[0] || '').trim();
@@ -459,7 +564,9 @@ async function submitGemini(argv) {
 
   const fresh = boolFlag(flags.get('new'));
   const conversation = String(flags.get('conversation') || '').trim();
+  const requestedModel = String(flags.get('model') || '').trim();
   if (fresh && conversation) throw new Error('Gemini --new cannot be combined with --conversation');
+  if (requestedModel && !fresh) throw new Error('Gemini --model requires --new true');
   const timeoutSeconds = intFlag(flags.get('submission-timeout'), DEFAULT_SUBMISSION_TIMEOUT_SECONDS);
   if (timeoutSeconds < 1 || timeoutSeconds > 60) throw new Error('Gemini submission timeout must be between 1 and 60 seconds');
 
@@ -480,6 +587,8 @@ async function submitGemini(argv) {
   }
 
   if (!before.canSend) throw new Error('Gemini sign in required or composer unavailable');
+  const selectedModel = await selectGeminiModel(requestedModel, before.model);
+  if (requestedModel) before = readSnapshot();
   const inserted = browserEval(insertPromptScript(prompt));
   if (!inserted || inserted.ok !== true) {
     throw new Error(inserted?.reason || 'failed to insert prompt into Gemini composer');
@@ -528,6 +637,7 @@ async function submitGemini(argv) {
     Status: 'Submitted',
     ConversationId: id,
     ConversationUrl: url || `${GEMINI_APP_URL}/${id}`,
+    Model: selectedModel || String(current.model || '').trim(),
     Generating: !!current.generating,
   })}\n`);
 }
@@ -828,54 +938,6 @@ async function verifyChatGPTProjectMembership(conversationID, projectID) {
   return '';
 }
 
-async function moveChatGPTProject(argv) {
-  const { positional, flags } = parseArgs(argv);
-  const conversationID = extractChatGPTConversationID(positional[0]);
-  if (!conversationID) throw new Error('ChatGPT project-move conversation id is required');
-  const projectID = normalizeChatGPTProjectID(flags.get('project'));
-  if (!projectID) throw new Error('ChatGPT project-move target project is invalid');
-  const targetURL = `https://chatgpt.com/g/g-p-${projectID}/c/${conversationID}`;
-
-  await openChatGPTConversation(conversationID);
-  const existingProjectID = observeChatGPTConversationProjectFromNetwork(conversationID, '10s');
-  if (existingProjectID === projectID) {
-    process.stdout.write(`${JSON.stringify({
-      conversationId: conversationID,
-      projectId: projectID,
-      membershipProjectId: existingProjectID,
-      verified: true,
-      url: targetURL,
-      status: 'Already moved',
-    })}\n`);
-    return;
-  }
-
-  const opened = browserEval(openChatGPTOptionsScript);
-  if (!opened?.found) throw new Error('Could not open the ChatGPT conversation options menu');
-  await sleep(300);
-  const submenu = browserEval(openChatGPTProjectSubmenuScript);
-  if (!submenu?.found) throw new Error('Could not find the ChatGPT project-move submenu');
-  await sleep(300);
-  const selected = browserEval(selectChatGPTProjectScript(projectID));
-  if (!selected?.found) {
-    throw new Error(`Could not find target ChatGPT project g-p-${projectID} in the move menu`);
-  }
-  await sleep(700);
-
-  const membershipProjectID = await verifyChatGPTProjectMembership(conversationID, projectID);
-  if (membershipProjectID !== projectID) {
-    throw new Error('ChatGPT project move could not be verified; remote outcome may be unknown');
-  }
-  process.stdout.write(`${JSON.stringify({
-    conversationId: conversationID,
-    projectId: projectID,
-    membershipProjectId: membershipProjectID,
-    verified: true,
-    url: targetURL,
-    status: 'Moved',
-  })}\n`);
-}
-
 const chatGPTInspectScript = String.raw`
 (() => {
   /* LOCALGATE_CHATGPT_INSPECT */
@@ -959,7 +1021,6 @@ async function main() {
   }
   if (site === 'chatgpt') {
     if (command === 'inspect') return inspectChatGPT(rest);
-    if (command === 'project-move') return moveChatGPTProject(rest);
     throw new Error(`unsupported LocalGate ChatGPT adapter command ${command || '<empty>'}`);
   }
   throw new Error(`unsupported LocalGate adapter site ${site || '<empty>'}`);

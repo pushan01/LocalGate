@@ -10,8 +10,6 @@ var ErrOutcomeUnknown = errors.New("subagent message outcome unknown")
 var (
 	ErrBusy                 error = busyError{}
 	ErrNotReady             error = notReadyError{}
-	ErrArchiveBusy          error = archiveBusyError{}
-	ErrArchiveUnsupported         = errors.New("subagent provider does not support archive")
 	ErrConversationConflict       = errors.New("subagent conversation is already owned by another local subagent")
 )
 
@@ -52,13 +50,6 @@ func (notReadyError) Error() string {
 	return "subagent is not ready; poll or wait before sending another message"
 }
 func (notReadyError) ErrorCode() string { return "subagent_not_ready" }
-
-type archiveBusyError struct{}
-
-func (archiveBusyError) Error() string {
-	return "subagent is still generating; retry archive after the current turn finishes"
-}
-func (archiveBusyError) ErrorCode() string { return "subagent_archive_busy" }
 
 type ConversationConflictError struct {
 	ConversationID string

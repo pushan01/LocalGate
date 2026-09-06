@@ -80,7 +80,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 - `localgate-notification`：显式用户请求时使用 `send_notification`。
 - `localgate-mcp-relay`：以 `server__tool` 命名的下游 MCP capability，通过 `invoke_tool` 调用，不再铺平到顶层 MCP。
 
-`subagent_spawn` 返回稳定的 `sg_*` ID，并在首轮消息成功提交后立即返回 `busy`，不会等待 assistant 完整回复。之后用 `subagent_poll` 非阻塞检查，或在确实需要结果时用 `subagent_wait`；状态到 `ready` 后再使用 `subagent_send`。这些调用在普通 MCP 模式下都先按 `localgate-subagents` 的说明取 schema，再经 `invoke_tool` 执行。
+`subagent_spawn` 返回稳定的 `sg_*` ID，并在首轮消息成功提交后立即返回 `busy`，不会等待 assistant 完整回复。需要 Gemini 特定模型时可在 spawn 传 `model`；具体支持的匹配规则与 Provider 限制以 `localgate-subagents` 为准。之后用 `subagent_poll` 非阻塞检查，或在确实需要结果时用 `subagent_wait`；状态到 `ready` 后再使用 `subagent_send`。这些调用在普通 MCP 模式下都先按 `localgate-subagents` 的说明取 schema，再经 `invoke_tool` 执行。
 
 `deploy_tool` 支持 `type=static` 和 `type=dynamic`。动态部署必须提供 `runtime.argv`，不经过 shell；应用应监听 LocalGate 注入的 `HOST` 和 `PORT`。具体生命周期顺序以 `localgate-deployment` Builtin Skill 为准。
 
@@ -156,7 +156,7 @@ LocalGate 通过具名工具暴露能力，而不是直接暴露内部实现。�
 11. 不要根据 `busy` 持续时间或 `updated_at` 不变化就判断会话卡死；先看 `last_observed_at`、`phase`、`next_action` 并调用 get/poll 对账。仅为清除 stale busy 而 close + respawn 会制造重复 provider conversation，应禁止。
 11. 同一个委派线程到 `ready` 后用 `subagent_send` 复用 `subagent_id`；`busy` 时不要继续 send，也不要通过新 spawn 制造重复对话。
 12. 多个互不依赖的 delegated tasks 可以使用不同 subagent 并行。
-13. 需要删除 LocalGate 子 Agent 但保留 ChatGPT 历史时优先用 `subagent_archive`。若返回 `subagent_archive_busy`，稍后重试；若返回 `subagent_outcome_unknown`，不要先删本地映射或手工重建，先确认远端 Project 归属再显式重试。
+13. 需要结束 LocalGate 子 Agent 时使用 `subagent_close`。成功后本地 `sg_*` 映射会被删除并释放 agent 名额，Provider 侧会话历史保留。
 14. 若返回 `subagent_conversation_conflict`，说明两个本地身份试图绑定同一 Provider conversation；这是隔离故障，不要继续向冲突 ID 发消息，也不要用 close/re-spawn 掩盖。先保留诊断信息并修复/清理重复映射。
 
 ## `run_command` 使用指引

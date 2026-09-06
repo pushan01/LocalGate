@@ -83,7 +83,6 @@ type Config struct {
 	Timeout           time.Duration
 	SubmitInterval    time.Duration
 	DefaultProject    string
-	ArchiveProject    string
 }
 
 type Provider struct {
@@ -92,7 +91,6 @@ type Provider struct {
 	timeout           time.Duration
 	submitInterval    time.Duration
 	defaultProject    string
-	archiveProject    string
 	surfaceSerial     chan struct{}
 	submitSerial      chan struct{}
 	lastSubmitDoneAt  time.Time
@@ -121,20 +119,12 @@ func New(cfg Config) (*Provider, error) {
 			return nil, &ProviderError{Kind: ErrorConfiguration, Message: err.Error(), Cause: err}
 		}
 	}
-	archiveProjectID := ""
-	if strings.TrimSpace(cfg.ArchiveProject) != "" {
-		archiveProjectID, err = normalizeProjectID(cfg.ArchiveProject)
-		if err != nil {
-			return nil, &ProviderError{Kind: ErrorConfiguration, Message: err.Error(), Cause: err}
-		}
-	}
 	return &Provider{
 		executable:        executable,
 		adapterExecutable: adapterExecutable,
 		timeout:           timeout,
 		submitInterval:    cfg.SubmitInterval,
 		defaultProject:    projectID,
-		archiveProject:    archiveProjectID,
 		surfaceSerial:     make(chan struct{}, 1),
 		submitSerial:      make(chan struct{}, 1),
 	}, nil
@@ -145,6 +135,11 @@ func (p *Provider) Create(ctx context.Context, req subagent.ProviderCreateReques
 	if prompt == "" {
 		return subagent.ProviderState{}, &ProviderError{
 			Kind: ErrorConfiguration, Message: "opencli ChatGPT subagent instruction is required",
+		}
+	}
+	if model := strings.TrimSpace(req.Options["model"]); model != "" {
+		return subagent.ProviderState{}, &ProviderError{
+			Kind: ErrorConfiguration, Message: "opencli ChatGPT subagent model selection is not supported",
 		}
 	}
 	projectID := p.defaultProject
@@ -410,73 +405,9 @@ func (p *Provider) Recover(_ context.Context, state subagent.ProviderState) (sub
 }
 
 func (p *Provider) Close(context.Context, subagent.ProviderState) error {
-	// Closing a LocalGate subagent is intentionally logical-only. The ChatGPT
-	// conversation remains in the user's Project/history unless explicitly
-	// managed by a future provider-specific lifecycle operation.
+	// Closing removes only LocalGate's local mapping. The ChatGPT conversation
+	// remains in the user's Project/history.
 	return nil
-}
-
-func (p *Provider) Archive(ctx context.Context, state subagent.ProviderState) (subagent.ProviderState, error) {
-	conversationID := strings.TrimSpace(state.ConversationID)
-	if conversationID == "" {
-		return state, &ProviderError{Kind: ErrorConfiguration, Message: "opencli ChatGPT conversation id is required"}
-	}
-	if p.archiveProject == "" {
-		// archive_project is optional. Without one, LocalGate archive is a
-		// local lifecycle operation only: keep the remote conversation where it
-		// already is and let Manager remove the sg_* mapping after its preflight
-		// Poll confirms the current turn is no longer generating.
-		return cloneState(state), nil
-	}
-	payload, err := p.run(ctx, []string{
-		"chatgpt", "project-move", conversationID,
-		"--project", p.archiveProject,
-		"--format", "json",
-	}, true)
-	if err != nil {
-		if mayHaveSubmitted(err) {
-			return state, subagent.NewOutcomeUnknownError(err)
-		}
-		return state, err
-	}
-	row, err := parseProjectMoveRow(payload)
-	if err != nil {
-		return state, subagent.NewOutcomeUnknownError(&ProviderError{
-			Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err, MayHaveSubmitted: true,
-		})
-	}
-	if strings.TrimSpace(row.ConversationID) != conversationID {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move conversationId does not match requested conversation", MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	projectID, normalizeErr := normalizeProjectID(row.ProjectID)
-	if normalizeErr != nil || projectID != p.archiveProject {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move projectId does not match archive_project", Cause: normalizeErr, MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	if !row.Verified {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move did not provide verified Project membership", MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	membershipProjectID, membershipErr := normalizeProjectID(row.MembershipProjectID)
-	if membershipErr != nil || membershipProjectID != p.archiveProject {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move membershipProjectId does not match archive_project", Cause: membershipErr, MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	conversationURL := strings.TrimSpace(row.URL)
-	if conversationURL == "" {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move JSON is missing url", MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	urlConversationID, urlProjectID, parseErr := parseConversationURL(conversationURL)
-	if parseErr != nil || urlConversationID != conversationID || urlProjectID != p.archiveProject {
-		err := &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli ChatGPT project-move returned an invalid archive conversation URL", Cause: parseErr, MayHaveSubmitted: true}
-		return state, subagent.NewOutcomeUnknownError(err)
-	}
-	next := cloneState(state)
-	next.ConversationURL = conversationURL
-	next.ProjectID = p.archiveProject
-	return next, nil
 }
 
 type askRow struct {
@@ -489,15 +420,6 @@ type askRow struct {
 type sendRow struct {
 	Status       string `json:"Status"`
 	InjectedText string `json:"InjectedText"`
-}
-
-type projectMoveRow struct {
-	ConversationID      string `json:"conversationId"`
-	ProjectID           string `json:"projectId"`
-	MembershipProjectID string `json:"membershipProjectId"`
-	Verified            bool   `json:"verified"`
-	URL                 string `json:"url"`
-	Status              string `json:"status"`
 }
 
 type detailRow struct {
@@ -537,7 +459,7 @@ func (p *Provider) run(ctx context.Context, args []string, maySubmit bool) ([]by
 	stdout.max = maxCapturedBytes
 	stderr.max = 256 << 10
 	executable := p.executable
-	useBundledAdapter := len(args) >= 2 && args[0] == "chatgpt" && (args[1] == "project-move" || args[1] == "inspect") && p.adapterExecutable != ""
+	useBundledAdapter := len(args) >= 2 && args[0] == "chatgpt" && args[1] == "inspect" && p.adapterExecutable != ""
 	if useBundledAdapter {
 		executable = p.adapterExecutable
 	}
@@ -646,28 +568,6 @@ func parseSendRow(payload []byte) (sendRow, error) {
 	var row sendRow
 	if err := json.Unmarshal(payload, &row); err != nil {
 		return sendRow{}, fmt.Errorf("decode opencli ChatGPT send JSON: %w", err)
-	}
-	return row, nil
-}
-
-func parseProjectMoveRow(payload []byte) (projectMoveRow, error) {
-	payload = bytes.TrimSpace(payload)
-	if len(payload) == 0 {
-		return projectMoveRow{}, errors.New("opencli ChatGPT project-move returned empty JSON output")
-	}
-	var rows []projectMoveRow
-	if payload[0] == '[' {
-		if err := json.Unmarshal(payload, &rows); err != nil {
-			return projectMoveRow{}, fmt.Errorf("decode opencli ChatGPT project-move JSON: %w", err)
-		}
-		if len(rows) != 1 {
-			return projectMoveRow{}, fmt.Errorf("opencli ChatGPT project-move returned %d rows, expected 1", len(rows))
-		}
-		return rows[0], nil
-	}
-	var row projectMoveRow
-	if err := json.Unmarshal(payload, &row); err != nil {
-		return projectMoveRow{}, fmt.Errorf("decode opencli ChatGPT project-move JSON: %w", err)
 	}
 	return row, nil
 }

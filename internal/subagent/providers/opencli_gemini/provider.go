@@ -23,6 +23,7 @@ import (
 
 const (
 	Name                      = "opencli_gemini"
+	defaultModel              = "Pro"
 	defaultTimeout            = 120 * time.Second
 	maxCapturedBytes          = 8 << 20
 	pendingFingerprintHint    = "opencli_gemini.pending_message_fingerprint_v1"
@@ -78,6 +79,7 @@ type Config struct {
 	Executable        string
 	BrowserExecutable string
 	ArtifactDir       string
+	DefaultModel      string
 	Timeout           time.Duration
 	SubmitInterval    time.Duration
 }
@@ -86,6 +88,7 @@ type Provider struct {
 	executable        string
 	browserExecutable string
 	artifactDir       string
+	defaultModel      string
 	timeout           time.Duration
 	submitInterval    time.Duration
 	surfaceSerial     chan struct{}
@@ -112,10 +115,15 @@ func New(cfg Config) (*Provider, error) {
 			return nil, &ProviderError{Kind: ErrorConfiguration, Message: "create Gemini artifact directory", Cause: err}
 		}
 	}
+	configuredDefaultModel := strings.TrimSpace(cfg.DefaultModel)
+	if configuredDefaultModel == "" {
+		configuredDefaultModel = defaultModel
+	}
 	return &Provider{
 		executable:        executable,
 		browserExecutable: strings.TrimSpace(cfg.BrowserExecutable),
 		artifactDir:       artifactDir,
+		defaultModel:      configuredDefaultModel,
 		timeout:           timeout,
 		submitInterval:    cfg.SubmitInterval,
 		surfaceSerial:     make(chan struct{}, 1),
@@ -128,13 +136,20 @@ func (p *Provider) Create(ctx context.Context, req subagent.ProviderCreateReques
 	if prompt == "" {
 		return subagent.ProviderState{}, &ProviderError{Kind: ErrorConfiguration, Message: "opencli Gemini subagent instruction is required"}
 	}
-	row, err := p.submit(ctx, "", prompt, true)
+	model := strings.TrimSpace(req.Options["model"])
+	if model == "" {
+		model = p.defaultModel
+	}
+	row, err := p.submit(ctx, "", prompt, true, model)
 	if err != nil {
 		return subagent.ProviderState{}, err
 	}
 	state, err := stateFromSubmitRow(row)
 	if err != nil {
 		return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(err)
+	}
+	if strings.TrimSpace(state.Model) == "" {
+		state.Model = model
 	}
 	state.Hints = withPendingMarker(state.Hints, prompt)
 	return state, nil
@@ -151,7 +166,7 @@ func (p *Provider) Send(ctx context.Context, state subagent.ProviderState, messa
 	}
 	pendingState := cloneState(state)
 	pendingState.Hints = withPendingMarker(pendingState.Hints, prompt)
-	row, err := p.submit(ctx, conversationID, prompt, false)
+	row, err := p.submit(ctx, conversationID, prompt, false, "")
 	if err != nil {
 		if errors.Is(err, subagent.ErrOutcomeUnknown) {
 			return pendingState, err
@@ -167,6 +182,9 @@ func (p *Provider) Send(ctx context.Context, state subagent.ProviderState, messa
 		return pendingState, subagent.NewOutcomeUnknownError(err)
 	}
 	pendingState.ConversationURL = strings.TrimSpace(row.ConversationURL)
+	if model := strings.TrimSpace(row.Model); model != "" {
+		pendingState.Model = model
+	}
 	return pendingState, nil
 }
 
@@ -212,10 +230,13 @@ func (p *Provider) Close(context.Context, subagent.ProviderState) error {
 	return nil
 }
 
-func (p *Provider) submit(ctx context.Context, conversationID, prompt string, fresh bool) (submitRow, error) {
+func (p *Provider) submit(ctx context.Context, conversationID, prompt string, fresh bool, model string) (submitRow, error) {
 	args := []string{"gemini", "submit", prompt}
 	if fresh {
 		args = append(args, "--new", "true")
+		if model = strings.TrimSpace(model); model != "" {
+			args = append(args, "--model", model)
+		}
 	} else {
 		args = append(args, "--conversation", conversationID)
 	}
@@ -253,6 +274,7 @@ type submitRow struct {
 	Status          string `json:"Status"`
 	ConversationID  string `json:"ConversationId"`
 	ConversationURL string `json:"ConversationUrl"`
+	Model           string `json:"Model"`
 	Generating      bool   `json:"Generating"`
 }
 
@@ -279,7 +301,7 @@ func stateFromSubmitRow(row submitRow) (subagent.ProviderState, error) {
 	if url == "" || !strings.Contains(url, "/app/"+id) {
 		return subagent.ProviderState{}, &ProviderError{Kind: ErrorInvalidOutput, Message: "opencli Gemini submit JSON has an invalid ConversationUrl", MayHaveSubmitted: true}
 	}
-	return subagent.ProviderState{ConversationID: id, ConversationURL: url}, nil
+	return subagent.ProviderState{ConversationID: id, ConversationURL: url, Model: strings.TrimSpace(row.Model)}, nil
 }
 
 func parseSubmitRow(payload []byte) (submitRow, error) {

@@ -15,6 +15,7 @@ const (
 	maxNameBytes         = 256
 	maxSubagentTypeBytes = 128
 	maxProviderBytes     = 128
+	maxModelBytes        = 128
 	maxProjectBytes      = 2048
 	maxInstructionBytes  = 256 << 10
 	maxMessageBytes      = 256 << 10
@@ -28,7 +29,6 @@ func NewTools(manager *runtime.Manager) []core.Tool {
 		WaitTool{manager: manager},
 		GetTool{manager: manager},
 		ListTool{manager: manager},
-		ArchiveTool{manager: manager},
 		CloseTool{manager: manager},
 	}
 }
@@ -55,6 +55,10 @@ func (SpawnTool) Schema() any {
 			"type":        "string",
 			"description": "Optional provider name. Omit to use LocalGate's configured default provider.",
 		},
+		"model": map[string]any{
+			"type":        "string",
+			"description": "Optional provider-specific model or mode for the new subagent. Currently supported by opencli_gemini; accepts the visible Gemini mode label or its unversioned name, such as Pro, Flash, Flash-Lite, or Extended thinking.",
+		},
 		"instruction": map[string]any{
 			"type":        "string",
 			"description": "Initial instruction sent as the first provider conversation turn.",
@@ -72,6 +76,7 @@ func (SpawnTool) OutputSchema() any {
 		"name":          map[string]any{"type": "string"},
 		"subagent_type": map[string]any{"type": "string"},
 		"provider":      map[string]any{"type": "string"},
+		"model":         map[string]any{"type": "string"},
 		"status":        map[string]any{"type": "string"},
 		"accepted":      map[string]any{"type": "boolean"},
 	}, []string{"subagent_id", "provider", "status", "accepted"})
@@ -99,13 +104,23 @@ func (t SpawnTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 	if err := optionalText("provider", provider, maxProviderBytes); err != nil {
 		return nil, err
 	}
+	model := strings.TrimSpace(stringArg(args, "model"))
+	if err := optionalText("model", model, maxModelBytes); err != nil {
+		return nil, err
+	}
 	project := strings.TrimSpace(stringArg(args, "project"))
 	if err := optionalText("project", project, maxProjectBytes); err != nil {
 		return nil, err
 	}
 	options := map[string]string(nil)
+	if model != "" {
+		options = map[string]string{"model": model}
+	}
 	if project != "" {
-		options = map[string]string{"project": project}
+		if options == nil {
+			options = map[string]string{}
+		}
+		options["project"] = project
 	}
 	result, err := t.manager.Create(ctx, runtime.CreateRequest{
 		Name:         name,
@@ -122,6 +137,7 @@ func (t SpawnTool) Execute(ctx context.Context, ic core.InvokeContext, args map[
 		"name":          result.Subagent.Name,
 		"subagent_type": result.Subagent.SubagentType,
 		"provider":      result.Subagent.Provider,
+		"model":         result.Subagent.ProviderState.Model,
 		"status":        string(result.Subagent.Status),
 		"accepted":      true,
 	}, nil
@@ -355,64 +371,10 @@ func (t ListTool) Execute(_ context.Context, ic core.InvokeContext, _ map[string
 
 type CloseTool struct{ manager *runtime.Manager }
 
-type ArchiveTool struct{ manager *runtime.Manager }
-
-func (ArchiveTool) Name() string { return "subagent_archive" }
-
-func (ArchiveTool) Description() string {
-	return "Archive and delete a local sg_* mapping after confirming its current remote turn is finished. If archive_project is configured, first move and verify the backing conversation there; if it is empty, leave the remote conversation where it is."
-}
-
-func (ArchiveTool) Schema() any {
-	return objectSchema(map[string]any{
-		"subagent_id": map[string]any{"type": "string", "description": "Stable sg_* id to archive and remove locally."},
-	}, []string{"subagent_id"})
-}
-
-func (ArchiveTool) OutputSchema() any {
-	return objectSchema(map[string]any{
-		"subagent_id":      map[string]any{"type": "string"},
-		"archived":         map[string]any{"type": "boolean"},
-		"project_id":       map[string]any{"type": "string"},
-		"artifacts":        artifactArraySchema(),
-		"conversation_url": map[string]any{"type": "string"},
-	}, []string{"subagent_id", "archived", "project_id", "conversation_url"})
-}
-
-func (ArchiveTool) ToolAnnotations() map[string]any {
-	return map[string]any{
-		"readOnlyHint":    false,
-		"destructiveHint": true,
-		"idempotentHint":  true,
-		"openWorldHint":   true,
-	}
-}
-
-func (t ArchiveTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
-	if err := requireManager(t.manager); err != nil {
-		return nil, err
-	}
-	id := strings.TrimSpace(stringArg(args, "subagent_id"))
-	if err := requireText("subagent_id", id, 128); err != nil {
-		return nil, err
-	}
-	agent, err := t.manager.Archive(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"subagent_id":      id,
-		"archived":         true,
-		"project_id":       agent.ProviderState.ProjectID,
-		"artifacts":        artifactMaps(agent.Artifacts),
-		"conversation_url": agent.ProviderState.ConversationURL,
-	}, nil
-}
-
 func (CloseTool) Name() string { return "subagent_close" }
 
 func (CloseTool) Description() string {
-	return "Logically close one LocalGate subagent so it no longer accepts messages. This does not delete the backing ChatGPT conversation or Project history."
+	return "Close one LocalGate subagent and delete its local sg_* mapping. This frees the LocalGate agent slot and does not delete the backing provider conversation or Project history."
 }
 
 func (CloseTool) Schema() any {
@@ -432,7 +394,7 @@ func (CloseTool) ToolAnnotations() map[string]any {
 	return map[string]any{
 		"readOnlyHint":    false,
 		"destructiveHint": true,
-		"idempotentHint":  true,
+		"idempotentHint":  false,
 		"openWorldHint":   true,
 	}
 }
@@ -462,6 +424,7 @@ func agentMap(agent runtime.Subagent) map[string]any {
 		"conversation_id":  agent.ProviderState.ConversationID,
 		"conversation_url": agent.ProviderState.ConversationURL,
 		"project_id":       agent.ProviderState.ProjectID,
+		"model":            agent.ProviderState.Model,
 		"artifacts":        artifactMaps(agent.Artifacts),
 		"last_error":       agent.LastError,
 		"last_error_code":  agent.LastErrorCode,
@@ -483,6 +446,7 @@ func agentOutputSchema() map[string]any {
 		"conversation_id":  map[string]any{"type": "string"},
 		"conversation_url": map[string]any{"type": "string"},
 		"project_id":       map[string]any{"type": "string"},
+		"model":            map[string]any{"type": "string"},
 		"artifacts":        artifactArraySchema(),
 		"last_error":       map[string]any{"type": "string"},
 		"last_error_code":  map[string]any{"type": "string"},

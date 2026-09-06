@@ -110,6 +110,38 @@ func TestNormalMCPExposesStableNineToolSurface(t *testing.T) {
 	}
 }
 
+func TestDirectReadOnlyToolsDeclareReadOnlyHint(t *testing.T) {
+	root := t.TempDir()
+	s := newTestServerWithConfig(t, config.Config{
+		LogStore: t.TempDir(),
+		HTTP:     config.HTTP{BaseURL: "http://127.0.0.1:8000"},
+		FileExports: config.FileExports{
+			Enabled:           true,
+			BaseURL:           "http://127.0.0.1:8000",
+			DefaultTTLSeconds: 300,
+			MaxTTLSeconds:     600,
+			MaxFileBytes:      1 << 20,
+		},
+		Root: config.Root{Path: root},
+	})
+
+	for _, name := range []string{
+		"get_startup_instructions",
+		"get_skill",
+		"get_tool_schema",
+		"read_file",
+		"export_file",
+	} {
+		registered := s.impl.ListTools()[name]
+		if registered == nil {
+			t.Fatalf("read-only tool %q not registered", name)
+		}
+		if registered.Tool.Annotations.ReadOnlyHint == nil || !*registered.Tool.Annotations.ReadOnlyHint {
+			t.Fatalf("expected %s readOnlyHint=true, got %#v", name, registered.Tool.Annotations)
+		}
+	}
+}
+
 func TestSubagentSpawnProgressivelyInvokableInMCPGo(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "opencli-fake")
@@ -127,7 +159,7 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	cfg.Subagents.Providers.OpenCLIChatGPT.DefaultProject = "deadbeef"
 	cfg.Root = config.Root{Path: root}
 	s := newTestServerWithConfig(t, cfg)
-	if s.impl.ListTools()["subagent_spawn"] != nil || s.impl.ListTools()["subagent_send"] != nil || s.impl.ListTools()["subagent_poll"] != nil || s.impl.ListTools()["subagent_wait"] != nil || s.impl.ListTools()["subagent_archive"] != nil {
+	if s.impl.ListTools()["subagent_spawn"] != nil || s.impl.ListTools()["subagent_send"] != nil || s.impl.ListTools()["subagent_poll"] != nil || s.impl.ListTools()["subagent_wait"] != nil {
 		t.Fatalf("subagent tools should not be directly MCP-exposed: %#v", s.impl.ListTools())
 	}
 	if s.impl.ListTools()["invoke_tool"] == nil {
