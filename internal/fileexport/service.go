@@ -7,10 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"io"
-	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -62,53 +59,19 @@ type Service struct {
 	now        func() time.Time
 }
 
-// MaxInlineImageBytes bounds MCP image content. Larger images still have a
-// resource_link and can be downloaded without sending base64 to the model.
+// MaxInlineImageBytes bounds MCP image content. Larger originals may be
+// downscaled for preview while remaining available through a resource_link.
 const MaxInlineImageBytes int64 = 1 << 20
 
-// ImagePreview returns an MCP-ready image only after revalidating the exact
-// bytes behind a live export grant. It deliberately does not expose local paths
-// and never materializes arbitrary files or SVG/HTML in an image content block.
+// ImagePreview returns a bounded MCP image (original or JPEG thumbnail) after
+// revalidating the bytes behind a live export grant. It never exposes local
+// paths or SVG/HTML as image content.
 func (s *Service) ImagePreview(id string) (mimeType, base64Data string, ok bool) {
 	grant, err := s.get(id)
-	if err != nil || grant.Size <= 0 || grant.Size > MaxInlineImageBytes {
-		return "", "", false
-	}
-	mimeType = strings.ToLower(strings.TrimSpace(strings.SplitN(grant.MIMEType, ";", 2)[0]))
-	switch mimeType {
-	case "image/png", "image/jpeg", "image/webp":
-	default:
-		return "", "", false
-	}
-	info, err := os.Lstat(grant.Path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() != grant.Size || info.ModTime().UnixNano() != grant.ModTimeUnixNano {
-		return "", "", false
-	}
-	f, err := os.Open(grant.Path)
 	if err != nil {
 		return "", "", false
 	}
-	defer f.Close()
-	before, err := f.Stat()
-	if err != nil || !before.Mode().IsRegular() || before.Size() != grant.Size || before.ModTime().UnixNano() != grant.ModTimeUnixNano {
-		return "", "", false
-	}
-	payload, err := io.ReadAll(io.LimitReader(f, MaxInlineImageBytes+1))
-	if err != nil || int64(len(payload)) != grant.Size {
-		return "", "", false
-	}
-	after, err := f.Stat()
-	if err != nil || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return "", "", false
-	}
-	if http.DetectContentType(payload) != mimeType {
-		return "", "", false
-	}
-	digest := sha256.Sum256(payload)
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), grant.SHA256) {
-		return "", "", false
-	}
-	return mimeType, base64.StdEncoding.EncodeToString(payload), true
+	return previewImageGrant(grant)
 }
 
 func NewService(opts Options) (*Service, error) {

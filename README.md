@@ -504,7 +504,7 @@ GPT 应用可以先调用：
 
 ## 把本地文件返回给 ChatGPT / Agent
 
-LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回给 ChatGPT 或其他支持 MCP 的 Agent 宿主。默认签发短期 HTTPS 下载资源；对于校验成功且不超过 1 MiB 的 PNG、JPEG 和 WebP 图片，MCP 响应还会附加标准 `image`（Base64）内容，供支持图片结果的客户端直接预览。较大的图片和 PDF、ZIP、代码等非图片文件不会被塞入 MCP 上下文，仍走下载链接。
+LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回给 ChatGPT 或其他支持 MCP 的 Agent 宿主。默认签发短期 HTTPS 下载资源；对于校验成功且不超过 1 MiB 的 PNG、JPEG 和 WebP 图片，MCP 响应还会附加标准 `image`（Base64）内容，供支持图片结果的客户端直接预览。超过 1 MiB 的 PNG/JPEG，在原件不超过 16 MiB、像素数不超过 1600 万且长宽均不超过 8192 的情况下，会自动生成最长边不超过 960 像素、不超过 1 MiB 的 JPEG 缩略图；下载链接仍指向未修改的原件。大 WebP、超限图片、PDF、ZIP、代码等仅返回下载链接，不会将大体积原件放入 MCP 上下文。
 
 ```json
 {
@@ -525,7 +525,7 @@ LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回�
 }
 ```
 
-工具结果还会提供一个带签名下载 URL 的普通文本块，作为客户端不显示 `resource_link` 时的后备。如果图片符合上述内联条件，还会返回：
+工具结果还会提供一个带签名下载 URL 的普通文本块，作为客户端不显示 `resource_link` 时的后备。如果图片符合上述内联或缩略图条件，还会返回（大图的 `mimeType` 为 `image/jpeg`）：
 
 ```json
 {
@@ -555,7 +555,7 @@ file_exports:
 
 - 只允许导出配置 root 内的普通文件，拒绝目录、符号链接和特殊文件。
 - 默认最大 100 MiB，默认有效期 5 分钟，最长 10 分钟。
-- 签发和下载时都会重新校验 root policy、denylist、文件大小、修改时间和 SHA-256；图片内联前还会验证 MIME 签名与内容哈希。
+- 签发和下载时都会重新校验 root policy、denylist、文件大小、修改时间和 SHA-256；图片内联前还会验证 MIME 签名与内容哈希。PNG/JPEG 还会验证完整解码，缩略图处理限制读入大小、图片尺寸与像素总数，异常时回退为纯下载资源。
 - 文件在签发后发生变化时，下载返回 `409 export_source_changed`。
 - 签名 URL 不写入持久化 Task 结果、工具事件或审批审计。
 - `file_exports.require_approval` 默认为 `false`；需要对外传输人工确认时，应设为 `true` 或配置匹配的审批规则。审批摘要会显示本地路径和对外文件名。

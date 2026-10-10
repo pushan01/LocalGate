@@ -1,5 +1,18 @@
 # Plan
 
+## ChatGPT Artifact 大图预览与 MCP 验证（CH-ARTIFACT-UI-002）
+
+- **状态**：已完成（2026-10-10）
+- **目标**：超过 1 MiB 的 PNG/JPEG 图片在限定体积及像素尺寸内生成小型 JPEG 内联预览，同时保留原件短期下载资源；对实际 MCP tool content 与 HTTP GET/HEAD/Range 下载做端到端回归验证。
+- **非目标**：不改已有运行 LocalGate 实例、不触碰用户实际文件、不把 MCP `resource_link` 称为 ChatGPT 原生附件、不引入完整 MCP Apps 画廊、不扩展 WebP 解码依赖。
+- **安全约束**：原件必须按 grant 校验 size、mtime、SHA-256 和内容 MIME 后才能生成缩略图；每次最多读 16 MiB，限像素数和输出尺寸；无法解码只返回下载链接。缩略图不缓存到持久化记录。
+- **涉及范围**：`internal/fileexport`、MCP/HTTP 导出测试、README、`plan.md`、`todo.md`。
+- **验收条件**：超过 1 MiB 的有效图片返回压缩缩略图+原件 URL；无效/超限/被篡改图片不内联；PDF/ZIP 仅下载；标准 MCP 内容及 HTTP 下载端点均通过测试。
+- **验证方式**：定向测试、`go test -p 1 ./...`、`go vet -p 1 ./...`、`git diff --check`。真正 ChatGPT 页面显示依赖客户端渲染，需安装构建后的服务才能实机测试。
+- **实际实现**：`fileexport.ImagePreview` 保留原件 SHA-256/mtime/MIME 校验，新增 PNG/JPEG 受限解码和长边最大 960 像素的 JPEG 白底缩略图；超限图片、无法解码的源文件或大 WebP 仍返回原件资源而不内联。新增真实 Streamable HTTP MCP `tools/call` 到签名 HTTP GET/HEAD/Range 的端到端测试，覆盖 PNG、PDF、ZIP；不修改生产配置和正在运行的实例。
+- **验证结果**：定向大图 PNG/JPEG、篡改/伪造图片、透明度合成、MCP HTTPS 资源交付测试通过；`go test -p 1 ./...`、`go vet -p 1 ./...`、Windows amd64 构建和 `git diff --check` 全部通过。ChatGPT 客户端中是否出现原生卡片尚未实机验证；原生文件库和 MCP Apps iframe 均非本轮范围。
+
+
 ## ChatGPT Artifact 展示对齐（CH-ARTIFACT-UI-001）
 
 - **状态**：已完成（2026-10-10）

@@ -2,11 +2,12 @@
 
 ## ChatGPT Artifact UI follow-ups
 
+- 评估是否引入受维护的 WebP 解码库，使大于 1 MiB 的 WebP 也可生成有界缩略图；当前大 WebP 仅提供原件下载。
 - 评估 `subagent_artifact_get` 返回结构里的原有签名 `url` 字段是否可通过按需签发/专用下载操作替代；目前它会跟随 Task 结果持久化，迁移需要兼顾 HTTP 客户端兼容性。
 - 在有可用的 ChatGPT MCP Apps 运行环境后，增加文件/图片画廊 UI resource（带 MIME/CSP/权限边界）并做 Web/Desktop/Mobile 实机测试；原生 MCP `image` 与 `resource_link` 的客户端渲染不保证一致。
 - 为 Subagent 的 ChatGPT Provider 增加可靠的图片 Artifact 采集；当前采集只在 Gemini Provider 实现。
 - 为 Artifact 建立独立的历史索引、所有权验证及 GC/保留策略，避免最新一轮 Subagent 覆盖可查询的旧索引后留下孤儿文件。
-- 评估对大图生成缩略图的方案，避免超过 MCP 内联图片容量上限的原始大图被整体编码进工具响应。
+- [x] `CH-ARTIFACT-UI-002` 已为 1–16 MiB 的 PNG/JPEG 增加有界 JPEG 缩略图；其他大图格式/上限以原件下载作为安全回退。
 
 ## Subagent runtime follow-ups
 
