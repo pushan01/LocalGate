@@ -114,6 +114,14 @@ func (t exportFileTool) ResourceLinks(result map[string]any) []core.ResourceLink
 	}}
 }
 
+func (t exportFileTool) NativeContent(result map[string]any) []map[string]any {
+	if t.exports == nil || result == nil {
+		return nil
+	}
+	id, _ := result["export_id"].(string)
+	return t.exports.NativeContent(id)
+}
+
 func (t exportFileTool) Execute(ctx context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	if t.exports == nil {
 		return nil, errors.New("file export service is not enabled")

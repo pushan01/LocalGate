@@ -1,9 +1,12 @@
 package subagentcap
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +33,11 @@ func (p artifactFileProvider) Wait(ctx context.Context, state runtime.ProviderSt
 }
 
 func TestSubagentArtifactGetIssuesValidatedResourceLink(t *testing.T) {
-	payload := []byte("generated-image-bytes")
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	payload := buf.Bytes()
 	path := filepath.Join(t.TempDir(), "generated.png")
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		t.Fatal(err)
@@ -90,6 +97,9 @@ func TestSubagentArtifactGetIssuesValidatedResourceLink(t *testing.T) {
 	}
 	if !strings.HasPrefix(links[0].URI, "https://gate.example/system/exports/") {
 		t.Fatalf("unexpected resource URI: %q", links[0].URI)
+	}
+	if content := core.ToolNativeContent(tool, result); len(content) != 2 || content[1]["type"] != "image" {
+		t.Fatalf("expected a direct image preview and downloadable link, got %#v", content)
 	}
 
 	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {

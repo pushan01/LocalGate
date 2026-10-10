@@ -504,7 +504,7 @@ GPT 应用可以先调用：
 
 ## 把本地文件返回给 ChatGPT / Agent
 
-LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回给 ChatGPT 或其他支持 MCP `resource_link` 的 Agent 宿主。工具不会把二进制或 Base64 写进 MCP 结果，而是签发一个短期 HTTPS 下载资源。
+LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回给 ChatGPT 或其他支持 MCP 的 Agent 宿主。默认签发短期 HTTPS 下载资源；对于校验成功且不超过 1 MiB 的 PNG、JPEG 和 WebP 图片，MCP 响应还会附加标准 `image`（Base64）内容，供支持图片结果的客户端直接预览。较大的图片和 PDF、ZIP、代码等非图片文件不会被塞入 MCP 上下文，仍走下载链接。
 
 ```json
 {
@@ -525,6 +525,18 @@ LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回�
 }
 ```
 
+工具结果还会提供一个带签名下载 URL 的普通文本块，作为客户端不显示 `resource_link` 时的后备。如果图片符合上述内联条件，还会返回：
+
+```json
+{
+  "type": "image",
+  "mimeType": "image/png",
+  "data": "<base64-encoded-image-data>"
+}
+```
+
+签名 URL 和 Base64 图片只出现在本次 MCP `content` 中，不写入持久化 Task 结果。对于异步 `export_file`，先等待原任务完成，再使用 `task_result(task_id)`，LocalGate 会恢复原工具的资源链接和可用的图片预览；如果签名授权已过期，需要重新执行导出。ChatGPT 是否将图片或下载链接显示成原生卡片取决于客户端，标准 MCP 结果不等于上传到了 ChatGPT 文件库。
+
 启用配置：
 
 ```yaml
@@ -543,10 +555,10 @@ file_exports:
 
 - 只允许导出配置 root 内的普通文件，拒绝目录、符号链接和特殊文件。
 - 默认最大 100 MiB，默认有效期 5 分钟，最长 10 分钟。
-- 签发和下载时都会重新校验 root policy、denylist、文件大小、修改时间和 SHA-256。
+- 签发和下载时都会重新校验 root policy、denylist、文件大小、修改时间和 SHA-256；图片内联前还会验证 MIME 签名与内容哈希。
 - 文件在签发后发生变化时，下载返回 `409 export_source_changed`。
 - 签名 URL 不写入持久化 Task 结果、工具事件或审批审计。
-- 数据外传默认需要审批；审批摘要会显示本地路径和对外文件名。
+- `file_exports.require_approval` 默认为 `false`；需要对外传输人工确认时，应设为 `true` 或配置匹配的审批规则。审批摘要会显示本地路径和对外文件名。
 - ChatGPT 场景应优先使用 `export_file`，不要用底层 `create_download_token` 替代。
 
 ## HTTP API 示例
@@ -651,7 +663,7 @@ Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，
 - `subagent_poll`：非阻塞检查当前轮生成状态；完成时返回最终 `reply`，生成中可返回已可见的部分 `reply`；如果 Provider 产出图片等本地 artifact，同时返回 `artifacts`
 - `subagent_wait`：显式等待当前轮完成并返回最终 `reply`；图片等非文本结果通过并列的 `artifacts` 数组返回，不会塞进 `reply` 文本
 - `subagent_get` / `subagent_list`：查看状态以及 provider conversation / Project 映射摘要；`subagent_get` 在 `busy/degraded` 时默认做一次非阻塞远端 refresh，`refresh=false` 可读取纯本地快照
-- `subagent_artifact_get`：把 `artifacts[].id` 对应的 LocalGate 内部 artifact 校验后签发成短期 HTTPS / MCP `resource_link`；不会向调用方暴露 LocalGate 本机 artifact 路径
+- `subagent_artifact_get`：把 `artifacts[].id` 对应的 LocalGate 内部 artifact 校验后签发成短期 HTTPS / MCP `resource_link`；小型 PNG/JPEG/WebP 还会附加 MCP `image` 预览；不会向调用方暴露 LocalGate 本机 artifact 路径
 - `subagent_close`：结束 subagent 并删除本地 `sg_*` 映射，立即释放 LocalGate agent 名额；不会删除 Provider 中已有的 conversation 或 Project 历史
 
 调用方应把 `subagent_id` 当成稳定身份并持续复用。ChatGPT `conversation_id`、conversation URL 和 Project ID 只是 Provider 诊断信息；LocalGate 重启后的恢复也以持久化的 provider state 为基础，而不是依赖浏览器 tab ID。`subagent_get` 的 `refreshed=true` 表示这次 get 实际尝试了远端对账；远端读取失败时仍会返回本地诊断映射，并通过 `refresh_error` 暴露失败原因。
@@ -758,7 +770,7 @@ Gemini 的站点 DOM adapter 由 LocalGate 自己管理并随二进制通过 `go
 
 Gemini 的图片生成结果会由内置 adapter 在生成结束后从已经渲染的 `<img>` 通过 canvas materialize 为 PNG，写入 `log_store/subagents/artifacts/<conversation_id>/turn-<n>/`。LocalGate 不持久化 Gemini 的 `blob:` URL；`subagent_poll` / `subagent_wait` 返回 provider-independent 的 artifact metadata（`id/type/mime_type/file_name/size/sha256/width/height/alt`），并把最新完成 turn 的 artifacts 持久化到对应 `sg_*` 记录，因此 subagent 已经 `ready` 后仍可通过 `subagent_get` / `subagent_list` 读取。artifact 的真实本机路径只保存在 LocalGate 内部持久化记录中，不通过 MCP artifact 列表暴露。开始下一次 `subagent_send` 时会清空上一轮 artifact 列表，避免把旧图片误认为新一轮结果。当前单张图片 materialize 上限为 16 MiB；artifact 抽取失败不会把一个已经完成的 Gemini turn 重新判成 `busy/degraded`。
 
-调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于当前实例下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`。内部 artifact 不要求位于用户配置 root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 root path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
+调用方要真正取得图片时，使用 `subagent_artifact_get(subagent_id, artifact_id)`。LocalGate 会先确认 artifact 属于当前实例下的 `sg_*`，重新校验本地文件的 regular-file/size/SHA-256，再复用 `file_exports` 签发短期 HTTPS URL，并在 MCP 返回中附带 `resource_link`；校验通过的小型 PNG/JPEG/WebP 还会直接返回 MCP 图片。内部 artifact 不要求位于用户配置 root，但下载端仍会再次校验文件 size、mtime 和 SHA-256；普通 `export_file` 的 root path policy 不受影响。`subagent_artifact_get` 与 `export_file` 共用 `file_exports` 的 TTL 和大小限制；`file_exports.require_approval` 默认是 `false`，需要人工审批时可以显式改为 `true`，或通过 `admin.approval.rules` 对对应工具单独要求审批。
 
 ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect` 都会导航 browser surface。因此 LocalGate 在 Provider 边界串行化这些短时浏览器操作，避免两个 subagent 互相把 tab 导航走；这不等于远端 Agent 串行，因为 spawn/send 在提交后立即释放 browser surface，多个 ChatGPT conversation 的生成仍可同时进行。状态查询仍受同一 subagent 10 秒、不同 subagent 5 秒的 Manager 级节流控制。
 

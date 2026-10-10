@@ -262,7 +262,7 @@ func (s *Server) resourceLinkContent(toolName string, result map[string]any) []m
 		return nil
 	}
 	links := core.ToolResourceLinks(tool, result)
-	out := make([]map[string]any, 0, len(links))
+	out := make([]map[string]any, 0, len(links)+2)
 	for _, link := range links {
 		item := map[string]any{
 			"type":        "resource_link",
@@ -276,6 +276,7 @@ func (s *Server) resourceLinkContent(toolName string, result map[string]any) []m
 		}
 		out = append(out, item)
 	}
+	out = append(out, core.ToolNativeContent(tool, result)...)
 	return out
 }
 

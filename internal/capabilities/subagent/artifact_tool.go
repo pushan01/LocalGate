@@ -99,6 +99,14 @@ func (t ArtifactGetTool) ResourceLinks(result map[string]any) []core.ResourceLin
 	}}
 }
 
+func (t ArtifactGetTool) NativeContent(result map[string]any) []map[string]any {
+	if t.exports == nil || result == nil {
+		return nil
+	}
+	id, _ := result["export_id"].(string)
+	return t.exports.NativeContent(id)
+}
+
 func (t ArtifactGetTool) Execute(_ context.Context, ic core.InvokeContext, args map[string]any) (map[string]any, error) {
 	if t.manager == nil {
 		return nil, errors.New("subagent runtime is not enabled")

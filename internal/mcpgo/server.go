@@ -364,6 +364,20 @@ func (s *Server) newTaskToolResult(payload map[string]any, task *core.Task, isEr
 	if reg == nil {
 		return result
 	}
+	// task_result wraps an earlier task result. Present the original tool's
+	// resource links and native content so async exports behave like sync ones.
+	// Never attach artifacts from failed/incomplete tasks.
+	if task.Tool == "task_result" {
+		originalID, _ := task.Result["task_id"].(string)
+		if originalID == "" || s.App.Tasks == nil {
+			return result
+		}
+		original, err := s.App.Tasks.Get(originalID)
+		if err != nil || original.Status != core.StatusSucceeded || original.Result == nil {
+			return result
+		}
+		task = original
+	}
 	tool, ok := reg.Get(task.Tool)
 	if !ok {
 		return result

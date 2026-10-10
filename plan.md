@@ -1,5 +1,19 @@
 # Plan
 
+## ChatGPT Artifact 展示对齐（CH-ARTIFACT-UI-001）
+
+- **状态**：已完成（2026-10-10）
+- **目标**：`export_file` 与 `subagent_artifact_get` 保留原有安全下载资源，同时对小型真实图片返回 MCP `image` 预览；异步 `task_result` 也能呈现原产物的资源链接与预览。
+- **非目标**：不自动导入 ChatGPT 文件库、不伪装成原生 ChatGPT 附件、不搭建 MCP Apps iframe、不扩展 Subagent 对 ChatGPT 生成图片的采集、不改变 Artifact 历史保存范围。
+- **涉及范围**：`internal/fileexport`、两种导出工具、MCP transport、测试和 README。
+- **依赖与风险**：不同 MCP Host 的渲染策略不同；预览必须限制图片格式及响应大小，链接保持短时授权，不能向 Task 持久化结果写入带签名 URL。
+- **预计规模**：约 300–750 行有效 diff。
+- **验收**：真实 PNG 在 MCP 响应中有 `image` 及 `resource_link`；非图片/超限/伪造图片不做内联；异步 `task_result` 能恢复相同资源；原有鉴权、过期和 hash 校验不回退。
+- **验证**：定向 Go 测试、`go test ./...`、`go vet ./...`、`git diff --check`。真实 ChatGPT UI 效果需要客户端手工联调，不用单元测试冒充证明。
+- **实际实现**：统一生成临时文件下载文本和可选 MCP `image` 块；图片预览上限 1 MiB，且校验真实 MIME、大小、mtime、SHA-256；`export_file`、`subagent_artifact_get` 复用同一展示逻辑；`task_result` 对成功完成的原任务恢复原工具资源，新增的预览和链接文本不写入持久化结果。`subagent_artifact_get` 原有结构化 `url` 字段暂为兼容保留。
+- **验证结果**：图片/Artifact、MCP 同步与异步协议定向测试通过；`go test -p 1 ./...`、`go vet -p 1 ./...`、`git diff --check` 全部通过。并行 `go test ./...` 曾出现 Relay、进程及 Session 的竞争/超时失败，串行复测通过；ChatGPT 客户端的实际卡片 UI 尚待实机验证。
+
+
 ## Single Root：移除 Workspace 多安全域模型
 
 - **状态**：已完成（CH-ROOT-001 ～ CH-ROOT-004）
