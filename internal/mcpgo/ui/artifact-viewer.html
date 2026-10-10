@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalGate 文件预览</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.5 system-ui,-apple-system,sans-serif; }
+    body { margin: 0; color: CanvasText; background: Canvas; }
+    main { padding: 12px; }
+    h2 { font-size: 15px; font-weight: 650; margin: 0 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 12px; }
+    .item { min-width: 0; border: 1px solid color-mix(in srgb,CanvasText 18%,Canvas); border-radius: 12px; overflow: hidden; }
+    .item img { display: block; max-width: 100%; width: 100%; height: auto; max-height: 520px; object-fit: contain; }
+    .file { padding: 10px 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .name { flex: 1; min-width: 80px; overflow-wrap: anywhere; }
+    .download { display: inline-block; text-decoration: none; padding: 7px 11px; border-radius: 8px; color: ButtonText; background: ButtonFace; border: 1px solid color-mix(in srgb,ButtonText 26%,ButtonFace); }
+    .muted { opacity: 0.7; }
+    #status { margin: 4px 0 10px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h2>LocalGate 文件预览</h2>
+    <p id="status" class="muted">等待文件结果…</p>
+    <div class="grid" id="items" aria-live="polite"></div>
+  </main>
+  <script type="module">
+    // MCP Apps bridge: no network access, cookies or persistent local storage.
+    // Image bytes arrive as MCP image content; download links are explicit
+    // short-lived signed resource_link blocks, never read from user input.
+    const items = document.querySelector('#items');
+    const status = document.querySelector('#status');
+    let sequence = 0;
+    const pending = new Map();
+
+    function notify(method, params = {}) {
+      window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+    }
+    function request(method, params) {
+      return new Promise((resolve, reject) => {
+        const id = ++sequence;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+      });
+    }
+    function safeHTTP(uri) {
+      if (typeof uri !== 'string') return '';
+      try {
+        const url = new URL(uri);
+        return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
+      } catch { return ''; }
+    }
+    function render(result) {
+      const data = result?.result?.content ? result.result : result;
+      if (!data || data.isError) return;
+      const blocks = Array.isArray(data.content) ? data.content : [];
+      const images = blocks.filter(v => v?.type === 'image' &&
+        ['image/png','image/jpeg','image/webp'].includes(v.mimeType) &&
+        typeof v.data === 'string' && v.data.length > 0 && v.data.length <= 1500000 &&
+        /^[A-Za-z0-9+/=]+$/.test(v.data));
+      const files = blocks.filter(v => v?.type === 'resource_link' && safeHTTP(v.uri));
+      if (!files.length && !images.length) return;
+
+      items.replaceChildren();
+      const count = Math.max(files.length, images.length);
+      for (let i = 0; i < count; i++) {
+        const file = files[i];
+        const picture = images[i];
+        const card = document.createElement('article');
+        card.className = 'item';
+        if (picture) {
+          const img = document.createElement('img');
+          img.alt = typeof file?.name === 'string' ? file.name : '图片预览';
+          img.src = 'data:' + picture.mimeType + ';base64,' + picture.data;
+          card.append(img);
+        }
+        const footer = document.createElement('div');
+        footer.className = 'file';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = typeof file?.name === 'string' ? file.name : picture ? '图片' : '文件';
+        footer.append(name);
+        if (file) {
+          const link = document.createElement('a');
+          link.className = 'download';
+          link.textContent = '下载原文件';
+          link.href = safeHTTP(file.uri);
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          footer.append(link);
+        }
+        card.append(footer);
+        items.append(card);
+      }
+      status.hidden = true;
+    }
+    window.addEventListener('message', event => {
+      if (event.source !== window.parent) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (typeof msg.id === 'number' && pending.has(msg.id)) {
+        const waiter = pending.get(msg.id);
+        pending.delete(msg.id);
+        msg.error ? waiter.reject(msg.error) : waiter.resolve(msg.result);
+      } else if (msg.method === 'ui/notifications/tool-result') {
+        render(msg.params);
+      }
+    }, { passive: true });
+    request('ui/initialize', {
+      appInfo: { name: 'localgate-artifact-viewer', version: '1.0.0' },
+      appCapabilities: {},
+      protocolVersion: '2026-01-26',
+    }).then(() => notify('ui/notifications/initialized')).catch(() => {
+      status.textContent = '该 ChatGPT 客户端未启用 MCP Apps 预览，请使用文件下载链接。';
+    });
+    // Older ChatGPT hosts may expose the initial result as a compatibility alias.
+    if (window.openai?.toolOutput) render(window.openai.toolOutput);
+  </script>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 ## ChatGPT Artifact UI follow-ups
 
+- `CH-ARTIFACT-UI-003` 后续：部署更新的 LocalGate 后，在 ChatGPT 插件详情刷新连接，检查 `export_file` 是否出现 MCP Apps 预览面板；若仍只有结构化任务结果，确认连接器是否丢弃工具 `_meta` 或关闭 MCP Apps（此限制无法通过更改 Base64 解决）。
 - 评估是否引入受维护的 WebP 解码库，使大于 1 MiB 的 WebP 也可生成有界缩略图；当前大 WebP 仅提供原件下载。
 - 评估 `subagent_artifact_get` 返回结构里的原有签名 `url` 字段是否可通过按需签发/专用下载操作替代；目前它会跟随 Task 结果持久化，迁移需要兼顾 HTTP 客户端兼容性。
 - 在有可用的 ChatGPT MCP Apps 运行环境后，增加文件/图片画廊 UI resource（带 MIME/CSP/权限边界）并做 Web/Desktop/Mobile 实机测试；原生 MCP `image` 与 `resource_link` 的客户端渲染不保证一致。

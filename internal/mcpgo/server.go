@@ -69,6 +69,10 @@ func (s *Server) registerCoreTools() {
 				core.ToolMetadata(t),
 			)
 			applyCoreToolExtensions(&mcpTool, t)
+			if name == "export_file" {
+				attachArtifactViewer(&mcpTool)
+				s.registerArtifactViewer()
+			}
 			s.impl.AddTool(mcpTool, s.makeInvokeHandler(name))
 		}
 	}

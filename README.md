@@ -537,6 +537,17 @@ LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回�
 
 签名 URL 和 Base64 图片只出现在本次 MCP `content` 中，不写入持久化 Task 结果。对于异步 `export_file`，先等待原任务完成，再使用 `task_result(task_id)`，LocalGate 会恢复原工具的资源链接和可用的图片预览；如果签名授权已过期，需要重新执行导出。ChatGPT 是否将图片或下载链接显示成原生卡片取决于客户端，标准 MCP 结果不等于上传到了 ChatGPT 文件库。
 
+### ChatGPT 内嵌文件/图片预览（MCP Apps）
+
+支持 MCP Apps 的宿主调用直接 MCP `export_file` 时，LocalGate 会在工具元数据中声明 `_meta.ui.resourceUri`（同时保留 ChatGPT 兼容字段 `_meta["openai/outputTemplate"]`），并公开一个只读的 `ui://localgate/artifact-viewer/v1.html` 资源（MIME 为 `text/html;profile=mcp-app`）。组件通过标准 `ui/initialize` 握手接收 `ui/notifications/tool-result`：有 `image` 时显示图片，有 `resource_link` 时显示文件名及下载按钮。内容均来自当次工具返回；文件名当作文本处理，外链限定 HTTP(S)，不用用户机器本地路径，也不会发起额外本地文件读取。
+
+**重要限制**：MCP Apps 是宿主可选展示能力，只有在 ChatGPT 正确识别该工具元数据、读取资源并承载 iframe 时才会显示。ChatGPT 已安装的插件可能缓存工具配置：部署新版本后，需在 ChatGPT 插件详情中刷新 MCP 连接，并使用新的工具调用检查展示。其他通过渐进式 `invoke_tool` 调用的工具暂不自动弹出该预览。部分 ChatGPT 连接器只会向模型返回 `structuredContent`，无法由 LocalGate 强制把图片直接插入模型聊天正文；此时继续使用短期 HTTPS 下载链接。插件 UI 不等于 ChatGPT 原生附件，不保证跨会话保存图片。
+
+可用两级检查定位问题：
+
+1. `tools/list`：确认 `export_file` 的 `_meta.ui.resourceUri` 是 `ui://localgate/artifact-viewer/v1.html`。
+2. `resources/read`：确认该 URI 返回上述 MCP Apps HTML；`tools/call(export_file)` 应仍返回 `image`、`resource_link` 与文本内容。若上述均正确但没有显示 iframe，应检查宿主对 MCP Apps 的支持以及插件连接是否刷新。
+
 启用配置：
 
 ```yaml

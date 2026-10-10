@@ -1,5 +1,18 @@
 # Plan
 
+## ChatGPT 文件/图片预览 Widget（CH-ARTIFACT-UI-003）
+
+- **状态**：已完成（2026-10-11）
+- **目标**：修复客户端不能直接看到 `export_file` 返回图片的实际体验：增加标准 MCP Apps UI 资源，把它关联到直接 MCP `export_file`，由 ChatGPT iframe 自己渲染图片预览和原件下载入口；保留现有 MCP `image`/`resource_link` 供不支持 UI 的宿主使用。
+- **范围**：`internal/mcpgo` 的工具元数据、只读 HTML widget、HTTP/stdio resources/read 测试和 README。
+- **非目标**：不改变文件沙箱、授权/下载逻辑，不在结构化任务结果中写入签名 URL，不改变其他工具的 UI，不升级运行二进制之前重启服务。
+- **风险**：宿主可能缓存已安装插件的工具元数据，必须刷新插件连接才能获得新 UI；App iframe 渲染依赖宿主实际实现，Go 协议测试不能证明前端已经显示。
+- **验收**：`export_file` 的 tools/list 包含 `_meta.ui.resourceUri`，对应 `resources/read` 返回 `text/html;profile=mcp-app`；UI 有 MCP Apps 初始化、tool-result 消息与下载/图片渲染逻辑；普通 MCP 返回和原有任务执行不变。
+- **验证**：widget JS 语法检查、MCP HTTP tools/list/resources/read/tools/call 测试、`go test -p 1 ./...`、`go vet -p 1 ./...`、构建与 `git diff --check`；宿主界面须后续通过客户端观察。
+- **实际实现**：`export_file` tools/list 增加标准 `ui.resourceUri` 和兼容 `openai/outputTemplate`；Go embed 注册可读的 MCP Apps HTML UI 资源，通过桥接 `ui/notifications/tool-result` 渲染图片和文件下载链接；不影响原有 `image`、`resource_link`、审批或持久化。
+- **验证结果**：Node widget 单元测试 3 个通过（图片、PDF、危险输入）；MCP HTTP tools/list 和 resources/read 验证通过；定向 Go 测试、串行全量 `go test -p 1 ./...`、`go vet -p 1 ./...`、Windows amd64 编译及 `git diff --check` 通过。实际 ChatGPT UI 展示尚待插件连接刷新和客户端观察。
+
+
 ## ChatGPT Artifact 大图预览与 MCP 验证（CH-ARTIFACT-UI-002）
 
 - **状态**：已完成（2026-10-10）
