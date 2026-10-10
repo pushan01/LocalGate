@@ -27,6 +27,8 @@ type Options struct {
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
 	Now        func() time.Time
+	// StoreDir enables cross-process grants. It must be shared by the MCP and HTTP processes.
+	StoreDir string
 }
 
 type Grant struct {
@@ -56,6 +58,8 @@ type Service struct {
 	maxTTL     time.Duration
 	key        [32]byte
 	grants     map[string]Grant
+	storeDir   string
+	lastPrune  time.Time
 	now        func() time.Time
 }
 
@@ -96,6 +100,11 @@ func NewService(opts Options) (*Service, error) {
 	if s.now == nil {
 		s.now = func() time.Time { return time.Now().UTC() }
 	}
+	if opts.StoreDir != "" {
+		if err := s.initStore(opts.StoreDir); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := rand.Read(s.key[:]); err != nil {
 		return nil, err
 	}
@@ -135,6 +144,10 @@ func (s *Service) Issue(grant Grant, ttl time.Duration) (Grant, error) {
 	grant.ID = id
 	grant.ExpiresAt = s.now().Add(ttl)
 
+	if s.storeDir != "" {
+		s.pruneStoredGrants()
+		return grant, s.saveGrant(grant)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked()
@@ -143,11 +156,10 @@ func (s *Service) Issue(grant Grant, ttl time.Duration) (Grant, error) {
 }
 
 func (s *Service) Link(id string) (Link, error) {
-	grant, err := s.get(id)
+	grant, signature, err := s.getWithSignature(id)
 	if err != nil {
 		return Link{}, err
 	}
-	signature := s.signature(grant.ID)
 	q := url.Values{}
 	q.Set("signature", signature)
 	return Link{
@@ -163,11 +175,11 @@ func (s *Service) Authorize(id, signature string) (Grant, error) {
 	if strings.TrimSpace(signature) == "" {
 		return Grant{}, ErrSignatureRequired
 	}
-	grant, err := s.get(id)
+	grant, wantSignature, err := s.getWithSignature(id)
 	if err != nil {
 		return Grant{}, err
 	}
-	want, err := base64.RawURLEncoding.DecodeString(s.signature(grant.ID))
+	want, err := base64.RawURLEncoding.DecodeString(wantSignature)
 	if err != nil {
 		return Grant{}, ErrInvalidSignature
 	}
@@ -182,31 +194,43 @@ func (s *Service) Revoke(id string) {
 	if s == nil {
 		return
 	}
+	if s.storeDir != "" {
+		s.removeGrant(strings.TrimSpace(id))
+		return
+	}
 	s.mu.Lock()
 	delete(s.grants, strings.TrimSpace(id))
 	s.mu.Unlock()
 }
 
 func (s *Service) get(id string) (Grant, error) {
+	grant, _, err := s.getWithSignature(id)
+	return grant, err
+}
+
+func (s *Service) getWithSignature(id string) (Grant, string, error) {
 	if s == nil {
-		return Grant{}, errors.New("file export service is nil")
+		return Grant{}, "", errors.New("file export service is nil")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return Grant{}, ErrExportIDRequired
+		return Grant{}, "", ErrExportIDRequired
+	}
+	if s.storeDir != "" {
+		return s.loadGrant(id)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLockedExcept(id)
 	grant, ok := s.grants[id]
 	if !ok {
-		return Grant{}, ErrExportNotFound
+		return Grant{}, "", ErrExportNotFound
 	}
 	if !grant.ExpiresAt.After(s.now()) {
 		delete(s.grants, id)
-		return Grant{}, ErrExportExpired
+		return Grant{}, "", ErrExportExpired
 	}
-	return grant, nil
+	return grant, s.signature(grant.ID), nil
 }
 
 func (s *Service) signature(id string) string {

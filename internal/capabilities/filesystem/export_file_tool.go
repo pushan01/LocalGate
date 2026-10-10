@@ -33,7 +33,7 @@ func NewExportFileTool(ws config.Root, cfg config.FileExports, exports *fileexpo
 func (t exportFileTool) Name() string { return "export_file" }
 
 func (t exportFileTool) Description() string {
-	return "Export an existing file from the configured root to the current conversation as a short-lived downloadable MCP resource. The source must be a regular file at an absolute path inside the configured root. This transfers data outside LocalGate, may require approval, and does not modify the source file."
+	return "Export an existing file from the configured root to the current conversation as a short-lived downloadable MCP resource. The source must be a regular file at an absolute path inside the configured root. This transfers data outside LocalGate, may require approval, and does not modify the source file. Host clients may expose only metadata; a successful export does not guarantee automatic import into the host sandbox."
 }
 
 func (t exportFileTool) Schema() any {

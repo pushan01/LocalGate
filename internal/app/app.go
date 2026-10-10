@@ -232,6 +232,7 @@ func New(cfg config.Config) (*App, error) {
 			BaseURL:    cfg.FileExports.BaseURL,
 			DefaultTTL: time.Duration(cfg.FileExports.DefaultTTLSeconds) * time.Second,
 			MaxTTL:     time.Duration(cfg.FileExports.MaxTTLSeconds) * time.Second,
+			StoreDir:   filepath.Join(storeBase, "fileexports"),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init file exports: %w", err)

@@ -26,6 +26,7 @@ Use `export_file` when the user needs a file from the configured root returned t
 - The source must be an existing regular file inside the configured root.
 - The result is a short-lived external resource/download reference.
 - Export is data egress and may require approval.
+- Some MCP clients surface only structured export metadata instead of native resource content. A successful export is not evidence that the file has entered a ChatGPT sandbox; confirm destination file existence, size, and SHA-256 separately.
 
 ## Cross-sandbox or cross-machine transfer
 

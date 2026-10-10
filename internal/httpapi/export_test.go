@@ -114,6 +114,54 @@ func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
 	}
 }
 
+func TestExportEndpointAcceptsGrantIssuedByAnotherAppInstance(t *testing.T) {
+	root := t.TempDir()
+	store := t.TempDir()
+	target := filepath.Join(root, "cross-process.txt")
+	if err := os.WriteFile(target, []byte("cross-process-export"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		LogStore: store,
+		HTTP:     config.HTTP{BaseURL: "https://gate.example"},
+		FileExports: config.FileExports{
+			Enabled: true, BaseURL: "https://gate.example",
+			DefaultTTLSeconds: 300, MaxTTLSeconds: 600, MaxFileBytes: 1 << 20,
+		},
+		Root: config.Root{Path: root},
+	}
+	issuer, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	receiver, err := app.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	result, err := issuer.InvokeTool(context.Background(), "export_file", map[string]any{"path": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := issuer.Registry.Get("export_file")
+	links := core.ToolResourceLinks(tool, result)
+	if len(links) != 1 {
+		t.Fatalf("expected export link, got %#v", links)
+	}
+	u, err := url.Parse(links[0].URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	(&API{App: receiver}).RegisterControl(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, u.RequestURI(), nil))
+	if w.Code != http.StatusOK || w.Body.String() != "cross-process-export" {
+		t.Fatalf("grant from separate app instance must download: status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 func TestExportEndpointServesValidatedInternalSourceOutsideWorkspace(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	internalRoot := t.TempDir()
