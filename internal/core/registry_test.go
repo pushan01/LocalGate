@@ -43,7 +43,8 @@ func TestRegistryInvokeRedactsSensitiveArgs(t *testing.T) {
 	reg := NewRegistry(sink)
 	reg.Register(echoTool{})
 	_, err := reg.Invoke(context.Background(), "echo", InvokeContext{TaskID: "t2"}, map[string]any{
-		"token": "secret-token",
+		"token":           "secret-token",
+		"handoff_context": "sensitive compacted project context",
 		"env": map[string]any{
 			"OPENAI_API_KEY": "abc",
 		},
@@ -59,11 +60,14 @@ func TestRegistryInvokeRedactsSensitiveArgs(t *testing.T) {
 		t.Fatalf("expected ToolInvoked event")
 	}
 	data := evs[0].Data
-	if strings.Contains(data, "secret-token") || strings.Contains(data, `"OPENAI_API_KEY":"abc"`) || strings.Contains(data, `"password":"pw"`) {
+	if strings.Contains(data, "secret-token") || strings.Contains(data, "sensitive compacted project context") || strings.Contains(data, `"OPENAI_API_KEY":"abc"`) || strings.Contains(data, `"password":"pw"`) {
 		t.Fatalf("expected sensitive values to be redacted, got %q", data)
 	}
 	if !strings.Contains(data, `"token":"[REDACTED]"`) {
 		t.Fatalf("expected token redaction, got %q", data)
+	}
+	if !strings.Contains(data, `"handoff_context":"[REDACTED]"`) {
+		t.Fatalf("expected handoff context redaction, got %q", data)
 	}
 }
 

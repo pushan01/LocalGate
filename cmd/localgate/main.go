@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"localgate/internal/app"
@@ -192,7 +191,7 @@ func main() {
 		})
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	type serverResult struct {

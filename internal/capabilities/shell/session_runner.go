@@ -5,17 +5,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
-
-	"github.com/creack/pty"
 
 	"localgate/internal/config"
 	"localgate/internal/core"
@@ -49,7 +43,7 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 	if tty {
 		return r.startTTYSession(execCmd, ic, command, resolvedCWD, shPath, login)
 	}
-	execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(execCmd)
 	stdout := newSessionOutputWriter(r.Sessions, "", "stdout")
 	stderr := newSessionOutputWriter(r.Sessions, "", "stderr")
 	execCmd.Stdout = stdout
@@ -117,66 +111,6 @@ func (r SessionRunner) StartSessionWithInvokeContext(ctx context.Context, ic cor
 	return r.Sessions.Get(session.ID)
 }
 
-func (r SessionRunner) startTTYSession(execCmd *exec.Cmd, ic core.InvokeContext, command, cwd, shell string, login bool) (core.Session, error) {
-	ptyFile, err := pty.Start(execCmd)
-	if err != nil {
-		return core.Session{}, err
-	}
-	session := r.Sessions.Create(core.Session{
-		TaskID:          ic.TaskID,
-		Requester:       ic.Requester,
-		Transport:       ic.Transport,
-		MCPSessionID:    ic.MCPSessionID,
-		SessionMode:     ic.SessionMode,
-		SessionIDSource: ic.SessionIDSource,
-		RequestID:       ic.RequestID,
-		Command:         command,
-		CWD:             cwd,
-		Shell:           shell,
-		Login:           login,
-		TTY:             true,
-	}, core.SessionController{Stdin: ptyFile})
-	if err := r.Sessions.Start(session.ID); err != nil {
-		_ = ptyFile.Close()
-		return core.Session{}, err
-	}
-	pid := execCmd.Process.Pid
-	if err := r.Sessions.SetController(session.ID, core.SessionController{
-		Stdin: ptyFile,
-		Close: func() error {
-			terminateProcess(pid)
-			if err := ptyFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-				return err
-			}
-			return nil
-		},
-	}); err != nil {
-		_ = ptyFile.Close()
-		return core.Session{}, err
-	}
-	var outputWG sync.WaitGroup
-	outputWG.Add(1)
-	go func() {
-		defer outputWG.Done()
-		r.streamSessionOutput(session.ID, "stdout", ptyFile)
-	}()
-	go func() {
-		waitErr := execCmd.Wait()
-		outputWG.Wait()
-		_ = ptyFile.Close()
-		if waitErr != nil {
-			if errors.Is(waitErr, context.Canceled) {
-				_ = r.Sessions.Finish(session.ID, -1, waitErr)
-				return
-			}
-			_ = r.Sessions.Finish(session.ID, exitCode(waitErr), waitErr)
-			return
-		}
-		_ = r.Sessions.Finish(session.ID, 0, nil)
-	}()
-	return r.Sessions.Get(session.ID)
-}
-
 func (r SessionRunner) WriteStdin(sessionID, chars string, wait time.Duration, maxItems int) (core.Session, core.SessionReadResult, error) {
 	return r.WriteStdinContext(context.Background(), sessionID, chars, 0, wait, maxItems)
 }
@@ -221,7 +155,7 @@ func (r SessionRunner) streamSessionOutput(sessionID, stream string, src io.Read
 		switch {
 		case err == nil, errors.Is(err, bufio.ErrBufferFull):
 			continue
-		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), errors.Is(err, syscall.EIO):
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), isSessionOutputClosedError(err):
 			return
 		default:
 			_ = r.Sessions.SetOutputError(sessionID, stream, err)
@@ -300,17 +234,6 @@ func (w *sessionOutputWriter) emitLineLocked(line []byte) error {
 	return w.sessions.AppendOutputChunk(w.sessionID, w.stream, string(line), false)
 }
 
-func terminateProcess(pid int) {
-	if pid <= 0 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	_ = exec.Command("kill", "-TERM", fmt.Sprintf("%d", pid)).Run()
-	time.Sleep(200 * time.Millisecond)
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = exec.Command("kill", "-KILL", fmt.Sprintf("%d", pid)).Run()
-}
-
 func resolveWorkdir(cwd string, ws config.Root) (string, error) {
 	if cwd == "" {
 		cwd = ws.Path
@@ -323,53 +246,4 @@ func resolveWorkdir(cwd string, ws config.Root) (string, error) {
 		return "", errors.New("workdir not allowed: " + dec.Reason)
 	}
 	return dec.Path, nil
-}
-
-func shellCommand(shell string, login bool, command string) (string, []string, error) {
-	if strings.TrimSpace(command) == "" {
-		return "", nil, errors.New("cmd required")
-	}
-	resolvedShell, err := resolveTrustedShell(shell)
-	if err != nil {
-		return "", nil, err
-	}
-	switch filepath.Base(resolvedShell) {
-	case "sh":
-		if login {
-			return "", nil, fmt.Errorf("login shell not supported for %s", resolvedShell)
-		}
-		return resolvedShell, []string{"-c", command}, nil
-	case "bash", "zsh":
-		if login {
-			return resolvedShell, []string{"-lc", command}, nil
-		}
-		return resolvedShell, []string{"-c", command}, nil
-	default:
-		return "", nil, fmt.Errorf("unsupported shell: %s", resolvedShell)
-	}
-}
-
-func resolveTrustedShell(shell string) (string, error) {
-	shell = strings.TrimSpace(shell)
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	if !filepath.IsAbs(shell) {
-		return "", fmt.Errorf("shell must be an absolute trusted path: %s", shell)
-	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(shell))
-	if err != nil {
-		return "", fmt.Errorf("resolve shell %s: %w", shell, err)
-	}
-	trusted := []string{
-		"/bin/sh", "/bin/bash", "/bin/zsh",
-		"/usr/bin/sh", "/usr/bin/bash", "/usr/bin/zsh",
-	}
-	for _, candidate := range trusted {
-		candidateResolved, candidateErr := filepath.EvalSymlinks(candidate)
-		if candidateErr == nil && resolved == candidateResolved {
-			return candidateResolved, nil
-		}
-	}
-	return "", fmt.Errorf("shell is not a trusted system shell: %s", shell)
 }

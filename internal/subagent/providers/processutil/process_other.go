@@ -1,4 +1,4 @@
-//go:build !darwin && !linux && !freebsd && !openbsd && !netbsd && !dragonfly
+//go:build !windows && !darwin && !linux && !freebsd && !openbsd && !netbsd && !dragonfly
 
 package processutil
 

@@ -39,7 +39,7 @@ func ValidateCommand(cmd string, ws config.Root) CmdDecision {
 
 	// Exact-match denylist on the first token (takes precedence over allowlist).
 	for _, deny := range ws.CommandDenylist {
-		if deny != "" && first == deny {
+		if deny != "" && sameCommandToken(first, deny) {
 			return CmdDecision{Allowed: false, Reason: "in_denylist", Command: trim}
 		}
 	}
@@ -52,11 +52,32 @@ func ValidateCommand(cmd string, ws config.Root) CmdDecision {
 		if allow == "*" {
 			return CmdDecision{Allowed: true, Command: trim}
 		}
-		if first == allow {
+		if sameCommandToken(first, allow) {
 			return CmdDecision{Allowed: true, Command: trim}
 		}
 	}
 	return CmdDecision{Allowed: false, Reason: "not_in_allowlist", Command: trim}
+}
+
+func ValidateArgvExecutable(executable string, ws config.Root) CmdDecision {
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		return CmdDecision{Allowed: false, Reason: "empty"}
+	}
+	for _, deny := range ws.CommandDenylist {
+		if deny != "" && sameCommandToken(executable, deny) {
+			return CmdDecision{Allowed: false, Reason: "in_denylist", Command: executable}
+		}
+	}
+	if len(ws.CommandAllowlist) == 0 {
+		return CmdDecision{Allowed: false, Reason: "no_allowlist"}
+	}
+	for _, allow := range ws.CommandAllowlist {
+		if allow == "*" || sameCommandToken(executable, allow) {
+			return CmdDecision{Allowed: true, Command: executable}
+		}
+	}
+	return CmdDecision{Allowed: false, Reason: "not_in_allowlist", Command: executable}
 }
 
 func firstToken(s string) string {

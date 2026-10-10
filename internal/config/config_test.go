@@ -1382,3 +1382,54 @@ root: /tmp
 		t.Fatalf("expected default provider validation error, got %v", err)
 	}
 }
+
+func TestLoadConversationHandoffWithoutSubagents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "localgate.yaml")
+	content := `
+subagents:
+  enabled: false
+  providers:
+    opencli_chatgpt:
+      executable: opencli
+conversation_handoff:
+  enabled: true
+  provider: opencli_chatgpt
+root: /tmp
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Subagents.Enabled {
+		t.Fatal("subagents should remain disabled")
+	}
+	if !cfg.ConversationHandoff.Enabled || cfg.ConversationHandoff.Provider != "opencli_chatgpt" {
+		t.Fatalf("unexpected conversation handoff config: %#v", cfg.ConversationHandoff)
+	}
+	summary := cfg.SafeSummary()["conversation_handoff"].(map[string]any)
+	if summary["enabled"] != true || summary["provider"] != "opencli_chatgpt" {
+		t.Fatalf("unexpected conversation handoff summary: %#v", summary)
+	}
+}
+
+func TestValidateConversationHandoffRejectsUnsupportedProvider(t *testing.T) {
+	cfg := Default()
+	cfg.ConversationHandoff.Enabled = true
+	cfg.ConversationHandoff.Provider = "opencli_gemini"
+	if err := validateConversationHandoffConfig(cfg.ConversationHandoff, cfg.Subagents.Providers.OpenCLIChatGPT); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected unsupported provider error, got %v", err)
+	}
+}
+
+func TestValidateConversationHandoffRequiresChatGPTExecutableWhenEnabled(t *testing.T) {
+	cfg := Default()
+	cfg.ConversationHandoff.Enabled = true
+	chatGPT := cfg.Subagents.Providers.OpenCLIChatGPT
+	chatGPT.Executable = ""
+	if err := validateConversationHandoffConfig(cfg.ConversationHandoff, chatGPT); err == nil || !strings.Contains(err.Error(), "executable") {
+		t.Fatalf("expected executable validation error, got %v", err)
+	}
+}

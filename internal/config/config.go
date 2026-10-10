@@ -28,28 +28,29 @@ type Root struct {
 }
 
 type Config struct {
-	Root             Root                `yaml:",inline"`
-	Skills           SkillsConfig        `yaml:"skills"`
-	Bind             string              `yaml:"bind"`
-	MaxConcurrency   int                 `yaml:"max_concurrency"`
-	DefaultTimeoutMs int64               `yaml:"default_timeout_ms"`
-	MaxOutputBytes   int64               `yaml:"max_output_bytes"`
-	LogStore         string              `yaml:"log_store"`
-	Admin            AdminConfig         `yaml:"admin"`
-	SessionCleanup   SessionCleanup      `yaml:"session_cleanup"`
-	Subagents        SubagentsConfig     `yaml:"subagents"`
-	HTTP             HTTP                `yaml:"http"`
-	MCPHTTP          MCPHTTP             `yaml:"mcp_http"`
-	FileExports      FileExports         `yaml:"file_exports"`
-	FileBrowser      FileBrowserConfig   `yaml:"file_browser"`
-	Notifications    NotificationsConfig `yaml:"notifications"`
-	Deployments      DeploymentsConfig   `yaml:"deployments"`
-	HTTPAuth         HTTPAuth            `yaml:"http_auth"`
-	ToolArguments    ToolArguments       `yaml:"tool_arguments"`
-	ToolHTTPMode     ToolHTTPMode        `yaml:"tool_http_mode"`
-	MCPServers       []MCPServer         `yaml:"mcp_servers"`
-	Upgrade          Upgrade             `yaml:"-"`
-	Runtime          Runtime             `yaml:"-"`
+	Root                Root                      `yaml:",inline"`
+	Skills              SkillsConfig              `yaml:"skills"`
+	Bind                string                    `yaml:"bind"`
+	MaxConcurrency      int                       `yaml:"max_concurrency"`
+	DefaultTimeoutMs    int64                     `yaml:"default_timeout_ms"`
+	MaxOutputBytes      int64                     `yaml:"max_output_bytes"`
+	LogStore            string                    `yaml:"log_store"`
+	Admin               AdminConfig               `yaml:"admin"`
+	SessionCleanup      SessionCleanup            `yaml:"session_cleanup"`
+	Subagents           SubagentsConfig           `yaml:"subagents"`
+	ConversationHandoff ConversationHandoffConfig `yaml:"conversation_handoff"`
+	HTTP                HTTP                      `yaml:"http"`
+	MCPHTTP             MCPHTTP                   `yaml:"mcp_http"`
+	FileExports         FileExports               `yaml:"file_exports"`
+	FileBrowser         FileBrowserConfig         `yaml:"file_browser"`
+	Notifications       NotificationsConfig       `yaml:"notifications"`
+	Deployments         DeploymentsConfig         `yaml:"deployments"`
+	HTTPAuth            HTTPAuth                  `yaml:"http_auth"`
+	ToolArguments       ToolArguments             `yaml:"tool_arguments"`
+	ToolHTTPMode        ToolHTTPMode              `yaml:"tool_http_mode"`
+	MCPServers          []MCPServer               `yaml:"mcp_servers"`
+	Upgrade             Upgrade                   `yaml:"-"`
+	Runtime             Runtime                   `yaml:"-"`
 }
 
 type SkillsConfig struct {
@@ -97,6 +98,11 @@ type SessionCleanup struct {
 	IdleTTLSeconds     int `yaml:"idle_ttl_seconds"`
 	MaxSessions        int `yaml:"max_sessions"`
 	SweepIntervalMs    int `yaml:"sweep_interval_ms"`
+}
+
+type ConversationHandoffConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Provider string `yaml:"provider"`
 }
 
 type SubagentsConfig struct {
@@ -304,6 +310,9 @@ func Default() Config {
 					TimeoutSeconds:    120,
 				},
 			},
+		},
+		ConversationHandoff: ConversationHandoffConfig{
+			Provider: "opencli_chatgpt",
 		},
 		ToolHTTPMode: ToolHTTPMode{
 			AccessTokenTTLSeconds: 10 * 60,
@@ -544,6 +553,14 @@ func Load(opts LoadOptions) (Config, error) {
 		if iv, err := atoi(v); err == nil {
 			cfg.SessionCleanup.SweepIntervalMs = iv
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_CONVERSATION_HANDOFF_ENABLED")); v != "" {
+		if bv, ok := atob(v); ok {
+			cfg.ConversationHandoff.Enabled = bv
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_CONVERSATION_HANDOFF_PROVIDER")); v != "" {
+		cfg.ConversationHandoff.Provider = v
 	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_HTTP_AUTH_ENABLED")); v != "" {
 		if bv, ok := atob(v); ok {
@@ -870,6 +887,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateSubagentsConfig(cfg.Subagents); err != nil {
 		return Config{}, err
 	}
+	if err := validateConversationHandoffConfig(cfg.ConversationHandoff, cfg.Subagents.Providers.OpenCLIChatGPT); err != nil {
+		return Config{}, err
+	}
 	if err := validateFileExportsConfig(cfg.FileExports, cfg.HTTP.BaseURL); err != nil {
 		return Config{}, err
 	}
@@ -1020,6 +1040,10 @@ func (c Config) SafeSummary() map[string]any {
 					"submit_interval_seconds": c.Subagents.Providers.OpenCLIGemini.SubmitIntervalSeconds,
 				},
 			},
+		},
+		"conversation_handoff": map[string]any{
+			"enabled":  c.ConversationHandoff.Enabled,
+			"provider": c.ConversationHandoff.Provider,
 		},
 		"http_auth": map[string]any{
 			"enabled":     c.HTTPAuth.Enabled,
@@ -1219,6 +1243,20 @@ func validateSubagentsConfig(cfg SubagentsConfig) error {
 	}
 	if cfg.Enabled && (cfg.DefaultProvider == "opencli_gemini" || cfg.Providers.OpenCLIGemini.Enabled) && strings.TrimSpace(cfg.Providers.OpenCLIGemini.Executable) == "" && strings.TrimSpace(cfg.Providers.OpenCLIGemini.BrowserExecutable) == "" {
 		return errors.New("subagents.providers.opencli_gemini.browser_executable is required when using the built-in Gemini adapter")
+	}
+	return nil
+}
+
+func validateConversationHandoffConfig(cfg ConversationHandoffConfig, chatGPT OpenCLIChatGPTProviderConfig) error {
+	provider := strings.TrimSpace(cfg.Provider)
+	if provider == "" {
+		return errors.New("conversation_handoff.provider is required")
+	}
+	if provider != "opencli_chatgpt" {
+		return fmt.Errorf("conversation_handoff.provider %q is not supported", provider)
+	}
+	if cfg.Enabled && strings.TrimSpace(chatGPT.Executable) == "" {
+		return errors.New("subagents.providers.opencli_chatgpt.executable is required when conversation_handoff is enabled")
 	}
 	return nil
 }

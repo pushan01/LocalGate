@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"localgate/internal/conversation"
 	"localgate/internal/subagent"
 	"localgate/internal/subagent/providers/processutil"
 )
@@ -75,6 +76,10 @@ func (e *ProviderError) ErrorCode() string {
 		return ""
 	}
 	return string(e.Kind)
+}
+
+func (e *ProviderError) SubmissionMayHaveOccurred() bool {
+	return e != nil && e.MayHaveSubmitted
 }
 
 type Config struct {
@@ -142,12 +147,42 @@ func (p *Provider) Create(ctx context.Context, req subagent.ProviderCreateReques
 			Kind: ErrorConfiguration, Message: "opencli ChatGPT subagent model selection is not supported",
 		}
 	}
-	projectID := p.defaultProject
-	if raw := strings.TrimSpace(req.Options["project"]); raw != "" {
+	project := strings.TrimSpace(req.Options["project"])
+	if project == "" {
+		project = p.defaultProject
+	}
+	created, err := p.CreateConversation(ctx, conversation.CreateRequest{
+		Prompt:  prompt,
+		Project: project,
+	})
+	if err != nil {
+		if mayHaveSubmitted(err) {
+			return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(err)
+		}
+		return subagent.ProviderState{}, err
+	}
+	state := subagent.ProviderState{
+		ConversationID:  created.ID,
+		ConversationURL: created.URL,
+		ProjectID:       created.ProjectID,
+	}
+	state.Hints = withPendingMarker(state.Hints, prompt)
+	return state, nil
+}
+
+func (p *Provider) CreateConversation(ctx context.Context, req conversation.CreateRequest) (conversation.Conversation, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return conversation.Conversation{}, &ProviderError{
+			Kind: ErrorConfiguration, Message: "opencli ChatGPT conversation prompt is required",
+		}
+	}
+	projectID := ""
+	if raw := strings.TrimSpace(req.Project); raw != "" {
 		var err error
 		projectID, err = normalizeProjectID(raw)
 		if err != nil {
-			return subagent.ProviderState{}, &ProviderError{Kind: ErrorConfiguration, Message: err.Error(), Cause: err}
+			return conversation.Conversation{}, &ProviderError{Kind: ErrorConfiguration, Message: err.Error(), Cause: err}
 		}
 	}
 	args := []string{"chatgpt", "ask"}
@@ -159,23 +194,31 @@ func (p *Provider) Create(ctx context.Context, req subagent.ProviderCreateReques
 	args = append(args, "--wait", "false", "--format", "json", "--", prompt)
 	payload, err := p.runSubmit(ctx, args)
 	if err != nil {
-		if mayHaveSubmitted(err) {
-			return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(err)
-		}
-		return subagent.ProviderState{}, err
+		return conversation.Conversation{}, err
 	}
 	row, err := parseAskRow(payload)
 	if err != nil {
-		return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(&ProviderError{
+		return conversation.Conversation{}, &ProviderError{
 			Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err, MayHaveSubmitted: true,
-		})
+		}
 	}
 	state, err := stateFromRow(row, projectID)
 	if err != nil {
-		return subagent.ProviderState{}, subagent.NewOutcomeUnknownError(err)
+		var providerErr *ProviderError
+		if errors.As(err, &providerErr) {
+			copyErr := *providerErr
+			copyErr.MayHaveSubmitted = true
+			return conversation.Conversation{}, &copyErr
+		}
+		return conversation.Conversation{}, &ProviderError{
+			Kind: ErrorInvalidOutput, Message: err.Error(), Cause: err, MayHaveSubmitted: true,
+		}
 	}
-	state.Hints = withPendingMarker(state.Hints, prompt)
-	return state, nil
+	return conversation.Conversation{
+		ID:        state.ConversationID,
+		URL:       state.ConversationURL,
+		ProjectID: state.ProjectID,
+	}, nil
 }
 
 func (p *Provider) Send(ctx context.Context, state subagent.ProviderState, message string) (subagent.ProviderState, error) {

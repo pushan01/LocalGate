@@ -495,10 +495,11 @@ func TestLoadAllSkillsFollowsSkillSymlinks(t *testing.T) {
 
 func TestBuiltinSkillsEmbeddedAndLoadable(t *testing.T) {
 	loaded := loadBuiltinSkills()
-	if len(loaded) != 8 {
-		t.Fatalf("expected 8 built-in skills, got %#v", loaded)
+	if len(loaded) != 9 {
+		t.Fatalf("expected 9 built-in skills, got %#v", loaded)
 	}
 	wantNames := []string{
+		"localgate-conversation-handoff",
 		"localgate-deployment",
 		"localgate-file-transfer",
 		"localgate-filesystem",
@@ -518,6 +519,15 @@ func TestBuiltinSkillsEmbeddedAndLoadable(t *testing.T) {
 		if strings.HasPrefix(loaded[i].Content, "---") {
 			t.Fatalf("built-in skill content should exclude frontmatter: %q", loaded[i].Content)
 		}
+	}
+}
+
+func TestConversationHandoffSkillRequiresCapability(t *testing.T) {
+	if builtinSkillRelevant("localgate-conversation-handoff", map[string]any{}, StartupPromptOptions{}) {
+		t.Fatal("conversation handoff skill should be hidden without the capability")
+	}
+	if !builtinSkillRelevant("localgate-conversation-handoff", map[string]any{"conversation_handoff": true}, StartupPromptOptions{}) {
+		t.Fatal("conversation handoff skill should be visible when the capability exists")
 	}
 }
 

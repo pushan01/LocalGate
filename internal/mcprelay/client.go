@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -81,7 +80,7 @@ type rpcResponse struct {
 func Start(ctx context.Context, cfg config.MCPServer) (*Client, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = mergeEnv(cfg.Env)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(cmd)
 	if cfg.CWD != "" {
 		cmd.Dir = cfg.CWD
 	}
@@ -180,11 +179,11 @@ func (c *Client) Close() error {
 			_ = c.stdin.Close()
 		}
 		if c.cmd != nil && c.cmd.Process != nil {
-			_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGTERM)
+			_ = signalProcessGroup(c.cmd, false)
 			select {
 			case <-c.done:
 			case <-time.After(300 * time.Millisecond):
-				_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
+				_ = signalProcessGroup(c.cmd, true)
 				<-c.done
 			}
 		} else {

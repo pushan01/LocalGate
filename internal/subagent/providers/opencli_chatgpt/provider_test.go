@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"localgate/internal/conversation"
 	"localgate/internal/subagent"
 )
 
@@ -64,6 +65,46 @@ printf '%%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://
 	args := readCapturedArgs(t, capture)
 	if !containsAdjacent(args, "--new", "--wait") || contains(args, "--project") || !containsAdjacent(args, "--wait", "false") {
 		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestCreateConversationDoesNotInheritSubagentDefaultProject(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args.bin")
+	executable := writeFakeExecutable(t, fmt.Sprintf(`
+for arg in "$@"; do printf '%%s\0' "$arg"; done > %q
+printf '%%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://chatgpt.com/c/conversation123","response":""}]'
+`, capture))
+	p, err := New(Config{Executable: executable, DefaultProject: "https://chatgpt.com/g/g-p-deadbeef-subagents"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := p.CreateConversation(context.Background(), conversation.CreateRequest{Prompt: "handoff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ProjectID != "" {
+		t.Fatalf("handoff conversation unexpectedly inherited project: %#v", created)
+	}
+	args := readCapturedArgs(t, capture)
+	if !containsAdjacent(args, "--new", "--wait") || contains(args, "--project") {
+		t.Fatalf("handoff conversation should use --new, got %#v", args)
+	}
+}
+
+func TestCreateConversationMarksPostSubmitValidationFailureUncertain(t *testing.T) {
+	executable := writeFakeExecutable(t, "printf '%s\\n' '[{\"conversationId\":\"conversation123\",\"conversationUrl\":\"https://evil.test/c/conversation123\"}]'\\n")
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.CreateConversation(context.Background(), conversation.CreateRequest{Prompt: "handoff"})
+	if err == nil {
+		t.Fatal("expected invalid conversation URL error")
+	}
+	var uncertain interface{ SubmissionMayHaveOccurred() bool }
+	if !errors.As(err, &uncertain) || !uncertain.SubmissionMayHaveOccurred() {
+		t.Fatalf("post-submit validation failure should be uncertain: %#v", err)
 	}
 }
 
@@ -585,4 +626,47 @@ func containsAdjacent(items []string, first, second string) bool {
 		}
 	}
 	return false
+}
+
+func TestCreateConversationSharesSerializationWithSubagentCreate(t *testing.T) {
+	dir := t.TempDir()
+	guard := filepath.Join(dir, "guard")
+	overlap := filepath.Join(dir, "overlap")
+	counter := filepath.Join(dir, "counter")
+	script := fmt.Sprintf("if ! mkdir %q 2>/dev/null; then\n  printf 'overlap' > %q\nfi\ncount=0\nif [ -f %q ]; then count=$(cat %q); fi\ncount=$((count + 1))\nprintf '%%s' \"$count\" > %q\nsleep 0.15\nrmdir %q 2>/dev/null || true\nprintf '[{\"conversationId\":\"conversation%%s\",\"conversationUrl\":\"https://chatgpt.com/c/conversation%%s\"}]\\n' \"$count\" \"$count\"\n", guard, overlap, counter, counter, counter, guard)
+	executable := writeFakeExecutable(t, script)
+	p, err := New(Config{Executable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var subagentState subagent.ProviderState
+	var handoffConversation conversation.Conversation
+	var firstErr, secondErr error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		subagentState, firstErr = p.Create(context.Background(), subagent.ProviderCreateRequest{Instruction: "subagent"})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		handoffConversation, secondErr = p.CreateConversation(context.Background(), conversation.CreateRequest{Prompt: "handoff"})
+	}()
+	close(start)
+	wg.Wait()
+
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("create errors: subagent=%v handoff=%v", firstErr, secondErr)
+	}
+	if subagentState.ConversationID == "" || handoffConversation.ID == "" || subagentState.ConversationID == handoffConversation.ID {
+		t.Fatalf("unexpected conversation ids: subagent=%#v handoff=%#v", subagentState, handoffConversation)
+	}
+	if _, err := os.Stat(overlap); !os.IsNotExist(err) {
+		t.Fatalf("subagent and handoff creation overlapped; overlap marker err=%v", err)
+	}
 }

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"localgate/internal/config"
@@ -303,7 +302,7 @@ func (s *Service) startRunnerProcess(statePath, runnerLog string) error {
 	cmd := exec.Command(s.executable, "-upgrade-runner", "-upgrade-state", statePath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDetachedProcess(cmd)
 	return cmd.Start()
 }
 
@@ -326,7 +325,7 @@ func (s *Service) startDaemon(st State) (int, error) {
 	}
 
 	cmd := exec.Command(target, st.StartArgs...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	configureDetachedProcess(cmd)
 	if logFile != nil {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
@@ -413,36 +412,6 @@ func restoreBinary(target, backup string) error {
 		return err
 	}
 	return nil
-}
-
-func stopPID(pid int, timeout time.Duration) error {
-	if pid <= 0 {
-		return nil
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return nil
-	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
-	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !pidAlive(pid) {
-			return nil
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	_ = proc.Signal(syscall.SIGKILL)
-	return nil
-}
-
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil
 }
 
 func waitForRuntimeBinds(runtime config.Runtime, timeout time.Duration) error {

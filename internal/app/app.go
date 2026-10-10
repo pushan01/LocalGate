@@ -15,6 +15,7 @@ import (
 
 	adapterbundle "localgate/adapters"
 	"localgate/internal/approval"
+	conversationcap "localgate/internal/capabilities/conversation"
 	"localgate/internal/capabilities/filesystem"
 	"localgate/internal/capabilities/meta"
 	notificationcap "localgate/internal/capabilities/notification"
@@ -24,6 +25,7 @@ import (
 	taskcap "localgate/internal/capabilities/task"
 	toolcap "localgate/internal/capabilities/toolaccess"
 	"localgate/internal/config"
+	"localgate/internal/conversationhandoff"
 	"localgate/internal/core"
 	"localgate/internal/deployment"
 	"localgate/internal/download"
@@ -53,41 +55,42 @@ const (
 var ErrApprovalPolicyDenied = errors.New("tool execution denied by approval policy")
 
 type App struct {
-	Sink               *core.EventSink
-	Tasks              *core.Manager
-	Sessions           *core.SessionManager
-	Subagents          *subagent.Manager
-	SubagentConfig     config.SubagentsConfig
-	Root               config.Root
-	Registry           *core.Registry
-	Approvals          *approval.Service
-	Approval           config.ApprovalConfig
-	Admin              config.AdminConfig
-	Downloads          *download.Service
-	Uploads            *upload.Service
-	Exports            *fileexport.Service
-	FileExports        config.FileExports
-	FileBrowser        config.FileBrowserConfig
-	FileBrowserService *filebrowser.Service
-	Notifications      *notify.Service
-	NotificationConfig config.NotificationsConfig
-	ToolAccess         *toolaccess.Service
-	ToolArguments      config.ToolArguments
-	ToolHTTPMode       config.ToolHTTPMode
-	StaticHosting      config.StaticHosting
-	StaticService      *static.Service
-	DynamicHosting     config.DynamicHosting
-	DynamicService     *dynamic.Service
-	DeploymentManager  *deployment.Manager
-	HTTPBaseURL        string
-	StoreBase          string
-	taskStore          *persist.Store
-	Upgrades           *upgrade.Service
-	Relays             map[string]*mcprelay.Client
-	RelayErrors        map[string]string
-	stopJanitor        context.CancelFunc
-	approvalMu         sync.Mutex
-	approvalGates      map[string]func()
+	Sink                *core.EventSink
+	Tasks               *core.Manager
+	Sessions            *core.SessionManager
+	Subagents           *subagent.Manager
+	SubagentConfig      config.SubagentsConfig
+	ConversationHandoff *conversationhandoff.Service
+	Root                config.Root
+	Registry            *core.Registry
+	Approvals           *approval.Service
+	Approval            config.ApprovalConfig
+	Admin               config.AdminConfig
+	Downloads           *download.Service
+	Uploads             *upload.Service
+	Exports             *fileexport.Service
+	FileExports         config.FileExports
+	FileBrowser         config.FileBrowserConfig
+	FileBrowserService  *filebrowser.Service
+	Notifications       *notify.Service
+	NotificationConfig  config.NotificationsConfig
+	ToolAccess          *toolaccess.Service
+	ToolArguments       config.ToolArguments
+	ToolHTTPMode        config.ToolHTTPMode
+	StaticHosting       config.StaticHosting
+	StaticService       *static.Service
+	DynamicHosting      config.DynamicHosting
+	DynamicService      *dynamic.Service
+	DeploymentManager   *deployment.Manager
+	HTTPBaseURL         string
+	StoreBase           string
+	taskStore           *persist.Store
+	Upgrades            *upgrade.Service
+	Relays              map[string]*mcprelay.Client
+	RelayErrors         map[string]string
+	stopJanitor         context.CancelFunc
+	approvalMu          sync.Mutex
+	approvalGates       map[string]func()
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -134,26 +137,6 @@ func New(cfg config.Config) (*App, error) {
 		if subagentErr != nil {
 			return nil, fmt.Errorf("init subagents: %w", subagentErr)
 		}
-		if cfg.Subagents.DefaultProvider == opencligpt.Name || cfg.Subagents.Providers.OpenCLIChatGPT.Enabled {
-			providerConfig := cfg.Subagents.Providers.OpenCLIChatGPT
-			adapterExecutable, materializeErr := adapterbundle.Materialize(filepath.Join(storeBase, "runtime"))
-			if materializeErr != nil {
-				return nil, fmt.Errorf("materialize %s adapter: %w", opencligpt.Name, materializeErr)
-			}
-			provider, providerErr := opencligpt.New(opencligpt.Config{
-				Executable:        providerConfig.Executable,
-				AdapterExecutable: adapterExecutable,
-				Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
-				SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
-				DefaultProject:    providerConfig.DefaultProject,
-			})
-			if providerErr != nil {
-				return nil, fmt.Errorf("init %s provider: %w", opencligpt.Name, providerErr)
-			}
-			if providerErr := manager.RegisterProvider(opencligpt.Name, provider); providerErr != nil {
-				return nil, fmt.Errorf("register %s provider: %w", opencligpt.Name, providerErr)
-			}
-		}
 		if cfg.Subagents.DefaultProvider == opencligemini.Name || cfg.Subagents.Providers.OpenCLIGemini.Enabled {
 			providerConfig := cfg.Subagents.Providers.OpenCLIGemini
 			adapterExecutable := strings.TrimSpace(providerConfig.Executable)
@@ -183,6 +166,41 @@ func New(cfg config.Config) (*App, error) {
 			}
 		}
 		subagentManager = manager
+	}
+	chatGPTUsedBySubagents := cfg.Subagents.Enabled &&
+		(cfg.Subagents.DefaultProvider == opencligpt.Name || cfg.Subagents.Providers.OpenCLIChatGPT.Enabled)
+	needChatGPTProvider := chatGPTUsedBySubagents || cfg.ConversationHandoff.Enabled
+	var chatGPTProvider *opencligpt.Provider
+	if needChatGPTProvider {
+		providerConfig := cfg.Subagents.Providers.OpenCLIChatGPT
+		adapterExecutable := ""
+		if chatGPTUsedBySubagents {
+			materialized, materializeErr := adapterbundle.Materialize(filepath.Join(storeBase, "runtime"))
+			if materializeErr != nil {
+				return nil, fmt.Errorf("materialize %s adapter: %w", opencligpt.Name, materializeErr)
+			}
+			adapterExecutable = materialized
+		}
+		provider, providerErr := opencligpt.New(opencligpt.Config{
+			Executable:        providerConfig.Executable,
+			AdapterExecutable: adapterExecutable,
+			Timeout:           time.Duration(providerConfig.TimeoutSeconds) * time.Second,
+			SubmitInterval:    time.Duration(providerConfig.SubmitIntervalSeconds) * time.Second,
+			DefaultProject:    providerConfig.DefaultProject,
+		})
+		if providerErr != nil {
+			return nil, fmt.Errorf("init %s provider: %w", opencligpt.Name, providerErr)
+		}
+		chatGPTProvider = provider
+		if chatGPTUsedBySubagents {
+			if providerErr := subagentManager.RegisterProvider(opencligpt.Name, provider); providerErr != nil {
+				return nil, fmt.Errorf("register %s provider: %w", opencligpt.Name, providerErr)
+			}
+		}
+	}
+	var conversationHandoffSvc *conversationhandoff.Service
+	if cfg.ConversationHandoff.Enabled {
+		conversationHandoffSvc = conversationhandoff.NewService(cfg.ConversationHandoff.Provider, chatGPTProvider)
 	}
 	approvalSvc := approval.NewServiceWithOptions(approval.NewStore(filepath.Join(storeBase, "approval")), approval.Options{
 		BaseURL:      adminConfig.BaseURL,
@@ -323,6 +341,9 @@ func New(cfg config.Config) (*App, error) {
 			reg.Register(subagentcap.NewArtifactGetTool(subagentManager, cfg.FileExports, exportSvc))
 		}
 	}
+	if conversationHandoffSvc != nil {
+		reg.Register(conversationcap.NewHandoffTool(conversationHandoffSvc))
+	}
 	if notificationSvc.ToolEnabled() {
 		reg.Register(notificationcap.NewTool(notificationSvc))
 	}
@@ -364,39 +385,40 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		Sink:               sink,
-		Tasks:              tm,
-		Sessions:           sessions,
-		Subagents:          subagentManager,
-		SubagentConfig:     cfg.Subagents,
-		Root:               cfg.Root,
-		Registry:           reg,
-		Approvals:          approvalSvc,
-		Approval:           approvalConfig,
-		Admin:              adminConfig,
-		Downloads:          downloadSvc,
-		Uploads:            uploadSvc,
-		Exports:            exportSvc,
-		FileExports:        cfg.FileExports,
-		FileBrowser:        cfg.FileBrowser,
-		FileBrowserService: fileBrowserSvc,
-		Notifications:      notificationSvc,
-		NotificationConfig: cfg.Notifications,
-		ToolAccess:         toolAccessSvc,
-		ToolArguments:      cfg.ToolArguments,
-		ToolHTTPMode:       cfg.ToolHTTPMode,
-		StaticHosting:      cfg.Deployments.Static,
-		StaticService:      staticSvc,
-		DynamicHosting:     cfg.Deployments.Dynamic,
-		DynamicService:     dynamicSvc,
-		DeploymentManager:  deploymentManager,
-		HTTPBaseURL:        cfg.HTTP.BaseURL,
-		StoreBase:          storeBase,
-		taskStore:          mainStore,
-		Upgrades:           upgradeSvc,
-		Relays:             relays,
-		RelayErrors:        relayErrors,
-		approvalGates:      map[string]func(){},
+		Sink:                sink,
+		Tasks:               tm,
+		Sessions:            sessions,
+		Subagents:           subagentManager,
+		SubagentConfig:      cfg.Subagents,
+		ConversationHandoff: conversationHandoffSvc,
+		Root:                cfg.Root,
+		Registry:            reg,
+		Approvals:           approvalSvc,
+		Approval:            approvalConfig,
+		Admin:               adminConfig,
+		Downloads:           downloadSvc,
+		Uploads:             uploadSvc,
+		Exports:             exportSvc,
+		FileExports:         cfg.FileExports,
+		FileBrowser:         cfg.FileBrowser,
+		FileBrowserService:  fileBrowserSvc,
+		Notifications:       notificationSvc,
+		NotificationConfig:  cfg.Notifications,
+		ToolAccess:          toolAccessSvc,
+		ToolArguments:       cfg.ToolArguments,
+		ToolHTTPMode:        cfg.ToolHTTPMode,
+		StaticHosting:       cfg.Deployments.Static,
+		StaticService:       staticSvc,
+		DynamicHosting:      cfg.Deployments.Dynamic,
+		DynamicService:      dynamicSvc,
+		DeploymentManager:   deploymentManager,
+		HTTPBaseURL:         cfg.HTTP.BaseURL,
+		StoreBase:           storeBase,
+		taskStore:           mainStore,
+		Upgrades:            upgradeSvc,
+		Relays:              relays,
+		RelayErrors:         relayErrors,
+		approvalGates:       map[string]func(){},
 	}
 	if cfg.SessionCleanup.SweepIntervalMs > 0 || logStoreSweepInterval > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1103,7 +1125,8 @@ func (a *App) SubmitToolTaskWithMeta(meta invocation.Meta, tool string, args map
 }
 
 func toolTaskConcurrencyClass(tool string) core.TaskConcurrencyClass {
-	if strings.HasPrefix(strings.TrimSpace(tool), "subagent_") {
+	tool = strings.TrimSpace(tool)
+	if strings.HasPrefix(tool, "subagent_") || tool == "conversation_handoff" {
 		return core.TaskConcurrencyIsolated
 	}
 	return ""

@@ -279,3 +279,37 @@ func TestApprovalObserverReceivesBoundAndResolvedRequests(t *testing.T) {
 		t.Fatalf("unexpected observed statuses: %#v", observed)
 	}
 }
+
+func TestApprovalRedactsConversationHandoffContextButKeepsDigestBinding(t *testing.T) {
+	store := NewStore(t.TempDir())
+	svc := NewService(store)
+	args := map[string]any{
+		"handoff_context": "sensitive compacted project context",
+		"project":         "deadbeef",
+	}
+	req, err := svc.Create(Request{
+		Tool:      "conversation_handoff",
+		Requester: "test",
+		Reason:    "test",
+		Args:      args,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if req.Args["handoff_context"] != redactedValue {
+		t.Fatalf("handoff context was not redacted: %#v", req.Args)
+	}
+	if req.Args["project"] != "deadbeef" {
+		t.Fatalf("non-sensitive handoff metadata was unexpectedly redacted: %#v", req.Args)
+	}
+	if want := Digest("conversation_handoff", "test", args); req.ArgsDigest != want {
+		t.Fatalf("args digest = %q, want %q", req.ArgsDigest, want)
+	}
+	stored, err := os.ReadFile(filepath.Join(store.Base, "approvals", req.ID+".json"))
+	if err != nil {
+		t.Fatalf("read stored approval: %v", err)
+	}
+	if strings.Contains(string(stored), "sensitive compacted project context") {
+		t.Fatalf("stored approval leaked handoff context: %s", stored)
+	}
+}

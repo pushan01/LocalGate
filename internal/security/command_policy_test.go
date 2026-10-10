@@ -82,3 +82,13 @@ func TestValidateCommandShellMetaFlags(t *testing.T) {
 		t.Fatalf("expected substitution allowed when configured, got reason=%q", d.Reason)
 	}
 }
+
+func TestValidateArgvExecutableUsesWholeToken(t *testing.T) {
+	ws := config.Root{CommandAllowlist: []string{"/opt/My Tools/tool"}}
+	if d := ValidateArgvExecutable("/opt/My Tools/tool", ws); !d.Allowed {
+		t.Fatalf("expected argv executable with spaces to be allowed, got reason=%q", d.Reason)
+	}
+	if d := ValidateArgvExecutable("/opt/My Tools/other", ws); d.Allowed {
+		t.Fatal("expected unlisted argv executable to be denied")
+	}
+}

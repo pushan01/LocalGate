@@ -6,6 +6,7 @@ internal/*.json
 /localgate.yaml.back
 /bin/localgate
 /bin/localgate-v002
+/bin/*.exe
 /cmd/localgate/localgate
 /run_daemon.sh
 /web/admin/node_modules/

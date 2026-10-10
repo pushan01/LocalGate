@@ -281,6 +281,8 @@ func builtinSkillRelevant(name string, hasTools map[string]any, opts StartupProm
 		) || !opts.ToolHTTPMode
 	case "localgate-subagents":
 		return hasAnyVisibleTool(hasTools, "subagent_spawn", "subagent_send", "subagent_poll", "subagent_wait", "subagent_get", "subagent_list", "subagent_close", "subagent_artifact_get")
+	case "localgate-conversation-handoff":
+		return hasAnyVisibleTool(hasTools, "conversation_handoff")
 	case "localgate-notification":
 		return hasAnyVisibleTool(hasTools, "send_notification")
 	case "localgate-tool-http":

@@ -275,11 +275,17 @@ const snapshotScript = String.raw`
       || href.includes('accounts.google.com/ServiceLogin');
   });
 
-  const bodyText = clean((document.body && document.body.innerText) || '').slice(0, 12000);
+  // Do not classify quota/challenge state from the conversation-history sidebar.
+  // A valid chat title such as "Gemini Spark and API Quotas" would otherwise
+  // make every new Gemini conversation look quota-blocked.
+  const bodyText = clean((document.body && document.body.innerText) || '');
+  const sideNav = document.querySelector('bard-sidenav, side-navigation-content, conversations-list');
+  const sideNavText = clean((sideNav && (sideNav.innerText || sideNav.textContent)) || '');
+  const blockerText = (sideNavText ? bodyText.replace(sideNavText, ' ') : bodyText).slice(0, 12000);
   let blocker = '';
   if (signIn && !composer) blocker = 'auth';
-  else if (/captcha|verify (?:that )?you(?:'re| are) human|验证您是真人|完成验证/i.test(bodyText) && !composer) blocker = 'challenge';
-  else if (/too many requests|rate limit|usage limit|usage cap|quota|达到.*(?:上限|限额)|请求过于频繁/i.test(bodyText) && !generating) blocker = 'quota';
+  else if (/captcha|verify (?:that )?you(?:'re| are) human|验证您是真人|完成验证/i.test(blockerText) && !composer) blocker = 'challenge';
+  else if (/too many requests|rate limits?|usage limit|usage cap|quota\s+(?:exceeded|reached|limit|exhausted)|reached (?:your|the) .*?limit|limit (?:reached|exceeded)|达到.*(?:上限|限额)|请求过于频繁/i.test(blockerText) && !generating) blocker = 'quota';
 
   return {
     url: window.location.href,

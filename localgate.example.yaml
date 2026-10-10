@@ -110,6 +110,15 @@ subagents:
       # 同一 Gemini provider 的所有 spawn/send 至少间隔这么多秒；0 表示关闭。
       submit_interval_seconds: 0
 
+# 将当前模型自行压缩后的上下文交接到一个新的普通 ChatGPT 会话。
+# 该能力不创建 LocalGate subagent；成功后用户直接打开返回的 conversation URL 继续。
+# 当前仅支持 opencli_chatgpt，并复用上方 subagents.providers.opencli_chatgpt 的 executable、
+# timeout 和 submit interval 配置，即使 subagents.enabled=false 也可单独启用。
+# 未显式传 project 时始终创建顶层普通会话，不继承 Subagent 的 default_project。
+conversation_handoff:
+  enabled: false
+  provider: "opencli_chatgpt"
+
 # 可选：显式配置共享 Skill 根目录。每项必须是绝对路径。
 # 这些目录会先于自动发现的 ~/.agents/skills 和 <root>/.agents/skills 扫描；
 # 重复路径（包括解析后指向同一目录的 symlink）只扫描一次，同名 Skill 只保留第一次命中的版本。

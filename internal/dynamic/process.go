@@ -241,16 +241,13 @@ func bindConflictInLog(path string) bool {
 }
 
 func processEnvironment(deployment Deployment, hostname, publicURL string, port int) []string {
-	env := []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"TMPDIR=" + os.TempDir(),
+	env := append(platformProcessEnvironment(),
 		"HOST=127.0.0.1",
-		"PORT=" + strconv.Itoa(port),
-		"LOCALGATE_APP_HOST=" + hostname,
-		"LOCALGATE_PUBLIC_URL=" + publicURL,
+		"PORT="+strconv.Itoa(port),
+		"LOCALGATE_APP_HOST="+hostname,
+		"LOCALGATE_PUBLIC_URL="+publicURL,
 		"LOCALGATE_BASE_PATH=/",
-	}
+	)
 	keys := make([]string, 0, len(deployment.Env))
 	for key := range deployment.Env {
 		keys = append(keys, key)

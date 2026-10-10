@@ -3,15 +3,19 @@
 package dynamic
 
 import (
-	"os"
 	"os/exec"
+	"strconv"
 )
 
 func configureProcessGroup(_ *exec.Cmd) {}
 
 func signalProcessGroup(cmd *exec.Cmd, force bool) error {
+	args := []string{"/PID", strconv.Itoa(cmd.Process.Pid), "/T"}
 	if force {
-		return cmd.Process.Kill()
+		args = append(args, "/F")
 	}
-	return cmd.Process.Signal(os.Interrupt)
+	if err := exec.Command("taskkill.exe", args...).Run(); err == nil {
+		return nil
+	}
+	return cmd.Process.Kill()
 }

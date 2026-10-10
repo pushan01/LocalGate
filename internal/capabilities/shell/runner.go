@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"localgate/internal/config"
@@ -39,12 +38,16 @@ func (r Runner) Run(ctx context.Context, taskID string, command string, cwd stri
 		defer cancel()
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", command)
+	shellPath, shellArgs, err := commandShell(command)
+	if err != nil {
+		return -1, err
+	}
+	cmd := exec.Command(shellPath, shellArgs...)
 	if resolvedCWD != "" {
 		cmd.Dir = resolvedCWD
 	}
 	cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -103,7 +106,7 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 		return -1, errors.New("argv empty")
 	}
 	// Allowlist by first token
-	if d := security.ValidateCommand(argv[0], r.WS); !d.Allowed {
+	if d := security.ValidateArgvExecutable(argv[0], r.WS); !d.Allowed {
 		return -1, errors.New("command not allowed: " + d.Reason)
 	}
 	resolvedCWD, err := resolveWorkdir(cwd, r.WS)
@@ -121,7 +124,7 @@ func (r Runner) RunArgv(ctx context.Context, taskID string, argv []string, cwd s
 		cmd.Dir = resolvedCWD
 	}
 	cmd.Env = mergeEnvAllowed(env, r.WS.EnvAllowlist)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcessGroup(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return -1, err
@@ -209,23 +212,6 @@ func stream(ctx context.Context, sink *core.EventSink, taskID, streamName string
 	}
 }
 
-func terminateProcessGroupOnContext(ctx context.Context, pgid int, processDone <-chan struct{}) {
-	select {
-	case <-processDone:
-		return
-	case <-ctx.Done():
-	}
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	timer := time.NewTimer(200 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-processDone:
-		return
-	case <-timer.C:
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}
-}
-
 func firstStreamError(errs <-chan error) error {
 	for err := range errs {
 		if err != nil &&
@@ -266,29 +252,23 @@ func exitCode(err error) int {
 func mergeEnvAllowed(env map[string]string, allow []string) []string {
 	allowed := make(map[string]struct{}, len(allow))
 	for _, k := range allow {
-		allowed[k] = struct{}{}
+		allowed[normalizeEnvKey(k)] = struct{}{}
 	}
-	base := map[string]string{}
-	// PATH is part of LocalGate's execution environment rather than an
-	// application secret. Always inherit the service process PATH so shell
-	// execution resolves the same binaries that LocalGate itself can resolve.
-	// A caller-provided PATH still requires explicit allowlisting below.
-	if pathValue, ok := os.LookupEnv("PATH"); ok {
-		base["PATH"] = pathValue
-	}
+	base := trustedBaseEnvironment()
 	for _, kv := range os.Environ() {
 		i := strings.IndexByte(kv, '=')
 		if i <= 0 {
 			continue
 		}
-		k := kv[:i]
+		k := normalizeEnvKey(kv[:i])
 		if _, ok := allowed[k]; ok {
 			base[k] = kv[i+1:]
 		}
 	}
 	for k, v := range env {
-		if _, ok := allowed[k]; ok {
-			base[k] = v
+		key := normalizeEnvKey(k)
+		if _, ok := allowed[key]; ok {
+			base[key] = v
 		}
 	}
 	keys := make([]string, 0, len(base))

@@ -1,9 +1,7 @@
 package security
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
 
 	"localgate/internal/config"
 )
@@ -104,12 +102,15 @@ func resolveNonExistentPath(p string) (string, bool) {
 func within(p, root string) bool {
 	p = filepath.Clean(p)
 	root = filepath.Clean(root)
-	// ensure trailing separator on root when prefix comparing
-	if !strings.HasSuffix(root, string(os.PathSeparator)) {
-		root = root + string(os.PathSeparator)
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
 	}
-	if !strings.HasSuffix(p, string(os.PathSeparator)) {
-		p = p + string(os.PathSeparator)
+	if rel == "." {
+		return true
 	}
-	return strings.HasPrefix(p, root)
+	if rel == ".." || filepath.IsAbs(rel) {
+		return false
+	}
+	return len(rel) < 3 || rel[:3] != ".."+string(filepath.Separator)
 }

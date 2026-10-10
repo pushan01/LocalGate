@@ -214,6 +214,7 @@ LocalGate 下载并校验目标路径
 | Bark 通知 | 待处理与异常审批、部署错误旁路通知、模型主动推送、AES-CBC 加密 |
 | MCP 接入 | stdio MCP、Streamable HTTP MCP、下游 MCP 转发 |
 | 标准 Skills | 动态发现、全局与 root 项目作用域、渐进式披露、按需读取 |
+| 会话交接 | 当前模型自行压缩上下文，创建新的普通 ChatGPT conversation，并把后续控制权交还用户 |
 | 应用发布 | 静态托管、动态进程监督、健康检查和回滚 |
 | 多项目隔离 | 一个实例一个 root；需要多个安全域时运行多个 LocalGate 实例 |
 | 运维 | 管理后台、部署管理、受保护的二进制自升级 |
@@ -225,10 +226,12 @@ LocalGate 下载并校验目标路径
 ## 环境要求
 
 - Go 1.23 或更高版本
-- macOS 或 Linux
-- Bash，用于运行仓库内的辅助脚本
+- macOS、Linux，或 Windows 10/11
+- macOS/Linux 使用 Bash 辅助脚本；Windows 使用 PowerShell 辅助脚本
 
 动态部署还需要在配置中明确允许对应的运行时，例如 Node.js 或 Python。
+
+Windows 当前属于首阶段原生支持：控制面、HTTP/MCP、文件能力、`run_command`（系统 PowerShell）、`run_argv` 和非 TTY Session 已有平台实现。`exec_command` 的 `tty=true` 暂未接入 ConPTY，`start-http.ps1` 也暂不提供 daemon 包装；需要后台常驻时可先使用 Windows Service、Task Scheduler 或其他进程管理器。Browser-backed Subagent、Conversation Handoff 和自升级仍需要更多 Windows 实机验证。
 
 ## 快速开始
 
@@ -236,6 +239,12 @@ LocalGate 下载并校验目标路径
 
 ```bash
 cp localgate.example.yaml localgate.yaml
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item localgate.example.yaml localgate.yaml
 ```
 
 样例配置默认：
@@ -257,10 +266,40 @@ cp localgate.example.yaml localgate.yaml
 ./scripts/build.sh
 ```
 
+在 macOS/Linux 上交叉编译 Windows 版本：
+
+```bash
+./scripts/build-windows.sh
+```
+
+默认生成 `bin/localgate.exe`（`windows/amd64`）。如需 Windows ARM64：
+
+```bash
+GOARCH=arm64 ./scripts/build-windows.sh
+```
+
 构建产物位于：
 
 ```text
 bin/localgate
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\build.ps1
+```
+
+Windows 构建产物为：
+
+```text
+bin\localgate.exe
+```
+
+也可以从 macOS/Linux 直接交叉编译 Windows 版本：
+
+```bash
+GOOS=windows GOARCH=amd64 ./scripts/build.sh
 ```
 
 可在构建时写入版本号：
@@ -275,6 +314,12 @@ VERSION=v0.1.0 ./scripts/build.sh
 
 ```bash
 ./scripts/start-http.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\start-http.ps1
 ```
 
 控制面、管理后台、public deployment 和 private deployment 必须使用四个不同端口。可在配置中设置：
@@ -326,6 +371,12 @@ go run ./cmd/localgate -config ./localgate.yaml
 
 ```bash
 ./scripts/start-mcp.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\start-mcp.ps1
 ```
 
 或：
@@ -583,6 +634,14 @@ curl -sS -X POST http://127.0.0.1:3737/sessions/$SESSION_ID/stdin \
 
 Session 输出使用绝对 cursor。客户端应保存返回的 `next_offset`，并在下一次 `write_stdin` 或 `read_thread_terminal` 中作为 `cursor` 传回；`has_more=true` 时继续分页读取。`buffer_truncated=true`（兼容字段 `truncated=true`）表示更老的缓冲输出已被丢弃，`cursor_expired=true` 表示传入 cursor 已早于当前 `base_offset`。优先使用 `max_output_items`（1–500）；旧 `max_output_tokens` 仅作为兼容 alias，实际限制的也是输出 item 数而不是模型 token。`read_thread_terminal` 可用 `wait_ms` 等待新输出，`write_stdin` 可用 `yield_time_ms` 在写入后等待；空 `chars` 可作为纯等待/读取。只有 `completed=true` / `output_complete=true` 才表示终态 Session 的保留输出已读到当前末尾。Session 只属于当前 LocalGate 实例，读取、输入和关闭只需要 `session_id`。`task_cancel` 只负责 Task 生命周期；`exec_command` 已成功返回 `session_id` 后，应使用 `close_session` 停止对应进程。
 
+### Conversation Handoff
+
+启用 `conversation_handoff` 后，当前模型可以在用户明确要求 compact / 换新会话继续时，先自行把当前工作压缩成 handoff checkpoint，再通过 `conversation_handoff` 创建一个新的**普通 ChatGPT conversation**。LocalGate 不会创建 `sg_*`、不会把新会话纳入 Subagent Manager，也不会代理后续消息；成功结果只返回 `conversation_id`、`conversation_url` 和可选的 Project ID，之后由用户直接打开新会话继续。
+
+这个能力属于渐进式 Registry capability，不进入普通 MCP 的稳定九工具顶层面。`get_startup_instructions` 只在能力实际启用时推荐 `localgate-conversation-handoff` Builtin Skill；模型按 Skill 生成结构化 Markdown checkpoint，然后通过 `get_tool_schema` + `invoke_tool` 调用 `conversation_handoff`。LocalGate 会在 checkpoint 外包一层固定 continuation prompt，要求新会话把它视为上一段工作的背景、不要重做已完成事项，并先简短确认后等待用户下一条消息。
+
+`handoff_context` 当前最大 256 KiB。它属于可能包含项目上下文的敏感参数：如果管理员对 `conversation_handoff` 配置审批，审批绑定的 `args_digest` 仍基于真实原始参数计算，但落盘的审批参数会把 `handoff_context` 替换为 `[REDACTED]`。该操作会在远端创建新 conversation，因此明确标记为非幂等；如果返回 `conversation_handoff_outcome_unknown`，说明远端可能已经创建成功但 LocalGate 无法确认 ID/URL，调用方不得自动重试，应先检查 ChatGPT 会话历史。
+
 ### Subagent
 
 启用 `subagents` 后，LocalGate 会在 Registry 中增加一组持久化子 Agent 工具。普通 MCP 模式下这些工具由 `localgate-subagents` Builtin Skill 渐进披露，并通过 `invoke_tool` 调用：
@@ -635,6 +694,27 @@ Task lifecycle 工具属于 Registry 渐进能力，由 `localgate-task-session`
 - 实例级审批策略
 
 所有文件路径和 Shell workdir 都必须在 symlink 解析后位于配置 root 内。需要隔离多个项目或安全域时，运行多个 LocalGate 实例，而不是在一个实例内切换 root。
+
+### Conversation Handoff
+
+Conversation Handoff 当前只支持 `opencli_chatgpt`。它复用 `subagents.providers.opencli_chatgpt` 下的 OpenCLI executable、超时、提交冷却和默认 Project 配置，但**不要求** `subagents.enabled=true`：
+
+```yaml
+subagents:
+  enabled: false
+  providers:
+    opencli_chatgpt:
+      executable: opencli
+      timeout_seconds: 120
+      submit_interval_seconds: 0
+      default_project: ""
+
+conversation_handoff:
+  enabled: true
+  provider: opencli_chatgpt
+```
+
+Conversation Handoff 默认不会继承 Subagent 的 `default_project`：工具未显式传 `project` 时使用 OpenCLI `--new` 创建顶层普通会话；只有用户明确要求放进某个 ChatGPT Project 时才传 `project`。创建出来的 conversation 属于 LocalGate/OpenCLI 当前登录的 ChatGPT 账号或 workspace，因此用户打开返回 URL 时也必须使用有权访问该会话的账号。若 Subagent 与 Conversation Handoff 同时启用，二者共享同一个 ChatGPT Provider 实例、browser surface 串行锁和 `submit_interval_seconds` 节流，避免并发操作同一登录会话时互相导航或重复提交。
 
 ### Subagents
 
@@ -692,7 +772,7 @@ ChatGPT 的 upstream OpenCLI `ask/send` 与 LocalGate 内置 `inspect` 都会导
 
 状态查询默认做两层节流：同一个 subagent 的远端状态刷新至少间隔 `same_agent_poll_interval_seconds`（默认 10 秒）；切换到不同 subagent 时，两次远端状态刷新至少间隔 `different_agent_poll_interval_seconds`（默认 5 秒）。`subagent_poll` 和 `subagent_get(refresh=true)` 在间隔未到时直接返回最近一次本地状态，并返回 `refreshed=false` 与 `retry_after_ms`，不会继续请求 ChatGPT；`subagent_wait` 会等待到允许的时间点再继续检查。两项设为 `0` 可关闭对应节流。
 
-消息提交节流是 provider 级配置：`subagents.providers.<provider>.submit_interval_seconds` 控制该 provider 下所有 `subagent_spawn` / `subagent_send` 的最小冷却时间，`0` 表示关闭。冷却从上一条提交命令完成后开始计算；如果下一次提交来得太早，Provider 会等待到允许的时间再执行，而不是返回 rate-limit 错误。ChatGPT 与 Gemini 各自维护独立的提交节流状态，`poll/inspect` 不受这个配置影响。
+消息提交节流是 provider 级配置：`subagents.providers.<provider>.submit_interval_seconds` 控制该 provider 下所有 `subagent_spawn` / `subagent_send` 的最小冷却时间；ChatGPT 的 `conversation_handoff` 也共享同一份 ChatGPT provider 冷却。`0` 表示关闭。冷却从上一条提交命令完成后开始计算；如果下一次提交来得太早，Provider 会等待到允许的时间再执行，而不是返回 rate-limit 错误。ChatGPT 与 Gemini 各自维护独立的提交节流状态，`poll/inspect` 不受这个配置影响。
 
 `subagent_close` 是唯一的 subagent 结束入口。Provider close 成功后，LocalGate 会删除对应持久化记录与内存映射、释放 conversation ownership 和 `max_agents` 名额；后续再使用这个 `subagent_id` 会返回 not found。旧版本遗留的 `closed` 记录也可以通过 `subagent_close` 清理并释放名额。
 

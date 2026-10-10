@@ -85,12 +85,12 @@ type Actor struct {
 }
 
 type Binding struct {
-	ApprovalID  string
-	TaskID      string
-	Requester   string
-	Tool        string
-	ArgsDigest  string
-	TaskStatus  string
+	ApprovalID string
+	TaskID     string
+	Requester  string
+	Tool       string
+	ArgsDigest string
+	TaskStatus string
 }
 
 type Store struct {
@@ -354,12 +354,12 @@ func (s *Service) Create(req Request) (Request, error) {
 		return Request{}, err
 	}
 	if err := s.store.AppendAudit(AuditRecord{
-		ID:          newID(),
-		ApprovalID:  req.ID,
-		Action:      "created",
-		Tool:        req.Tool,
-		Requester:   req.Requester,
-		Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
+		ID:         newID(),
+		ApprovalID: req.ID,
+		Action:     "created",
+		Tool:       req.Tool,
+		Requester:  req.Requester,
+		Transport:  req.Transport, MCPSessionID: req.MCPSessionID,
 		SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
 		Reason:    req.Reason,
 		CreatedAt: time.Now().UTC(),
@@ -436,26 +436,26 @@ func (s *Service) ApproveBound(id string, actor Actor, binding Binding) (Request
 		}
 		if errors.Is(err, ErrApprovalBindingMismatch) {
 			_ = s.store.AppendAudit(AuditRecord{
-				ID:          newID(),
-				ApprovalID:  req.ID,
-				TaskID:      req.TaskID,
-				Action:      "approval_validation_failed",
-				Actor:       normalizeActor(actor).ID,
-				AuthMethod:  normalizeActor(actor).AuthMethod,
-				Tool:        req.Tool,
-				Requester:   req.Requester,
-				Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
+				ID:         newID(),
+				ApprovalID: req.ID,
+				TaskID:     req.TaskID,
+				Action:     "approval_validation_failed",
+				Actor:      normalizeActor(actor).ID,
+				AuthMethod: normalizeActor(actor).AuthMethod,
+				Tool:       req.Tool,
+				Requester:  req.Requester,
+				Transport:  req.Transport, MCPSessionID: req.MCPSessionID,
 				SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
 				Reason: req.Reason,
 				Error:  err.Error(),
 				Details: map[string]any{
 					"binding": map[string]any{
-						"approval_id":  binding.ApprovalID,
-						"task_id":      binding.TaskID,
-						"requester":    binding.Requester,
-						"tool":         binding.Tool,
-						"args_digest":  binding.ArgsDigest,
-						"task_status":  binding.TaskStatus,
+						"approval_id": binding.ApprovalID,
+						"task_id":     binding.TaskID,
+						"requester":   binding.Requester,
+						"tool":        binding.Tool,
+						"args_digest": binding.ArgsDigest,
+						"task_status": binding.TaskStatus,
 					},
 				},
 				CreatedAt: time.Now().UTC(),
@@ -617,15 +617,15 @@ func (s *Service) ReconcilePendingOnStartup(actor string) ([]Request, error) {
 func (s *Service) appendDecisionAudit(req Request, action string, actor Actor) error {
 	actor = normalizeActor(actor)
 	return s.store.AppendAudit(AuditRecord{
-		ID:          newID(),
-		ApprovalID:  req.ID,
-		TaskID:      req.TaskID,
-		Action:      action,
-		Actor:       actor.ID,
-		AuthMethod:  actor.AuthMethod,
-		Tool:        req.Tool,
-		Requester:   req.Requester,
-		Transport:   req.Transport, MCPSessionID: req.MCPSessionID,
+		ID:         newID(),
+		ApprovalID: req.ID,
+		TaskID:     req.TaskID,
+		Action:     action,
+		Actor:      actor.ID,
+		AuthMethod: actor.AuthMethod,
+		Tool:       req.Tool,
+		Requester:  req.Requester,
+		Transport:  req.Transport, MCPSessionID: req.MCPSessionID,
 		SessionMode: req.SessionMode, SessionIDSource: req.SessionIDSource, RequestID: req.RequestID,
 		Reason:    req.Reason,
 		CreatedAt: time.Now().UTC(),
@@ -722,7 +722,8 @@ func isSensitiveKey(key string) bool {
 	case "authorization", "proxyauthorization", "cookie", "setcookie",
 		"password", "passwd", "passphrase", "secret", "clientsecret",
 		"privatekey", "apikey", "token", "accesstoken", "authtoken",
-		"bearertoken", "refreshtoken", "sessiontoken", "credential", "credentials":
+		"bearertoken", "refreshtoken", "sessiontoken", "credential", "credentials",
+		"handoffcontext":
 		return true
 	}
 	return strings.HasSuffix(normalized, "password") ||
@@ -748,9 +749,9 @@ func redactRequests(requests []Request) []Request {
 
 func Digest(tool, requester string, args map[string]any) string {
 	payload, _ := json.Marshal(map[string]any{
-		"tool":         tool,
-		"requester":    requester,
-		"args":         args,
+		"tool":      tool,
+		"requester": requester,
+		"args":      args,
 	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

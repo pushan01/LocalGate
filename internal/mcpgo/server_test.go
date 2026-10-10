@@ -186,6 +186,46 @@ printf '%s\n' '[{"conversationId":"conversation123","conversationUrl":"https://c
 	}
 }
 
+func TestConversationHandoffProgressivelyInvokableWithoutSubagents(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "opencli-fake")
+	script := "#!/bin/sh\nset -eu\nprintf '%s\\n' '[{\"conversationId\":\"conversation123\",\"conversationUrl\":\"https://chatgpt.com/c/conversation123\",\"response\":\"\"}]'\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.LogStore = filepath.Join(root, ".localgate")
+	cfg.Subagents.Enabled = false
+	cfg.Subagents.Providers.OpenCLIChatGPT.Executable = executable
+	cfg.ConversationHandoff.Enabled = true
+	cfg.Root = config.Root{Path: root}
+	s := newTestServerWithConfig(t, cfg)
+	if s.impl.ListTools()["conversation_handoff"] != nil {
+		t.Fatalf("conversation_handoff should not be directly MCP-exposed: %#v", s.impl.ListTools())
+	}
+	if s.impl.ListTools()["invoke_tool"] == nil {
+		t.Fatal("invoke_tool should be registered")
+	}
+
+	res, err := s.handleInvokeTool(context.Background(), callReq(map[string]any{
+		"tool": "conversation_handoff",
+		"arguments": map[string]any{
+			"handoff_context": "# Current State\nContinue implementation.",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("invoke conversation_handoff: %v", err)
+	}
+	payload := payloadFromResult(t, res)
+	result, _ := payload["result"].(map[string]any)
+	if statusFromPayload(payload) != "succeeded" || result["accepted"] != true || result["conversation_id"] != "conversation123" || result["conversation_url"] != "https://chatgpt.com/c/conversation123" {
+		t.Fatalf("unexpected MCP conversation handoff reply: %#v", payload)
+	}
+	if _, exists := result["subagent_id"]; exists {
+		t.Fatalf("conversation handoff must not create a subagent result: %#v", payload)
+	}
+}
+
 func TestRegisterCoreToolsExposeOnlyBase64dataSchemaWhenEnabled(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithConfig(t, config.Config{

@@ -9,9 +9,13 @@ if [[ "${BUILD_ADMIN:-0}" == "1" ]]; then
 fi
 
 VERSION="${VERSION:-dev}"
-OUTPUT="${OUTPUT:-$ROOT_DIR/bin/localgate}"
 GOOS_VALUE="${GOOS:-}"
 GOARCH_VALUE="${GOARCH:-}"
+DEFAULT_OUTPUT="$ROOT_DIR/bin/localgate"
+if [[ "$GOOS_VALUE" == "windows" ]]; then
+  DEFAULT_OUTPUT="${DEFAULT_OUTPUT}.exe"
+fi
+OUTPUT="${OUTPUT:-$DEFAULT_OUTPUT}"
 
 mkdir -p "$(dirname "$OUTPUT")"
 

@@ -317,7 +317,7 @@ func isSensitiveKey(key string) bool {
 	}
 	sensitive := []string{
 		"password", "passwd", "secret", "token", "apikey", "api_key",
-		"authorization", "cookie", "env",
+		"authorization", "cookie", "env", "handoff_context",
 	}
 	for _, s := range sensitive {
 		if strings.Contains(key, s) {
