@@ -1055,6 +1055,9 @@ func (a *API) handleDownloads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleExports(w http.ResponseWriter, r *http.Request) {
+	// Signed export links are bearer capabilities. Allow an MCP Apps iframe to
+	// read their bytes for ChatGPT's optional file registration API.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		server.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 		return

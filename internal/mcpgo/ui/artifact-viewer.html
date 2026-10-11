@@ -27,13 +27,13 @@
     <div class="grid" id="items" aria-live="polite"></div>
   </main>
   <script type="module">
-    // MCP Apps bridge: no network access, cookies or persistent local storage.
-    // Image bytes arrive as MCP image content; download links are explicit
-    // short-lived signed resource_link blocks, never read from user input.
+    // Export links are short-lived bearer URLs. Read only those provided by
+    // the tool, then opportunistically register with ChatGPT's optional file API.
     const items = document.querySelector('#items');
     const status = document.querySelector('#status');
     let sequence = 0;
     const pending = new Map();
+    const attempted = new Set();
 
     function notify(method, params = {}) {
       window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
@@ -51,6 +51,32 @@
         const url = new URL(uri);
         return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
       } catch { return ''; }
+    }
+    async function registerFile(file) {
+      if (typeof window.openai?.uploadFile !== 'function') return;
+      const uri = safeHTTP(file.uri);
+      if (!uri || !uri.startsWith('https://') || attempted.has(uri)) return;
+      attempted.add(uri);
+      try {
+        status.hidden = false;
+        status.textContent = '正在将导出文件注册到 ChatGPT…';
+        const response = await fetch(uri, { credentials: 'omit', mode: 'cors' });
+        if (!response.ok) throw new Error('download HTTP ' + response.status);
+        const blob = await response.blob();
+        const fileName = typeof file.name === 'string' && file.name ? file.name : 'export.bin';
+        const result = await window.openai.uploadFile(new File([blob], fileName, {
+          type: typeof file.mimeType === 'string' ? file.mimeType : blob.type,
+        }));
+        if (!result?.fileId) throw new Error('missing fileId');
+        status.textContent = '已注册到 ChatGPT 文件系统：' + result.fileId;
+        if (typeof window.openai.setWidgetState === 'function') {
+          const state = { modelContent: 'LocalGate exported file: ' + fileName + ' (fileId: ' + result.fileId + ')', privateContent: { fileId: result.fileId } };
+          if ((file.mimeType || '').startsWith('image/')) state.imageIds = [result.fileId];
+          window.openai.setWidgetState(state);
+        }
+      } catch (error) {
+        status.textContent = 'ChatGPT 自动文件注册不可用；仍可查看预览或使用下载链接。';
+      }
     }
     function render(result) {
       // ChatGPT exposes structuredContent via toolOutput, but the full MCP
@@ -98,6 +124,7 @@
         items.append(card);
       }
       status.hidden = true;
+      if (files[0]) void registerFile(files[0]);
     }
     window.addEventListener('message', event => {
       if (event.source !== window.parent) return;

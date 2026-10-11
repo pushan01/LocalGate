@@ -22,7 +22,7 @@ class Node {
   replaceChildren(...nodes) { this.children = [...nodes]; }
 }
 
-function setup(openai) {
+function setup(openai, extras = {}) {
   const elements = { '#items': new Node(), '#status': new Node() };
   const messages = [];
   let handler;
@@ -38,10 +38,32 @@ function setup(openai) {
     querySelector(selector) { return elements[selector]; },
     createElement(type) { return new Node(type); },
   };
-  new Script(js, { filename: 'artifact-viewer.html' }).runInContext(createContext({ window, document, URL, Promise, Map }));
+  new Script(js, { filename: 'artifact-viewer.html' }).runInContext(createContext({ window, document, URL, Promise, Map, ...extras }));
   const send = data => handler({ source: parent, data });
   return { elements, messages, send };
 }
+
+test('widget automatically registers an exported file once when host supports uploadFile', async () => {
+  const calls = [];
+  const states = [];
+  const openai = {
+    uploadFile: async file => { calls.push(file); return { fileId: 'file-test123' }; },
+    setWidgetState: state => states.push(state),
+  };
+  const { send, elements } = setup(openai, {
+    fetch: async () => ({ ok: true, blob: async () => ({ type: 'image/png', size: 3 }) }),
+    File: class { constructor(parts, name, options) { this.parts = parts; this.name = name; this.type = options.type; } },
+  });
+  const params = { content: [{ type: 'resource_link', uri: 'https://files.example/export?signature=test', name: 'photo.png', mimeType: 'image/png' }] };
+  send({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params });
+  send({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'photo.png');
+  assert.equal(states[0].privateContent.fileId, 'file-test123');
+  assert.equal(states[0].imageIds[0], 'file-test123');
+  assert.match(elements['#status'].textContent, /file-test123/);
+});
 
 test('widget renders canonical ChatGPT MCP response metadata without a notification', () => {
   const { elements } = setup({
