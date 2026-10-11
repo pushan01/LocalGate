@@ -360,13 +360,12 @@ func newStructuredToolResult(payload map[string]any, isError bool) *mcp.CallTool
 }
 
 func (s *Server) newTaskToolResult(payload map[string]any, task *core.Task, isError bool) *mcp.CallToolResult {
-	result := newStructuredToolResult(payload, isError)
 	if s == nil || s.App == nil || task == nil || task.Result == nil {
-		return result
+		return newStructuredToolResult(payload, isError)
 	}
 	reg := s.App.Registry
 	if reg == nil {
-		return result
+		return newStructuredToolResult(payload, isError)
 	}
 	// task_result wraps an earlier task result. Present the original tool's
 	// resource links and native content so async exports behave like sync ones.
@@ -374,18 +373,33 @@ func (s *Server) newTaskToolResult(payload map[string]any, task *core.Task, isEr
 	if task.Tool == "task_result" {
 		originalID, _ := task.Result["task_id"].(string)
 		if originalID == "" || s.App.Tasks == nil {
-			return result
+			return newStructuredToolResult(payload, isError)
 		}
 		original, err := s.App.Tasks.Get(originalID)
 		if err != nil || original.Status != core.StatusSucceeded || original.Result == nil {
-			return result
+			return newStructuredToolResult(payload, isError)
 		}
 		task = original
 	}
 	tool, ok := reg.Get(task.Tool)
 	if !ok {
-		return result
+		return newStructuredToolResult(payload, isError)
 	}
+	// Export URLs are short-lived capabilities: include them in the immediate
+	// MCP response only, never in the persisted Task.Result or input payload.
+	if !isError && task.Tool == "export_file" {
+		if links := core.ToolResourceLinks(tool, task.Result); len(links) > 0 {
+			copyPayload := make(map[string]any, len(payload)+4)
+			for k, v := range payload {
+				copyPayload[k] = v
+			}
+			copyPayload["fileUrl"] = links[0].URI
+			copyPayload["fileName"] = links[0].Name
+			copyPayload["mimeType"] = links[0].MIMEType
+			payload = copyPayload
+		}
+	}
+	result := newStructuredToolResult(payload, isError)
 	if !isError {
 		for _, link := range core.ToolResourceLinks(tool, task.Result) {
 			result.Content = append(result.Content, mcp.ResourceLink{

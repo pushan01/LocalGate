@@ -12,7 +12,7 @@ import (
 
 // artifactViewerURI changes when the component's shape or protocol changes,
 // so hosts do not retain a stale version of the HTML resource.
-const artifactViewerURI = "ui://localgate/artifact-viewer/v3.html"
+const artifactViewerURI = "ui://localgate/artifact-viewer/v4.html"
 const artifactViewerMIME = "text/html;profile=mcp-app"
 
 //go:embed ui/artifact-viewer.html

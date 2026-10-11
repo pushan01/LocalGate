@@ -67,8 +67,8 @@ func TestExportFileToolDeclaresAndReturnsResourceLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
 	}
-	if strings.Contains(string(structured), "signature=") {
-		t.Fatalf("signed URL leaked into structured task result: %s", structured)
+	if !strings.Contains(string(structured), "signature=") {
+		t.Fatalf("immediate structured MCP result missing signed fileUrl: %s", structured)
 	}
 
 	found := false
@@ -134,8 +134,8 @@ func TestImageExportRendersInlineAndAsyncTaskResultKeepsArtifacts(t *testing.T) 
 			t.Fatalf("%s: missing rich image and download content: %#v", name, res.Content)
 		}
 		structured, err := json.Marshal(res.StructuredContent)
-		if err != nil || strings.Contains(string(structured), "signature=") {
-			t.Fatalf("%s: signed link must not be in persisted structured result: %s", name, structured)
+		if err != nil || !strings.Contains(string(structured), "signature=") {
+			t.Fatalf("%s: missing signed fileUrl in immediate MCP response: %s", name, structured)
 		}
 	}
 

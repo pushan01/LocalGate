@@ -65,6 +65,22 @@ test('widget automatically registers an exported file once when host supports up
   assert.match(elements['#status'].textContent, /file-test123/);
 });
 
+test('widget automatically uploads from structured toolOutput without native resource links', async () => {
+  const calls = [];
+  const { elements } = setup({
+    toolOutput: { status: 'succeeded', fileUrl: 'https://files.example/export?signature=a', fileName: 'output.png', mimeType: 'image/png' },
+    uploadFile: async file => { calls.push(file); return { fileId: 'file-from-structured' }; },
+    setWidgetState() {},
+  }, {
+    fetch: async () => ({ ok: true, blob: async () => ({ type: 'image/png' }) }),
+    File: class { constructor(parts, name, options) { this.name = name; this.type = options.type; } },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'output.png');
+  assert.match(elements['#status'].textContent, /file-from-structured/);
+});
+
 test('widget renders canonical ChatGPT MCP response metadata without a notification', () => {
   const { elements } = setup({
     toolOutput: { result: { file_name: 'photo.png' } },

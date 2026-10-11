@@ -84,12 +84,16 @@
       const canonical = result?.mcp_tool_result ?? result?.call_tool_result ?? result;
       const data = canonical?.result?.content ? canonical.result : canonical;
       if (!data || data.isError) return;
+      const structured = data?.structuredContent ?? data;
       const blocks = Array.isArray(data.content) ? data.content : [];
       const images = blocks.filter(v => v?.type === 'image' &&
         ['image/png','image/jpeg','image/webp'].includes(v.mimeType) &&
         typeof v.data === 'string' && v.data.length > 0 && v.data.length <= 1500000 &&
         /^[A-Za-z0-9+/=]+$/.test(v.data));
       const files = blocks.filter(v => v?.type === 'resource_link' && safeHTTP(v.uri));
+      if (!files.length && safeHTTP(structured?.fileUrl)) {
+        files.push({ uri: structured.fileUrl, name: structured.fileName, mimeType: structured.mimeType });
+      }
       if (!files.length && !images.length) return;
 
       items.replaceChildren();
@@ -147,8 +151,8 @@
     });
     // Prefer the canonical tool envelope. toolOutput alone often contains only
     // structuredContent and cannot reconstruct native image/resource blocks.
-    if (window.openai?.toolResponseMetadata) render(window.openai.toolResponseMetadata);
     if (window.openai?.toolOutput) render(window.openai.toolOutput);
+    if (window.openai?.toolResponseMetadata) render(window.openai.toolResponseMetadata);
   </script>
 </body>
 </html>
