@@ -1,5 +1,17 @@
 # Plan
 
+## ChatGPT 导出文件可验证交接（CH-ARTIFACT-UI-004）
+
+- **状态**：代码已完成，待真实 ChatGPT 客户端验收（2026-10-11）
+- **目标**：在现有 MCP Apps `uploadFile` 基础上诊断每个交接阶段；核验 LocalGate 源文件、ChatGPT 重新下载的字节与 SHA-256；恢复已上传文件的 Widget State；允许用户主动发起下一轮模型图片可见性/Sandbox 挂载验证。
+- **非目标**：不使用 OpenAI Platform API 创建另一套容器，不宣称 MCP 可以直接挂载 ChatGPT 当前 `/mnt/data`，不自动触发模型消息，不改变 Mac 文件读取权限、导出 grant 和下载协议。
+- **范围**：`internal/mcpgo/ui/artifact-viewer.html` 及其测试、组件 URI、README、计划/待办。
+- **风险**：`uploadFile`、`getFileDownloadUrl`、`sendFollowUpMessage` 是客户端可选能力；ChatGPT 的下载 URL 可能不允许 iframe 跨域回读；大文件哈希会占用内存。因此需明确区分成功、失败、未验证和跳过（大文件）；不能将本地 Widget 测试当作真实 ChatGPT 挂载测试。
+- **验收**：分阶段显示源文件、上传、回读、内容一致性和会话验证状态；对比真实下载字节数及 SHA-256，检测不一致；Widget State 保存/恢复有效文件 ID 和诊断状态并包含 imageIds；显式点击可触发后续验证请求；自动化测试覆盖成功、哈希不符、回读受限、缺少宿主接口、恢复及下一轮操作。
+- **验证**：Node 组件测试、定向 Go MCP HTTP 测试、git diff --check；真实客户端交接单独留下逐层验收记录。
+- **实际实现**：保留已有 `uploadFile(file, { library: true })`，在 Widget 内实现源文件/回读文件真实字节 SHA-256、大小校验、分阶段诊断、下载回读受限的区分、Widget State 恢复和同一次导出避免重复上传；新增用户显式点击才触发的模型上下文及 Sandbox 分项验证入口；MCP UI URI 升至 v6，README 和 `docs/chatgpt-file-handoff-verification.md` 给出完整验收步骤。不改服务端导出授权、不使用 OpenAI Platform Containers。
+- **自动化结果**：Node Widget 12 项测试通过；`go test -p 1 ./internal/mcpgo ./internal/httpapi ./internal/fileexport`、对应 `go vet` 和 `go build ./cmd/localgate` 通过。HTTP 终端 stdin 时序测试首次运行偶发失败，单独重复两次及模块回归均通过。MCP→ChatGPT 真实文件库、模型图片上下文和当前 Sandbox 挂载无法由模拟测试证明，保留真实客户端验收事项。
+
 ## ChatGPT 文件/图片预览 Widget（CH-ARTIFACT-UI-003）
 
 - **状态**：已完成（2026-10-11）

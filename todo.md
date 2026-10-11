@@ -2,6 +2,7 @@
 
 ## ChatGPT Artifact UI follow-ups
 
+- [ ] `CH-ARTIFACT-UI-004` 实际客户端验收：部署新 LocalGate 并刷新 ChatGPT MCP 插件连接；以原始 PNG 导出验证 Widget v6 的源文件/ChatGPT 回读 SHA-256、`imageIds` 在下一轮模型上下文的可见性、当前聊天文件列表及 Python Sandbox 读取；逐项记录成功/失败/客户端不支持。步骤见 `docs/chatgpt-file-handoff-verification.md`，未验收前不得宣称已经打通 Sandbox。
 - `CH-ARTIFACT-UI-003` 后续：部署更新的 LocalGate 后，在 ChatGPT 插件详情刷新连接，检查 `export_file` 是否出现 MCP Apps 预览面板；若仍只有结构化任务结果，确认连接器是否丢弃工具 `_meta` 或关闭 MCP Apps（此限制无法通过更改 Base64 解决）。
 - 评估是否引入受维护的 WebP 解码库，使大于 1 MiB 的 WebP 也可生成有界缩略图；当前大 WebP 仅提供原件下载。
 - 评估 `subagent_artifact_get` 返回结构里的原有签名 `url` 字段是否可通过按需签发/专用下载操作替代；目前它会跟随 Task 结果持久化，迁移需要兼顾 HTTP 客户端兼容性。
