@@ -22,13 +22,14 @@ class Node {
   replaceChildren(...nodes) { this.children = [...nodes]; }
 }
 
-function setup() {
+function setup(openai) {
   const elements = { '#items': new Node(), '#status': new Node() };
   const messages = [];
   let handler;
   const parent = { postMessage(value) { messages.push(value); } };
   const window = {
     parent,
+    openai,
     addEventListener(type, callback) {
       if (type === 'message') handler = callback;
     },
@@ -41,6 +42,22 @@ function setup() {
   const send = data => handler({ source: parent, data });
   return { elements, messages, send };
 }
+
+test('widget renders canonical ChatGPT MCP response metadata without a notification', () => {
+  const { elements } = setup({
+    toolOutput: { result: { file_name: 'photo.png' } },
+    toolResponseMetadata: {
+      mcp_tool_result: { result: { content: [
+        { type: 'resource_link', uri: 'https://files.example/signed', name: 'photo.png' },
+        { type: 'image', mimeType: 'image/jpeg', data: 'aGVsbG8=' },
+      ] } },
+    },
+  });
+  const [card] = elements['#items'].children;
+  assert.equal(card.children[0].src, 'data:image/jpeg;base64,aGVsbG8=');
+  assert.equal(card.children[1].children[1].href, 'https://files.example/signed');
+  assert.equal(elements['#status'].hidden, true);
+});
 
 test('widget handshakes and renders an MCP image with a download link', async () => {
   const { elements, messages, send } = setup();

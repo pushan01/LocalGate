@@ -53,7 +53,10 @@
       } catch { return ''; }
     }
     function render(result) {
-      const data = result?.result?.content ? result.result : result;
+      // ChatGPT exposes structuredContent via toolOutput, but the full MCP
+      // content (images and resource links) via toolResponseMetadata.
+      const canonical = result?.mcp_tool_result ?? result?.call_tool_result ?? result;
+      const data = canonical?.result?.content ? canonical.result : canonical;
       if (!data || data.isError) return;
       const blocks = Array.isArray(data.content) ? data.content : [];
       const images = blocks.filter(v => v?.type === 'image' &&
@@ -115,7 +118,9 @@
     }).then(() => notify('ui/notifications/initialized')).catch(() => {
       status.textContent = '该 ChatGPT 客户端未启用 MCP Apps 预览，请使用文件下载链接。';
     });
-    // Older ChatGPT hosts may expose the initial result as a compatibility alias.
+    // Prefer the canonical tool envelope. toolOutput alone often contains only
+    // structuredContent and cannot reconstruct native image/resource blocks.
+    if (window.openai?.toolResponseMetadata) render(window.openai.toolResponseMetadata);
     if (window.openai?.toolOutput) render(window.openai.toolOutput);
   </script>
 </body>
