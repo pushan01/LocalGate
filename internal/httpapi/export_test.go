@@ -114,6 +114,71 @@ func TestExportEndpointSupportsGetHeadRangeAndDetectsChanges(t *testing.T) {
 	}
 }
 
+func TestDedicatedExportListenerOnlyExposesSignedDownloads(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "payload.txt")
+	if err := os.WriteFile(target, []byte("dedicated-export"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := app.New(config.Config{
+		LogStore: t.TempDir(),
+		HTTP:     config.HTTP{BaseURL: "https://macgate.example"},
+		FileExports: config.FileExports{
+			Enabled: true, Bind: "127.0.0.1:2529", BaseURL: "https://files.example",
+			DefaultTTLSeconds: 300, MaxTTLSeconds: 600, MaxFileBytes: 1 << 20,
+		},
+		Root: config.Root{Path: root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	api := &API{App: application}
+	control := http.NewServeMux()
+	api.RegisterControl(control)
+	exports := http.NewServeMux()
+	api.RegisterFileExports(exports)
+	result, err := application.InvokeTool(context.Background(), "export_file", map[string]any{"path": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := application.Registry.Get("export_file")
+	links := core.ToolResourceLinks(tool, result)
+	if len(links) != 1 {
+		t.Fatalf("expected signed download URL: %#v", links)
+	}
+	u, err := url.Parse(links[0].URI)
+	if err != nil || u.Host != "files.example" {
+		t.Fatalf("unexpected signed export URL: %q, %v", links[0].URI, err)
+	}
+	for _, tc := range []struct {
+		name, method, path string
+		handler            http.Handler
+		want               int
+	}{
+		{"export GET", "GET", u.RequestURI(), exports, http.StatusOK},
+		{"export HEAD", "HEAD", u.RequestURI(), exports, http.StatusOK},
+		{"missing signature", "GET", u.Path, exports, http.StatusNotFound},
+		{"old control export closed", "GET", u.RequestURI(), control, http.StatusNotFound},
+		{"tools unavailable", "GET", "/tools", exports, http.StatusNotFound},
+		{"mcp unavailable", "GET", "/mcp", exports, http.StatusNotFound},
+		{"download-token unavailable", "GET", "/system/downloads", exports, http.StatusNotFound},
+		{"admin unavailable", "GET", "/admin", exports, http.StatusNotFound},
+		{"method denied", "POST", u.RequestURI(), exports, http.StatusMethodNotAllowed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			tc.handler.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+			if w.Code != tc.want {
+				t.Fatalf("status=%d, want=%d, body=%s", w.Code, tc.want, w.Body.String())
+			}
+			if tc.name == "export GET" && w.Body.String() != "dedicated-export" {
+				t.Fatalf("wrong download bytes: %q", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestExportEndpointAcceptsGrantIssuedByAnotherAppInstance(t *testing.T) {
 	root := t.TempDir()
 	store := t.TempDir()

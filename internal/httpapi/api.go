@@ -76,11 +76,21 @@ func (a *API) RegisterControl(mux *http.ServeMux) {
 	mux.HandleFunc("/sessions/", a.handleSessionRoutes)
 	mux.HandleFunc("/audits", a.handleAuditQuery)
 	mux.HandleFunc("/system/downloads", a.handleDownloads)
-	mux.HandleFunc("/system/exports/", a.handleExports)
+	// Dedicated export listeners must not also expose unauthenticated file
+	// downloads on the control-plane port.
+	if strings.TrimSpace(a.App.FileExports.Bind) == "" {
+		mux.HandleFunc("/system/exports/", a.handleExports)
+	}
 	mux.HandleFunc("/system/uploads", a.handleUploads)
 	mux.HandleFunc("/system/upgrades", a.handleUpgrades)
 	mux.HandleFunc("/system/upgrades/", a.handleUpgradeRoutes)
 	a.wireMCPRuntime(mux)
+}
+
+// RegisterFileExports exposes the single signed-download route on a separate
+// listener. Do not register any control, admin, or MCP handlers on this mux.
+func (a *API) RegisterFileExports(mux *http.ServeMux) {
+	mux.HandleFunc("/system/exports/", a.handleExports)
 }
 
 type toolSummary struct {

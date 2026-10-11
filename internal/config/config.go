@@ -150,6 +150,7 @@ type MCPHTTP struct {
 
 type FileExports struct {
 	Enabled           bool   `yaml:"enabled"`
+	Bind              string `yaml:"bind"`
 	BaseURL           string `yaml:"base_url"`
 	DefaultTTLSeconds int    `yaml:"default_ttl_seconds"`
 	MaxTTLSeconds     int    `yaml:"max_ttl_seconds"`
@@ -594,6 +595,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_BASE_URL")); v != "" {
 		cfg.FileExports.BaseURL = v
 	}
+	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_BIND")); v != "" {
+		cfg.FileExports.Bind = v
+	}
 	if v := strings.TrimSpace(os.Getenv("LOCALGATE_FILE_EXPORTS_DEFAULT_TTL_SECONDS")); v != "" {
 		if iv, err := atoi(v); err == nil {
 			cfg.FileExports.DefaultTTLSeconds = iv
@@ -902,6 +906,9 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := validateListenerBinds(cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
 		return Config{}, err
 	}
+	if err := validateExportListenerBind(cfg.FileExports, cfg.Bind, cfg.Admin.Bind, cfg.Deployments.PublicBind, cfg.Deployments.PrivateBind, cfg.Admin.Enabled); err != nil {
+		return Config{}, err
+	}
 	if err := validateStaticHosting(cfg.Deployments.Static); err != nil {
 		return Config{}, err
 	}
@@ -1059,6 +1066,7 @@ func (c Config) SafeSummary() map[string]any {
 		},
 		"file_exports": map[string]any{
 			"enabled":             c.FileExports.Enabled,
+			"bind":                c.FileExports.Bind,
 			"base_url":            c.FileExports.BaseURL,
 			"default_ttl_seconds": c.FileExports.DefaultTTLSeconds,
 			"max_ttl_seconds":     c.FileExports.MaxTTLSeconds,
@@ -1291,8 +1299,14 @@ func validateFileExportsConfig(cfg FileExports, controlBaseURL string) error {
 	if err != nil || control.Host == "" {
 		return errors.New("http.base_url must be valid when file exports are enabled")
 	}
-	if !strings.EqualFold(parsed.Scheme, control.Scheme) || !strings.EqualFold(parsed.Host, control.Host) {
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return errors.New("file_exports.base_url must not contain credentials, path, query or fragment")
+	}
+	if strings.TrimSpace(cfg.Bind) == "" && (!strings.EqualFold(parsed.Scheme, control.Scheme) || !strings.EqualFold(parsed.Host, control.Host)) {
 		return errors.New("file_exports.base_url must use the same scheme and authority as http.base_url in this version")
+	}
+	if strings.TrimSpace(cfg.Bind) != "" && parsed.Scheme != "https" {
+		return errors.New("file_exports.base_url must use https with a dedicated listener")
 	}
 	if cfg.DefaultTTLSeconds < 60 {
 		return errors.New("file_exports.default_ttl_seconds must be at least 60")
@@ -1302,6 +1316,36 @@ func validateFileExportsConfig(cfg FileExports, controlBaseURL string) error {
 	}
 	if cfg.MaxFileBytes <= 0 {
 		return errors.New("file_exports.max_file_bytes must be positive")
+	}
+	return nil
+}
+
+// A dedicated export listener supports loopback or explicitly opted-in
+// wildcard binding, but must not share a control, admin or deployment port.
+func validateExportListenerBind(cfg FileExports, controlBind, adminBind, publicBind, privateBind string, adminEnabled bool) error {
+	if !cfg.Enabled || strings.TrimSpace(cfg.Bind) == "" {
+		return nil // legacy same-listener export behavior
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(cfg.Bind))
+	if err != nil || (host != "127.0.0.1" && host != "::1" && host != "0.0.0.0") {
+		return errors.New("file_exports.bind must use a loopback address or 0.0.0.0")
+	}
+	port, err := bindPort(cfg.Bind)
+	if err != nil {
+		return fmt.Errorf("file_exports.bind is invalid: %w", err)
+	}
+	listeners := map[string]string{"bind": controlBind, "deployments.public_bind": publicBind, "deployments.private_bind": privateBind}
+	if adminEnabled {
+		listeners["admin.bind"] = adminBind
+	}
+	for name, addr := range listeners {
+		other, err := bindPort(addr)
+		if err != nil {
+			return fmt.Errorf("%s is invalid: %w", name, err)
+		}
+		if port == other {
+			return fmt.Errorf("file_exports.bind must use a different TCP port from %s", name)
+		}
 	}
 	return nil
 }

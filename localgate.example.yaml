@@ -169,6 +169,10 @@ http:
 # 首版要求 base_url 与 http.base_url 使用相同的 scheme 和 authority。
 file_exports:
   enabled: false
+  # Optional dedicated listener. When set, exports are NOT exposed on the main
+  # control port. Prefer loopback; 0.0.0.0 is allowed but exposes all interfaces.
+  # bind: "127.0.0.1:3738"
+  # base_url: "https://files.example.com"
   base_url: "http://127.0.0.1:3737"
   default_ttl_seconds: 300
   max_ttl_seconds: 600

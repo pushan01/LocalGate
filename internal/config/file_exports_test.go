@@ -69,3 +69,59 @@ root: "`+dir+`"
 		t.Fatalf("expected authority validation error, got %v", err)
 	}
 }
+
+func TestLoadDedicatedFileExportListener(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localgate.yaml")
+	if err := os.WriteFile(path, []byte(`
+bind: "127.0.0.1:2525"
+admin:
+  enabled: true
+  bind: "127.0.0.1:2527"
+deployments:
+  public_bind: "127.0.0.1:2526"
+  private_bind: "127.0.0.1:2528"
+http:
+  base_url: "https://macgate.example"
+file_exports:
+  enabled: true
+  bind: "127.0.0.1:2529"
+  base_url: "https://files.example"
+root: "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{Path: path, PathProvided: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FileExports.Bind != "127.0.0.1:2529" || cfg.FileExports.BaseURL != "https://files.example" {
+		t.Fatalf("unexpected dedicated export config: %#v", cfg.FileExports)
+	}
+	summary, ok := cfg.SafeSummary()["file_exports"].(map[string]any)
+	if !ok || summary["bind"] != cfg.FileExports.Bind {
+		t.Fatalf("missing export listener bind in summary: %#v", summary)
+	}
+	wildcard := cfg
+	wildcard.FileExports.Bind = "0.0.0.0:2529"
+	if err := validateExportListenerBind(wildcard.FileExports, wildcard.Bind, wildcard.Admin.Bind, wildcard.Deployments.PublicBind, wildcard.Deployments.PrivateBind, wildcard.Admin.Enabled); err != nil {
+		t.Fatalf("wildcard file export listener should be allowed: %v", err)
+	}
+	for _, tc := range []struct{ bind, want string }{
+		{"192.168.1.10:2529", "loopback"},
+		{"127.0.0.1:2525", "different TCP port"},
+		{"127.0.0.1:2526", "different TCP port"},
+		{"127.0.0.1:2527", "different TCP port"},
+		{"127.0.0.1:2528", "different TCP port"},
+		{"127.0.0.1:65536", "port"},
+	} {
+		t.Run(tc.bind, func(t *testing.T) {
+			bad := cfg
+			bad.FileExports.Bind = tc.bind
+			err := validateExportListenerBind(bad.FileExports, bad.Bind, bad.Admin.Bind, bad.Deployments.PublicBind, bad.Deployments.PrivateBind, bad.Admin.Enabled)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("bind %q: expected %q error, got %v", tc.bind, tc.want, err)
+			}
+		})
+	}
+}

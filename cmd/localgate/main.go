@@ -130,7 +130,7 @@ func main() {
 
 	api := &httpapi.API{App: application}
 	var publicAuthPrefixes []string
-	if cfg.FileExports.Enabled {
+	if cfg.FileExports.Enabled && strings.TrimSpace(cfg.FileExports.Bind) == "" {
 		publicAuthPrefixes = []string{"/system/exports/"}
 	}
 	controlSrv := server.New(server.Options{
@@ -157,6 +157,16 @@ func main() {
 			}
 		},
 	})
+	var fileExportSrv *server.DeploymentServer
+	if cfg.FileExports.Enabled && strings.TrimSpace(cfg.FileExports.Bind) != "" {
+		// Reuse the minimal HTTP server: only the explicitly registered export
+		// handler is reachable; no control-plane or MCP endpoints exist here.
+		exportMux := http.NewServeMux()
+		api.RegisterFileExports(exportMux)
+		fileExportSrv = server.NewDeployment(server.DeploymentOptions{
+			Bind: cfg.FileExports.Bind, Handler: exportMux,
+		})
+	}
 
 	var adminSrv *server.Server
 	if cfg.Admin.Enabled {
@@ -198,10 +208,15 @@ func main() {
 		name string
 		err  error
 	}
-	errCh := make(chan serverResult, 4)
+	errCh := make(chan serverResult, 5)
 	go func() {
 		errCh <- serverResult{name: "control", err: controlSrv.Start()}
 	}()
+	if fileExportSrv != nil {
+		go func() {
+			errCh <- serverResult{name: "file_export", err: fileExportSrv.Start()}
+		}()
+	}
 	if adminSrv != nil {
 		go func() {
 			errCh <- serverResult{name: "admin", err: adminSrv.Start()}
@@ -221,6 +236,9 @@ func main() {
 	shutdown := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if fileExportSrv != nil {
+			_ = fileExportSrv.Shutdown(shutdownCtx)
+		}
 		if adminSrv != nil {
 			_ = adminSrv.Shutdown(shutdownCtx)
 		}

@@ -560,7 +560,9 @@ file_exports:
   require_approval: false
 ```
 
-首版要求 `file_exports.base_url` 与 `http.base_url` 使用相同的 scheme 和 authority。`/system/exports/*` 不要求 LocalGate 固定 Bearer 请求头，而是由高强度短期签名授权；其他 HTTP 路由仍保持原有鉴权。
+默认兼容旧配置：不配置 `file_exports.bind` 时，`file_exports.base_url` 与 `http.base_url` 必须同域名，下载路由继续由主 HTTP listener 提供。
+
+**推荐在公网部署独立下载 listener**：增加 `file_exports.bind: "127.0.0.1:3738"`，并将 `file_exports.base_url` 设置为独立的 HTTPS 域名（例如 `https://files.example.com`）。该端口仅注册 `/system/exports/{export_id}`，支持 GET/HEAD，不提供 `/mcp`、`/tools`、管理 API 或 token 下载服务；主 HTTP 端口不再注册 `/system/exports/`。默认推荐回环地址；如下载代理需要通过其他网络接口访问，也支持显式设置 `file_exports.bind: "0.0.0.0:3738"`，但该方式会让端口暴露于所有网卡，应额外使用系统防火墙限制来源。该端口不能与主服务、管理或部署端口相同。将独立的下载域名通过 Tunnel 指向该端口，不要对它设置交互式 Cloudflare Access 认证；文件访问由短期签名及文件校验限制。**需要同步配置独立域名及后端路由，单独修改 `base_url` 不会自动创建 Tunnel。**
 
 安全边界：
 
