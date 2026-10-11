@@ -47,7 +47,8 @@ test('widget automatically registers an exported file once when host supports up
   const calls = [];
   const states = [];
   const openai = {
-    uploadFile: async file => { calls.push(file); return { fileId: 'file-test123' }; },
+    uploadFile: async (file, options) => { calls.push({ file, options }); return { fileId: 'file-test123' }; },
+    getFileDownloadUrl: async ({ fileId }) => ({ downloadUrl: 'https://files.example/chatgpt/' + fileId }),
     setWidgetState: state => states.push(state),
   };
   const { send, elements } = setup(openai, {
@@ -59,17 +60,20 @@ test('widget automatically registers an exported file once when host supports up
   send({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].name, 'photo.png');
+  assert.equal(calls[0].file.name, 'photo.png');
+  assert.equal(calls[0].options.library, true);
   assert.equal(states[0].privateContent.fileId, 'file-test123');
+  assert.equal(states[0].privateContent.retrievable, true);
   assert.equal(states[0].imageIds[0], 'file-test123');
   assert.match(elements['#status'].textContent, /file-test123/);
+  assert.equal(elements['#status'].hidden, false);
 });
 
 test('widget automatically uploads from structured toolOutput without native resource links', async () => {
   const calls = [];
   const { elements } = setup({
     toolOutput: { status: 'succeeded', fileUrl: 'https://files.example/export?signature=a', fileName: 'output.png', mimeType: 'image/png' },
-    uploadFile: async file => { calls.push(file); return { fileId: 'file-from-structured' }; },
+    uploadFile: async (file, options) => { calls.push({ file, options }); return { fileId: 'file-from-structured' }; },
     setWidgetState() {},
   }, {
     fetch: async () => ({ ok: true, blob: async () => ({ type: 'image/png' }) }),
@@ -77,7 +81,8 @@ test('widget automatically uploads from structured toolOutput without native res
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].name, 'output.png');
+  assert.equal(calls[0].file.name, 'output.png');
+  assert.equal(calls[0].options.library, true);
   assert.match(elements['#status'].textContent, /file-from-structured/);
 });
 

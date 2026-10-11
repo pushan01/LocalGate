@@ -66,15 +66,27 @@
         const fileName = typeof file.name === 'string' && file.name ? file.name : 'export.bin';
         const result = await window.openai.uploadFile(new File([blob], fileName, {
           type: typeof file.mimeType === 'string' ? file.mimeType : blob.type,
-        }));
+        }), { library: true });
         if (!result?.fileId) throw new Error('missing fileId');
-        status.textContent = '已注册到 ChatGPT 文件系统：' + result.fileId;
+        // Library availability is host-dependent. A fileId only proves that
+        // uploadFile resolved; it does not prove library persistence.
+        let retrievable = false;
+        if (typeof window.openai.getFileDownloadUrl === 'function') {
+          try {
+            const { downloadUrl } = await window.openai.getFileDownloadUrl({ fileId: result.fileId });
+            retrievable = Boolean(safeHTTP(downloadUrl));
+          } catch { /* An unavailable download helper must not discard a valid upload. */ }
+        }
+        status.hidden = false;
+        status.textContent = 'ChatGPT 上传成功（已请求保存到 Library，需在文件库确认）' +
+          (retrievable ? '，文件下载地址已验证' : '，文件下载地址未验证') + '：' + result.fileId;
         if (typeof window.openai.setWidgetState === 'function') {
-          const state = { modelContent: 'LocalGate exported file: ' + fileName + ' (fileId: ' + result.fileId + ')', privateContent: { fileId: result.fileId } };
+          const state = { modelContent: 'LocalGate exported file: ' + fileName + ' (fileId: ' + result.fileId + ')', privateContent: { fileId: result.fileId, libraryRequested: true, retrievable } };
           if ((file.mimeType || '').startsWith('image/')) state.imageIds = [result.fileId];
           window.openai.setWidgetState(state);
         }
       } catch (error) {
+        status.hidden = false;
         status.textContent = 'ChatGPT 自动文件注册不可用；仍可查看预览或使用下载链接。';
       }
     }
@@ -127,7 +139,7 @@
         card.append(footer);
         items.append(card);
       }
-      status.hidden = true;
+      if (!files[0] || !attempted.has(safeHTTP(files[0].uri))) status.hidden = true;
       if (files[0]) void registerFile(files[0]);
     }
     window.addEventListener('message', event => {
