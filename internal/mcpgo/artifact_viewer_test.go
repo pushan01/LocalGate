@@ -89,9 +89,18 @@ func TestArtifactViewerAdvertisedAndReadableOverMCPHTTP(t *testing.T) {
 			t.Errorf("viewer missing %q", required)
 		}
 	}
+	for _, forbidden := range []string{"id=\"checks\"", "id=\"followup\"", "uploadFile(", "getFileDownloadUrl(", "sendFollowUpMessage(", "setWidgetState("} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("viewer still contains removed test feature %q", forbidden)
+		}
+	}
 	meta, _ := content["_meta"].(map[string]any)
 	ui, _ := meta["ui"].(map[string]any)
-	if _, ok := ui["csp"].(map[string]any); !ok {
+	csp, ok := ui["csp"].(map[string]any)
+	if !ok {
 		t.Fatalf("widget does not declare CSP: %#v", meta)
+	}
+	if connect, ok := csp["connectDomains"].([]any); !ok || len(connect) != 0 {
+		t.Fatalf("preview-only widget must not have fetch permissions: %#v", csp)
 	}
 }

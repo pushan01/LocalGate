@@ -1,8 +1,15 @@
 # Plan
 
+## 文件预览 Widget 精简（CH-ARTIFACT-UI-005）
+
+- **状态**：已实现（2026-10-11）。
+- **范围**：移除 v6 文件交接实验：自动上传、回读校验、File ID 与诊断面板、模型可见性测试按钮；保留 `export_file` 的 MCP 原生图片、资源链接、预览图片和手动下载入口。
+- **实现**：Widget 简化为无网络读取的只读展示，CSP 不再允许组件发起外部 fetch；UI URI 升为 `ui://localgate/artifact-viewer/v7.html`，避免缓存继续展示旧版。
+- **说明**：不改变 Mac 文件导出服务端的授权、文件完整性验证及短期签名 URL 机制。之前的 CH-ARTIFACT-UI-004 代码与文档仅作为 Git 历史，不再作为当前组件功能或验收项。
+
 ## ChatGPT 导出文件可验证交接（CH-ARTIFACT-UI-004）
 
-- **状态**：代码已完成，待真实 ChatGPT 客户端验收（2026-10-11）
+- **状态**：历史方案，已由 CH-ARTIFACT-UI-005 撤销，以下仅为历史实现记录（2026-10-11）。
 - **目标**：在现有 MCP Apps `uploadFile` 基础上诊断每个交接阶段；核验 LocalGate 源文件、ChatGPT 重新下载的字节与 SHA-256；恢复已上传文件的 Widget State；允许用户主动发起下一轮模型图片可见性/Sandbox 挂载验证。
 - **非目标**：不使用 OpenAI Platform API 创建另一套容器，不宣称 MCP 可以直接挂载 ChatGPT 当前 `/mnt/data`，不自动触发模型消息，不改变 Mac 文件读取权限、导出 grant 和下载协议。
 - **范围**：`internal/mcpgo/ui/artifact-viewer.html` 及其测试、组件 URI、README、计划/待办。

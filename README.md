@@ -539,17 +539,15 @@ LocalGate 的 `export_file` 工具用于把配置 root 内的普通文件返回�
 
 ### ChatGPT 内嵌文件/图片预览（MCP Apps）
 
-**最新 v6 文件交接与诊断**：现有 Widget 已使用 ChatGPT 的 `window.openai.uploadFile(file, { library: true })`，无需另写上传组件。导出时先对比原始文件大小和 SHA-256（浏览器支持且文件不超过 32 MiB 时），上传后通过 `getFileDownloadUrl({ fileId })` 实际回读内容，再比较大小与 SHA-256；回读地址取得成功本身不能证明内容一致。源文件不一致会终止上传；下载 URL 跨域受限、回读失败、缺少接口或超过哈希上限时，只能报告“未验证”，不能假称 Sandbox 已挂载。
+**v7 纯预览组件**：已移除实验性的 ChatGPT 文件自动上传、回读校验、File ID/六项诊断面板和“让 ChatGPT 检查图片与 Sandbox 可见性”按钮。Widget 不再调用 `uploadFile`、`getFileDownloadUrl`、`setWidgetState` 或 `sendFollowUpMessage`，也不在后台读取远程下载文件。原有服务端文件导出安全验证不受影响。
 
-Widget 用 `setWidgetState` 保存文件 ID、阶段诊断和图片 `imageIds`，重新打开时从 `widgetState` 恢复同一次导出，不再重复上传；不会持久化临时签名 URL、图片二进制或 Mac 路径。按钮“让 ChatGPT 检查图片与 Sandbox 可见性”只在用户点击后通过 `sendFollowUpMessage` 发出验证请求，要求模型分别检查图片上下文、会话文件列表与当前 Python Sandbox。是否保存到 Library、模型是否实际收到图片、Sandbox 是否挂载，仍必须通过真实 ChatGPT 客户端逐项验收。见 `docs/chatgpt-file-handoff-verification.md`。
-
-支持 MCP Apps 的宿主调用直接 MCP `export_file` 时，LocalGate 会在工具元数据中声明 `_meta.ui.resourceUri`（同时保留 ChatGPT 兼容字段 `_meta["openai/outputTemplate"]`），并公开 `ui://localgate/artifact-viewer/v6.html` 组件资源（MIME 为 `text/html;profile=mcp-app`）。组件通过标准 `ui/initialize` 握手接收 `ui/notifications/tool-result`：有 `image` 时显示图片，有 `resource_link` 时显示文件名及下载按钮。文件名当作文本处理，自动上传与字节回读只接受 HTTPS，组件不直接读取用户机器本地路径。
+支持 MCP Apps 的宿主调用直接 MCP `export_file` 时，LocalGate 会在工具元数据中声明 `_meta.ui.resourceUri`（同时保留 ChatGPT 兼容字段 `_meta["openai/outputTemplate"]`），并公开 `ui://localgate/artifact-viewer/v7.html` 组件资源（MIME 为 `text/html;profile=mcp-app`）。组件通过标准 `ui/initialize` 握手接收 `ui/notifications/tool-result`：有 `image` 时显示图片，有 `resource_link` 时显示文件名及用户可点击的原件下载链接。文件名当作文本处理，链接限定 HTTP(S)，组件不直接读取用户机器本地路径。
 
 **重要限制**：MCP Apps 是宿主可选展示能力，只有在 ChatGPT 正确识别该工具元数据、读取资源并承载 iframe 时才会显示。ChatGPT 已安装的插件可能缓存工具配置：部署新版本后，需在 ChatGPT 插件详情中刷新 MCP 连接，并使用新的工具调用检查展示。其他通过渐进式 `invoke_tool` 调用的工具暂不自动弹出该预览。部分 ChatGPT 连接器只会向模型返回 `structuredContent`，无法由 LocalGate 强制把图片直接插入模型聊天正文；此时继续使用短期 HTTPS 下载链接。插件 UI 不等于 ChatGPT 原生附件，不保证跨会话保存图片。
 
 可用两级检查定位问题：
 
-1. `tools/list`：确认 `export_file` 的 `_meta.ui.resourceUri` 是 `ui://localgate/artifact-viewer/v6.html`。
+1. `tools/list`：确认 `export_file` 的 `_meta.ui.resourceUri` 是 `ui://localgate/artifact-viewer/v7.html`。
 2. `resources/read`：确认该 URI 返回上述 MCP Apps HTML；`tools/call(export_file)` 应仍返回 `image`、`resource_link` 与文本内容。若上述均正确但没有显示 iframe，应检查宿主对 MCP Apps 的支持以及插件连接是否刷新。
 
 启用配置：

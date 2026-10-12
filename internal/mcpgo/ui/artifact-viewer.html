@@ -17,40 +17,22 @@
     .download { display: inline-block; text-decoration: none; padding: 7px 11px; border-radius: 8px; color: ButtonText; background: ButtonFace; border: 1px solid color-mix(in srgb,ButtonText 26%,ButtonFace); }
     .muted { opacity: 0.7; }
     #status { margin: 4px 0 10px; }
-    #checks { margin: 6px 0 12px; padding-left: 20px; font-size: 12px; }
-    #checks li { margin: 3px 0; overflow-wrap: anywhere; }
-    #followup { margin: 6px 0 12px; padding: 7px 11px; cursor: pointer; }
     [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <main>
     <h2>LocalGate 文件预览</h2>
-    <p id="status" class="muted">等待文件结果…</p>
-    <ol id="checks" class="muted" aria-live="polite"></ol>
-    <button id="followup" type="button" hidden>让 ChatGPT 检查图片与 Sandbox 可见性</button>
+    <p id="status" class="muted" hidden></p>
     <div class="grid" id="items" aria-live="polite"></div>
   </main>
   <script type="module">
-    // Export links are short-lived bearer URLs. Read only those provided by
-    // the tool, then opportunistically register with ChatGPT's optional file API.
+    // Only display native MCP image previews and short-lived download links.
+    // Never upload exported files or send diagnostic follow-up messages.
     const items = document.querySelector('#items');
     const status = document.querySelector('#status');
-    const checks = document.querySelector('#checks');
-    const followup = document.querySelector('#followup');
     let sequence = 0;
     const pending = new Map();
-    const attempted = new Set();
-    const maxHashBytes = 32 * 1024 * 1024;
-    const stepNames = {
-      source: 'LocalGate 原文件读取与校验',
-      upload: 'ChatGPT 文件上传',
-      retrieval: 'ChatGPT 文件回读',
-      integrity: '原文件与回读文件一致性',
-      context: '后续模型图片上下文',
-      sandbox: '当前会话 Sandbox 文件挂载',
-    };
-    const state = { fileId: '', fileName: '', mimeType: '', exportKey: '', sha256: '', steps: {} };
 
     function notify(method, params = {}) {
       window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
@@ -69,179 +51,6 @@
         return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
       } catch { return ''; }
     }
-    function report(step, level, note) {
-      state.steps[step] = { level, note };
-      drawStatus();
-      saveState();
-    }
-    function drawStatus() {
-      checks.replaceChildren();
-      for (const [key, label] of Object.entries(stepNames)) {
-        const entry = state.steps[key];
-        if (!entry) continue;
-        const line = document.createElement('li');
-        line.textContent = label + '：' + entry.level + (entry.note ? '（' + entry.note + '）' : '');
-        checks.append(line);
-      }
-      if (state.fileId) {
-        status.hidden = false;
-        status.textContent = 'ChatGPT 已返回 fileId：' + state.fileId;
-      }
-      followup.hidden = !(state.fileId && typeof window.openai?.sendFollowUpMessage === 'function');
-    }
-    function saveState() {
-      if (!state.fileId || typeof window.openai?.setWidgetState !== 'function') return;
-      // Do not persist bearer download links, raw file bytes or local Mac paths.
-      const privateContent = {
-        kind: 'localgate-export', version: 2, fileId: state.fileId,
-        fileName: state.fileName, mimeType: state.mimeType,
-        exportKey: state.exportKey, sha256: state.sha256, steps: state.steps,
-        libraryRequested: true,
-      };
-      const snapshot = {
-        modelContent: 'LocalGate exported ' + state.fileName + ' with ChatGPT fileId ' + state.fileId +
-          '. File verification: ' + (state.steps.integrity?.level || 'not verified') +
-          '. Sandbox access has NOT been verified.',
-        privateContent,
-      };
-      if (state.mimeType.startsWith('image/')) snapshot.imageIds = [state.fileId];
-      try { window.openai.setWidgetState(snapshot); } catch { /* Host may not support state persistence. */ }
-    }
-    function restoreState() {
-      const saved = window.openai?.widgetState?.privateContent;
-      if (saved?.kind !== 'localgate-export' || saved.version !== 2 ||
-          typeof saved.fileId !== 'string' || !saved.fileId) return;
-      for (const key of ['fileId', 'fileName', 'mimeType', 'exportKey', 'sha256']) {
-        if (typeof saved[key] === 'string') state[key] = saved[key];
-      }
-      if (saved.steps && typeof saved.steps === 'object') {
-        for (const key of Object.keys(stepNames)) {
-          const entry = saved.steps[key];
-          if (entry && typeof entry.level === 'string' && typeof entry.note === 'string') {
-            state.steps[key] = { level: entry.level, note: entry.note };
-          }
-        }
-      }
-      drawStatus();
-    }
-    async function sha256(blob) {
-      if (blob.size > maxHashBytes || !globalThis.crypto?.subtle?.digest) return null;
-      try {
-        const hash = await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-        return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
-      } catch {
-        // A browser-side digest error should not block an otherwise valid upload.
-        return null;
-      }
-    }
-    function exportMetadata(result) {
-      const canonical = result?.mcp_tool_result ?? result?.call_tool_result ?? result;
-      const envelope = canonical?.result?.content ? canonical.result : canonical;
-      const structured = envelope?.structuredContent ?? envelope;
-      const detail = structured?.result ?? structured;
-      return {
-        exportKey: typeof detail?.export_id === 'string' ? detail.export_id : '',
-        sha256: typeof detail?.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(detail.sha256) ?
-          detail.sha256.toLowerCase() : '',
-        size: Number.isSafeInteger(detail?.size) && detail.size >= 0 ? detail.size : null,
-      };
-    }
-    async function registerFile(file) {
-      const uri = safeHTTP(file.uri);
-      if (!uri || !uri.startsWith('https://') || attempted.has(uri)) return;
-      const key = file.exportKey || file.sha256;
-      if (key && key === state.exportKey && state.fileId) {
-        attempted.add(uri);
-        drawStatus();
-        return;
-      }
-      attempted.add(uri);
-      state.fileId = '';
-      state.fileName = typeof file.name === 'string' && file.name ? file.name : 'export.bin';
-      state.mimeType = typeof file.mimeType === 'string' ? file.mimeType : '';
-      state.exportKey = key || '';
-      state.sha256 = file.sha256 || '';
-      state.steps = {};
-      if (typeof window.openai?.uploadFile !== 'function') {
-        report('upload', '不可用', 'ChatGPT 客户端没有 uploadFile');
-        return;
-      }
-      let blob;
-      let originalDigest = null;
-      try {
-        status.hidden = false;
-        status.textContent = '正在读取 LocalGate 原文件…';
-        const response = await fetch(uri, { credentials: 'omit', mode: 'cors' });
-        if (!response.ok) throw new Error('download HTTP ' + response.status);
-        blob = await response.blob();
-        if (file.size !== null && file.size !== undefined && blob.size !== file.size) {
-          throw new Error('size mismatch');
-        }
-        originalDigest = await sha256(blob);
-        if (file.sha256 && originalDigest && file.sha256 !== originalDigest) {
-          throw new Error('SHA-256 mismatch');
-        }
-        report('source', originalDigest && file.sha256 ? '通过' : '未完全验证',
-          originalDigest && file.sha256 ? '文件大小及 SHA-256 与导出记录一致' :
-          originalDigest ? '已计算 SHA-256，但没有导出基准可比对' :
-          '大文件或浏览器不支持 SHA-256');
-      } catch (error) {
-        report('source', '失败', error?.message === 'SHA-256 mismatch' ? '源文件哈希不符' :
-          error?.message === 'size mismatch' ? '源文件大小不符' : '下载失败或跨域读取受限');
-        status.textContent = '原文件校验失败，未上传到 ChatGPT。请重新导出。';
-        return;
-      }
-      let uploaded;
-      try {
-        status.textContent = '正在上传文件到 ChatGPT…';
-        uploaded = await window.openai.uploadFile(new File([blob], state.fileName, {
-          type: state.mimeType || blob.type,
-        }), { library: true });
-        if (typeof uploaded?.fileId !== 'string' || !uploaded.fileId) throw new Error('missing fileId');
-      } catch (error) {
-        report('upload', '失败', error?.message === 'missing fileId' ? '宿主未返回 fileId' : '宿主上传调用失败');
-        status.textContent = 'ChatGPT 上传未完成，仍可下载原文件。';
-        return;
-      }
-      state.fileId = uploaded.fileId;
-      report('upload', '通过', '已取得 fileId；Library 保存请求尚未独立确认');
-      report('context', '待实测', '点击下方按钮检查下一轮模型是否收到图片');
-      report('sandbox', '未验证', 'fileId 不等于当前会话 /mnt/data 路径');
-      if (typeof window.openai.getFileDownloadUrl !== 'function') {
-        report('retrieval', '不可用', '宿主没有 getFileDownloadUrl');
-        report('integrity', '未验证', '无法回读原始字节');
-        return;
-      }
-      let roundtrip;
-      try {
-        const { downloadUrl } = await window.openai.getFileDownloadUrl({ fileId: state.fileId });
-        const url = safeHTTP(downloadUrl);
-        if (!url || !url.startsWith('https://')) throw new Error('missing download URL');
-        const response = await fetch(url, { credentials: 'omit', mode: 'cors' });
-        if (!response.ok) throw new Error('download HTTP ' + response.status);
-        roundtrip = await response.blob();
-        report('retrieval', '通过', '已实际读取 ChatGPT 返回的文件字节');
-      } catch {
-        report('retrieval', '未验证', '临时下载地址缺失、失效或受跨域限制');
-        report('integrity', '未验证', '不能将获得下载 URL 等同于文件一致');
-        return;
-      }
-      if (blob.size !== roundtrip.size) {
-        report('integrity', '失败', '回读字节数与 LocalGate 源文件不同');
-        return;
-      }
-      try {
-        const remoteDigest = await sha256(roundtrip);
-        if (originalDigest && remoteDigest) {
-          report('integrity', originalDigest === remoteDigest ? '通过' : '失败',
-            originalDigest === remoteDigest ? '字节数与 SHA-256 均相同' : 'SHA-256 不一致');
-        } else {
-          report('integrity', '未完全验证', '大小相同，但哈希不可用或超过 32 MiB');
-        }
-      } catch {
-        report('integrity', '未验证', '计算回读 SHA-256 失败');
-      }
-    }
     function render(result) {
       // ChatGPT exposes structuredContent via toolOutput, but the full MCP
       // content (images and resource links) via toolResponseMetadata.
@@ -249,7 +58,6 @@
       const data = canonical?.result?.content ? canonical.result : canonical;
       if (!data || data.isError) return;
       const structured = data?.structuredContent ?? data;
-      const meta = exportMetadata(data);
       const blocks = Array.isArray(data.content) ? data.content : [];
       const images = blocks.filter(v => v?.type === 'image' &&
         ['image/png','image/jpeg','image/webp'].includes(v.mimeType) &&
@@ -260,7 +68,6 @@
         files.push({ uri: structured.fileUrl, name: structured.fileName, mimeType: structured.mimeType });
       }
       if (!files.length && !images.length) return;
-      if (files[0]) files[0] = { ...files[0], ...meta };
 
       items.replaceChildren();
       const count = Math.max(files.length, images.length);
@@ -293,23 +100,8 @@
         card.append(footer);
         items.append(card);
       }
-      if (!files[0] || !attempted.has(safeHTTP(files[0].uri))) status.hidden = true;
-      if (files[0]) void registerFile(files[0]);
+      status.hidden = true;
     }
-    followup.addEventListener('click', async () => {
-      if (!state.fileId || typeof window.openai?.sendFollowUpMessage !== 'function') return;
-      report('context', '已发起验证', '等待下一轮模型确认，不能由组件自判成功');
-      try {
-        await window.openai.sendFollowUpMessage({
-          prompt: '请验证 LocalGate 导出的图片 ' + state.fileName + '（ChatGPT fileId: ' +
-            state.fileId + '）能否在本轮模型上下文中读取；再检查当前 Python Sandbox 是否真的存在该原始文件并能以 Pillow 打开。' +
-            ' 分别说明图片上下文、会话文件列表与 Sandbox 挂载结果；不得根据 fileId 猜测路径或声称未经验证的成功。',
-        });
-      } catch {
-        report('context', '发送失败', '客户端未成功发送后续验证请求');
-      }
-    });
-    restoreState();
     window.addEventListener('message', event => {
       if (event.source !== window.parent) return;
       const msg = event.data;

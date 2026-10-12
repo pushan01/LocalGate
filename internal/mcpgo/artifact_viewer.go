@@ -4,15 +4,13 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"net/url"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // artifactViewerURI changes when the component's shape or protocol changes,
 // so hosts do not retain a stale version of the HTML resource.
-const artifactViewerURI = "ui://localgate/artifact-viewer/v6.html"
+const artifactViewerURI = "ui://localgate/artifact-viewer/v7.html"
 const artifactViewerMIME = "text/html;profile=mcp-app"
 
 //go:embed ui/artifact-viewer.html
@@ -44,19 +42,13 @@ func (s *Server) registerArtifactViewer() {
 		if err != nil {
 			return nil, err
 		}
-		connectDomains := []string{}
-		if raw := strings.TrimSpace(s.App.FileExports.BaseURL); raw != "" {
-			if parsed, err := url.Parse(raw); err == nil && parsed.Scheme == "https" && parsed.Host != "" {
-				connectDomains = append(connectDomains, parsed.Scheme+"://"+parsed.Host)
-			}
-		}
 		return []mcp.ResourceContents{mcp.TextResourceContents{
 			URI: artifactViewerURI, MIMEType: artifactViewerMIME, Text: string(data),
 			Meta: map[string]any{
 				"ui": map[string]any{
 					"prefersBorder": true,
 					"csp": map[string]any{
-						"connectDomains":  connectDomains,
+						"connectDomains":  []string{},
 						"resourceDomains": []string{},
 					},
 				},
